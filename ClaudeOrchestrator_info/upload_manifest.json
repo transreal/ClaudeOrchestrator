@@ -1,0 +1,13 @@
+{
+	"packageName":"ClaudeOrchestrator",
+	"files":[
+		"ClaudeOrchestrator.wl"
+	],
+	"directories":[
+		"ClaudeOrchestrator_info"
+	],
+	"excludePatterns":[
+		"ClaudeOrchestrator_info\/history\/",
+		"ClaudeOrchestrator_info\/references\/"
+	]
+}
