@@ -192,7 +192,7 @@ Begin["`Private`"];
 (* ── iL: $Language に基づく日英切替 ── *)
 iL[ja_String, en_String] := If[$Language === "Japanese", ja, en];
 
-$ClaudeOrchestratorVersion = "2026-04-20T19-default-eval-mode-auto";
+$ClaudeOrchestratorVersion = "2026-04-21T20-bilingual-prompts";
 
 (* ══════════════════════════════════════════════════════════════════════
    T08 (2026-04-19): Template inheritance + figure/image cell kinds +
@@ -1694,26 +1694,67 @@ RULES:
    ExternalEvaluate, SystemCredential, or any file I/O operations.
 3. Your output is an artifact that will be passed to downstream tasks.
 4. Be concise and precise. Focus only on your assigned task.
-5. All keys from the OutputSchema must be present in your response.";
+5. All keys from the OutputSchema must be present in your response.
+6. For free-form natural-language fields (titles, summaries, body text,
+   descriptions, etc.), preserve the language of the task Goal and
+   dependency artifacts. If the task is written in a specific natural
+   language, produce those fields in the SAME language. Do not translate
+   unless the task explicitly requests translation.";
+
+(* v2026-04-21 T20: \:65e5\:672c\:8a9e\:7248 worker system prompt\:3002
+   $Language === \"Japanese\" \:306e\:3068\:304d iWorkerBuildSystemPrompt \:304c\:3053\:3061\:3089\:3092\:4f7f\:3046\:3002
+   \:81ea\:7531\:8a18\:8ff0\:30d5\:30a3\:30fc\:30eb\:30c9\:306f\:30bf\:30b9\:30af\:8a00\:8a9e\:3092\:4fdd\:6301\:3057\:3001\:65e5\:672c\:8a9e\:3067\:5165\:529b\:3055\:308c\:305f\:30bf\:30b9\:30af\:306b
+   \:5bfe\:3057\:3066\:306f JSON \:306e\:30d5\:30a3\:30fc\:30eb\:30c9\:3082\:65e5\:672c\:8a9e\:3067\:57cb\:3081\:308b\:3053\:3068\:3092\:660e\:8a18\:3002 *)
+$iWorkerSystemPromptJaTemplate =
+"\:3042\:306a\:305f\:306f\:5f79\:5272 {{ROLE}} \:306e worker \:30a8\:30fc\:30b8\:30a7\:30f3\:30c8\:3067\:3059\:3002
+
+\:3042\:306a\:305f\:306e\:30bf\:30b9\:30af:
+{{GOAL}}
+
+\:51fa\:529b\:8981\:4ef6:
+\:6b21\:306e\:30b9\:30ad\:30fc\:30de\:306b\:9069\:5408\:3059\:308b JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:3067\:5fdc\:7b54\:3057\:3066\:304f\:3060\:3055\:3044:
+{{OUTPUT_SCHEMA}}
+
+{{DEPENDENCY_SECTION}}
+
+\:30eb\:30fc\:30eb:
+1. ```json ... ``` \:3067\:56f2\:307e\:308c\:305f JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306e\:307f\:3067\:5fdc\:7b54\:3059\:308b\:3002
+2. NotebookWrite / CreateNotebook / RunProcess / ExternalEvaluate /
+   SystemCredential / \:30d5\:30a1\:30a4\:30eb I/O \:7b49\:306e\:526f\:4f5c\:7528\:64cd\:4f5c\:306f\:4e00\:5207\:4f7f\:308f\:306a\:3044\:3002
+3. \:51fa\:529b\:306f\:5f8c\:7d9a\:30bf\:30b9\:30af\:306b\:6e21\:3055\:308c\:308b artifact \:3067\:3042\:308b\:3002
+4. \:7c21\:6f54\:304b\:3064\:6b63\:78ba\:306b\:3002\:5272\:308a\:5f53\:3066\:3089\:308c\:305f\:30bf\:30b9\:30af\:306b\:96c6\:4e2d\:3059\:308b\:3002
+5. OutputSchema \:306e\:5168\:30ad\:30fc\:3092\:5fdc\:7b54\:306b\:542b\:3081\:308b\:3002
+6. \:81ea\:7531\:8a18\:8ff0\:306e\:81ea\:7136\:8a00\:8a9e\:30d5\:30a3\:30fc\:30eb\:30c9 (\:30bf\:30a4\:30c8\:30eb\:3001\:8981\:7d04\:3001\:672c\:6587\:3001\:8aac\:660e\:7b49) \:306f\:3001
+   \:30bf\:30b9\:30af\:306e Goal \:3068\:4f9d\:5b58 artifact \:306e\:8a00\:8a9e\:3092\:4fdd\:6301\:3059\:308b\:3002
+   \:65e5\:672c\:8a9e\:3067\:6307\:793a\:3055\:308c\:305f\:30bf\:30b9\:30af\:306b\:5bfe\:3057\:3066\:306f\:3053\:308c\:3089\:306e\:30d5\:30a3\:30fc\:30eb\:30c9\:3082
+   \:65e5\:672c\:8a9e\:3067\:8a18\:8ff0\:3059\:308b\:3002\:660e\:793a\:7684\:306a\:7ffb\:8a33\:6307\:793a\:304c\:306a\:3044\:9650\:308a\:7ffb\:8a33\:306f\:3057\:306a\:3044\:3002";
 
 iWorkerBuildSystemPrompt[role_String, task_Association,
     depArtifacts_Association, referenceText_:None] :=
   Module[{prompt, goalStr, schemaStr, depSection, schema, intent,
-          slideHint, isJa},
+          slideHint, isJa, template, depLabel, noDepLabel},
     isJa      = $Language === "Japanese";
     goalStr   = ToString[Lookup[task, "Goal", ""]];
     schema    = Lookup[task, "OutputSchema", <||>];
     schemaStr = ToString[schema, InputForm];
     
+    (* v2026-04-21 T20: DEPENDENCY \:30bb\:30af\:30b7\:30e7\:30f3\:3082 $Language \:3067\:5207\:308a\:66ff\:3048 *)
+    depLabel   = If[isJa,
+      "\:4f9d\:5b58 artifact (\:524d\:6bb5\:30bf\:30b9\:30af\:306e\:51fa\:529b):\n",
+      "DEPENDENCY ARTIFACTS (outputs from previous tasks):\n"];
+    noDepLabel = If[isJa,
+      "\:4f9d\:5b58 artifact \:306a\:3057\:3002",
+      "No dependency artifacts."];
+    
     depSection = If[Length[depArtifacts] > 0,
-      "DEPENDENCY ARTIFACTS (outputs from previous tasks):\n" <>
+      depLabel <>
         StringJoin[
           KeyValueMap[
             Function[{tid, art},
               "- TaskId " <> tid <> ": " <>
               ToString[Lookup[art, "Payload", <||>], InputForm] <> "\n"],
             depArtifacts]],
-      "No dependency artifacts."];
+      noDepLabel];
     
     (* T07: slide \:5fc5\:5408\:3044\:306e worker \:306b\:306f slide-aware hint \:3092\:6ce8\:5165\:3002 *)
     intent    = iDetectWorkerSlideIntent[task, depArtifacts];
@@ -1722,7 +1763,12 @@ iWorkerBuildSystemPrompt[role_String, task_Association,
       iBuildSlideWorkerHint[intent, schema, isJa, referenceText],
       ""];
     
-    prompt = StringReplace[$iWorkerSystemPromptTemplate, {
+    (* v2026-04-21 T20: \:30c6\:30f3\:30d7\:30ec\:30fc\:30c8\:3082 $Language \:3067\:5207\:308a\:66ff\:3048 *)
+    template = If[isJa,
+      $iWorkerSystemPromptJaTemplate,
+      $iWorkerSystemPromptTemplate];
+    
+    prompt = StringReplace[template, {
       "{{ROLE}}"           -> role,
       "{{GOAL}}"           -> goalStr,
       "{{OUTPUT_SCHEMA}}"  -> schemaStr,
@@ -3222,11 +3268,35 @@ RULES:
 3. Resolve conflicts by preferring more specific/detailed information.
 4. The output must be a single JSON object (inside ```json ... ``` fences).
 5. Do NOT include any text outside the JSON block.
-6. All keys from all artifacts should be represented in the output.";
+6. All keys from all artifacts should be represented in the output.
+7. For free-form natural-language fields (titles, summaries, descriptions,
+   etc.), preserve the original language of the source content. If the input
+   task was written in a specific natural language, produce those fields in
+   the SAME language. Do not translate unless explicitly asked.";
+
+(* v2026-04-21 T20: \:65e5\:672c\:8a9e\:7248 reducer system prompt\:3002
+   $Language === \"Japanese\" \:306e\:3068\:304d iLLMReducer \:304c\:3053\:3061\:3089\:3092\:4f7f\:3046\:3002
+   \:81ea\:7531\:8a18\:8ff0\:30d5\:30a3\:30fc\:30eb\:30c9 (title / summary \:7b49) \:306f\:5165\:529b\:8a00\:8a9e\:3092\:4fdd\:6301\:3057\:3001
+   \:65e5\:672c\:8a9e\:3067\:5165\:529b\:3055\:308c\:305f\:30bf\:30b9\:30af\:306b\:5bfe\:3057\:3066\:306f\:65e5\:672c\:8a9e\:3067\:7d71\:5408\:7d50\:679c\:3092\:8fd4\:3059\:3053\:3068\:3092\:660e\:8a18\:3002 *)
+$iReducerSystemPromptJa =
+"\:3042\:306a\:305f\:306f reducer \:30a8\:30fc\:30b8\:30a7\:30f3\:30c8\:3067\:3059\:3002\:8907\:6570\:306e\:30bf\:30b9\:30af artifact (JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8)
+\:3092\:53d7\:3051\:53d6\:308a\:3001\:5358\:4e00\:306e\:7d71\:5408\:7d50\:679c\:306b\:5408\:6210\:3057\:307e\:3059\:3002
+
+\:30eb\:30fc\:30eb:
+1. \:3059\:3079\:3066\:306e artifact \:3092 1 \:3064\:306e\:6574\:5408\:7684\:306a JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306b\:30de\:30fc\:30b8\:3059\:308b\:3002
+2. \:5404 artifact \:304b\:3089\:91cd\:8981\:306a\:60c5\:5831\:3092\:3059\:3079\:3066\:4fdd\:6301\:3059\:308b\:3002
+3. \:77db\:76fe\:304c\:3042\:308b\:5834\:5408\:306f\:3001\:3088\:308a\:5177\:4f53\:7684\:30fb\:8a73\:7d30\:306a\:60c5\:5831\:3092\:512a\:5148\:3059\:308b\:3002
+4. \:51fa\:529b\:306f ```json ... ``` \:3067\:56f2\:307e\:308c\:305f\:5358\:4e00\:306e JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:3068\:3059\:308b\:3002
+5. JSON \:30d6\:30ed\:30c3\:30af\:306e\:5916\:306b\:306f\:3044\:304b\:306a\:308b\:30c6\:30ad\:30b9\:30c8\:3082\:542b\:3081\:306a\:3044\:3002
+6. \:5404 artifact \:306e\:3059\:3079\:3066\:306e\:30ad\:30fc\:3092\:51fa\:529b\:306b\:53cd\:6620\:3055\:305b\:308b\:3002
+7. \:81ea\:7531\:8a18\:8ff0\:306e\:81ea\:7136\:8a00\:8a9e\:30d5\:30a3\:30fc\:30eb\:30c9 (\:30bf\:30a4\:30c8\:30eb\:3001\:8981\:7d04\:3001\:8aac\:660e\:306a\:3069) \:306f\:3001
+   \:5165\:529b\:30bf\:30b9\:30af\:306e\:8a00\:8a9e\:3092\:4fdd\:6301\:3059\:308b\:3002\:65e5\:672c\:8a9e\:3067\:5165\:529b\:3055\:308c\:305f\:5834\:5408\:306f
+   \:3053\:308c\:3089\:306e\:30d5\:30a3\:30fc\:30eb\:30c9\:3082\:65e5\:672c\:8a9e\:3067\:8a18\:8ff0\:3059\:308b\:3002\:660e\:793a\:7684\:306a\:6307\:793a\:304c\:306a\:3044\:9650\:308a\:7ffb\:8a33\:306f\:3057\:306a\:3044\:3002";
 
 iLLMReducer[artifacts_Association, queryFn_] :=
   Module[{prompt, artifactSummary, response, jsonStr, parsed,
-          actualQueryFn, deterministicFallback},
+          actualQueryFn, deterministicFallback, basePrompt, isJa,
+          mergeInstr, artifactsLabel},
     
     (* artifact \:304c 0 \:500b\:306a\:3089\:7a7a *)
     If[Length[artifacts] === 0, Return[<||>]];
@@ -3246,10 +3316,22 @@ iLLMReducer[artifacts_Association, queryFn_] :=
           ToString[Lookup[art, "Payload", <||>], InputForm] <> "\n\n"],
         artifacts]];
     
-    prompt = $iReducerSystemPrompt <> "\n\n" <>
-      "ARTIFACTS TO MERGE (" <> ToString[Length[artifacts]] <> " total):\n\n" <>
+    (* v2026-04-21 T20: $Language \:306b\:3088\:308a system prompt \:3068\:6307\:793a\:6587\:3092\:5207\:308a\:66ff\:3048\:308b\:3002
+       \:8a00\:8a9e\:5207\:308a\:66ff\:3048\:306f LLM \:306b\:300c\:81ea\:7531\:8a18\:8ff0\:30d5\:30a3\:30fc\:30eb\:30c9\:306f\:65e5\:672c\:8a9e\:3067\:300d
+       \:3068\:3044\:3046\:307b\:3068\:3093\:3069\:305d\:306e\:307e\:307e\:306e\:30d2\:30f3\:30c8\:3068\:3057\:3066\:6a5f\:80fd\:3059\:308b\:3002 *)
+    isJa = $Language === "Japanese";
+    basePrompt     = If[isJa, $iReducerSystemPromptJa, $iReducerSystemPrompt];
+    artifactsLabel = If[isJa,
+      "\:7d71\:5408\:5bfe\:8c61\:306e artifact (\:5168 " <> ToString[Length[artifacts]] <> " \:500b):\n\n",
+      "ARTIFACTS TO MERGE (" <> ToString[Length[artifacts]] <> " total):\n\n"];
+    mergeInstr = If[isJa,
+      "\n\:4e0a\:8a18 artifact \:7fa4\:3092 1 \:3064\:306e JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306b\:30de\:30fc\:30b8\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+      "\nMerge these artifacts into a single JSON object."];
+    
+    prompt = basePrompt <> "\n\n" <>
+      artifactsLabel <>
       artifactSummary <>
-      "\nMerge these artifacts into a single JSON object.";
+      mergeInstr;
     
     actualQueryFn = If[queryFn === Automatic,
       (* T27: \:540c\:671f\:7248 ClaudeQueryBg \:3092\:4f7f\:7528 *)
@@ -3495,8 +3577,11 @@ iCommitArtifactsOnce[targetNotebook_, reducedArtifact_Association,
       
       If[useFallback,
         If[verbose,
-          Print[Style["[commit] T05 fallback: LLM \:304c Cell \:3092\:66f8\:304b\:306a\:304b\:3063\:305f\:305f\:3081\:3001" <>
-            "iDeterministicSlideCommit \:3092\:5b9f\:884c\:3057\:307e\:3059\:3002",
+          Print[Style[iL[
+            "[commit] T05 fallback: LLM \:304c Cell \:3092\:66f8\:304b\:306a\:304b\:3063\:305f\:305f\:3081\:3001" <>
+              "iDeterministicSlideCommit \:3092\:5b9f\:884c\:3057\:307e\:3059\:3002",
+            "[commit] T05 fallback: LLM didn't write cells; " <>
+              "running iDeterministicSlideCommit."],
             Italic, GrayLevel[0.4]]]];
         fbResult = Quiet @ Check[
           iDeterministicSlideCommit[targetNotebook, reducedArtifact],
@@ -3519,7 +3604,9 @@ iCommitArtifactsOnce[targetNotebook_, reducedArtifact_Association,
             Italic, GrayLevel[0.4]]]],
         (* useFallback == False: \:65e7\:8b66\:544a\:306e\:307f *)
         If[verbose && status === "Committed" && cellsDelta === 0,
-          Print[Style["[commit] \:8b66\:544a: Status=Committed \:3060\:304c CellsDelta=0 (\:5b9f\:30bb\:30eb\:304c 1 \:3064\:3082\:66f8\:304b\:308c\:3066\:3044\:306a\:3044)\:3002",
+          Print[Style[iL[
+            "[commit] \:8b66\:544a: Status=Committed \:3060\:304c CellsDelta=0 (\:5b9f\:30bb\:30eb\:304c 1 \:3064\:3082\:66f8\:304b\:308c\:3066\:3044\:306a\:3044)\:3002",
+            "[commit] WARNING: Status=Committed but CellsDelta=0 (no cells were actually written)."],
             RGBColor[0.8, 0.5, 0]]]]
       ];
       
@@ -3780,7 +3867,7 @@ iShadowBufferFlush[_] :=
 ClearAll[iBuildCommitterHint];
 
 iBuildCommitterHint[reducedArtifact_Association, targetNb_] :=
-  Module[{payload, payloadStr, payloadLen, guideStr},
+  Module[{payload, payloadStr, payloadLen, guideStr, isJa},
     payload = Lookup[reducedArtifact, "Payload", <||>];
     payloadStr = ToString[payload, InputForm];
     payloadLen = StringLength[payloadStr];
@@ -3790,41 +3877,89 @@ iBuildCommitterHint[reducedArtifact_Association, targetNb_] :=
       payloadStr = StringTake[payloadStr, 6000] <>
         "\n... (truncated; " <> ToString[payloadLen - 6000] <>
         " more chars)"];
-    guideStr = StringJoin[
-      "=== COMMITTER ROLE (read carefully) ===\n",
-      "You are the SINGLE COMMITTER for this orchestration turn.\n",
-      "Your ONLY job is to write the ReducedArtifact below into the ",
-      "user's current notebook.\n\n",
-      "STRICT RULES:\n",
-      "1. You MUST produce ```mathematica``` code blocks containing ",
-      "`NotebookWrite[EvaluationNotebook[], Cell[...]]` calls \:2014 ",
-      "one call per slide / section / item.\n",
-      "2. Use EvaluationNotebook[] to refer to the target notebook. ",
-      "The orchestrator will rewrite EvaluationNotebook[] to the ",
-      "correct notebook handle. Do NOT use SelectedNotebook[] or a file path.\n",
-      "3. Do NOT call CreateNotebook, DocumentNotebook, NotebookPut, ",
-      "NotebookSave, NotebookClose, Export, or any file I/O.\n",
-      "4. Do NOT produce [DONE] until you have written one Cell for ",
-      "every item in the payload below.\n",
-      "5. Prefer cell styles \"Title\" / \"Section\" / \"Subsection\" / ",
-      "\"Text\" / \"Code\" / \"Input\" as appropriate.\n",
-      "6. If an item has {Title, Body, Code, ...} sub-fields, emit ",
-      "MULTIPLE NotebookWrite calls for that item (title + body + code etc.).\n",
-      "7. If you are unsure about a value, emit a Cell with \"Text\" ",
-      "style containing a short placeholder \:2014 do NOT skip the item.\n\n",
-      "EXAMPLE output shape:\n",
-      "```mathematica\n",
-      "NotebookWrite[EvaluationNotebook[], Cell[\"My Presentation\", \"Title\"]];\n",
-      "NotebookWrite[EvaluationNotebook[], Cell[\"Introduction\", \"Section\"]];\n",
-      "NotebookWrite[EvaluationNotebook[], Cell[\"This slide covers the background.\", \"Text\"]];\n",
-      "NotebookWrite[EvaluationNotebook[], Cell[\"Plot[Sin[x], {x, 0, 2 Pi}]\", \"Input\"]];\n",
-      "(* ... one or more NotebookWrite per slide ... *)\n",
-      "```\n",
-      "After ALL items are written, respond with a brief text ",
-      "confirmation and [DONE].\n\n",
-      "=== ReducedArtifact.Payload (InputForm) ===\n",
-      payloadStr, "\n",
-      "=== END ReducedArtifact.Payload ===\n"];
+    
+    (* v2026-04-21 T20: $Language \:306b\:3088\:308a commit \:5c02\:7528\:30d2\:30f3\:30c8\:3092\:5207\:308a\:66ff\:3048\:308b\:3002
+       \:30b3\:30fc\:30c9\:30d6\:30ed\:30c3\:30af\:306e\:4e2d\:8eab (NotebookWrite \:547c\:51fa\:3057) \:306f\:30d7\:30ed\:30b0\:30e9\:30e0\:306a\:306e\:3067\:5171\:901a\:3001
+       \:5468\:56f2\:306e\:8aac\:660e\:3068 Cell \:5185\:306e\:81ea\:7136\:8a00\:8a9e\:306f $Language \:306b\:3042\:308f\:305b\:308b\:3002 *)
+    isJa = $Language === "Japanese";
+    guideStr = If[isJa,
+      (* ---- \:65e5\:672c\:8a9e\:7248 ---- *)
+      StringJoin[
+        "=== COMMITTER \:5f79\:5272 (\:5fc5\:8aad) ===\n",
+        "\:3042\:306a\:305f\:306f\:3053\:306e orchestration \:30bf\:30fc\:30f3\:306b\:304a\:3051\:308b\:552f\:4e00\:306e COMMITTER \:3067\:3059\:3002\n",
+        "\:3042\:306a\:305f\:306e\:552f\:4e00\:306e\:5f79\:76ee\:306f\:3001\:4e0b\:8a18\:306e ReducedArtifact \:3092\:30e6\:30fc\:30b6\:30fc\:306e\n",
+        "\:73fe\:5728\:306e notebook \:306b\:66f8\:304d\:8fbc\:3080\:3053\:3068\:3067\:3059\:3002\n\n",
+        "\:53b3\:683c\:306a\:30eb\:30fc\:30eb:\n",
+        "1. ```mathematica``` \:30b3\:30fc\:30c9\:30d6\:30ed\:30c3\:30af\:3092\:51fa\:529b\:3057\:3001\:305d\:306e\:4e2d\:3067\n",
+        "   `NotebookWrite[EvaluationNotebook[], Cell[...]]` \:3092\:547c\:3073\:51fa\:3059\:3053\:3068\:3002\n",
+        "   \:30b9\:30e9\:30a4\:30c9 / \:30bb\:30af\:30b7\:30e7\:30f3 / \:30a2\:30a4\:30c6\:30e0 1 \:3064\:306b\:3064\:304d 1 \:56de\:3002\n",
+        "2. \:66f8\:304d\:8fbc\:307f\:5148\:306b\:306f EvaluationNotebook[] \:3092\:4f7f\:3046\:3002orchestrator \:304c\n",
+        "   \:6b63\:3057\:3044 notebook handle \:306b\:81ea\:52d5\:66f8\:304d\:63db\:3048\:308b\:3002\n",
+        "   SelectedNotebook[] \:3084\:30d5\:30a1\:30a4\:30eb\:30d1\:30b9\:306f\:4f7f\:308f\:306a\:3044\:3002\n",
+        "3. CreateNotebook / DocumentNotebook / NotebookPut / NotebookSave /\n",
+        "   NotebookClose / Export \:306a\:3069\:306e\:30d5\:30a1\:30a4\:30eb I/O \:306f\:4e00\:5207\:547c\:3070\:306a\:3044\:3002\n",
+        "4. payload \:5185\:306e\:3059\:3079\:3066\:306e\:9805\:76ee\:306b\:5bfe\:3057 Cell \:3092\:66f8\:304d\:7d42\:3048\:308b\:307e\:3067\n",
+        "   [DONE] \:3092\:51fa\:3055\:306a\:3044\:3002\n",
+        "5. \:30bb\:30eb\:306e\:30b9\:30bf\:30a4\:30eb\:306f \"Title\" / \"Section\" / \"Subsection\" /\n",
+        "   \"Text\" / \"Code\" / \"Input\" \:306a\:3069\:3001\:9069\:5207\:306a\:3082\:306e\:3092\:9078\:3076\:3002\n",
+        "6. \:9805\:76ee\:306b {Title, Body, Code, ...} \:306e\:30b5\:30d6\:30d5\:30a3\:30fc\:30eb\:30c9\:304c\:3042\:308c\:3070\:3001\n",
+        "   \:305d\:306e\:9805\:76ee\:306b\:3064\:304d\:8907\:6570\:306e NotebookWrite \:3092\:767a\:884c\:3059\:308b\:3002\n",
+        "7. \:5024\:304c\:4e0d\:78ba\:304b\:306a\:5834\:5408\:306f \"Text\" \:30b9\:30bf\:30a4\:30eb\:306e Cell \:306b\n",
+        "   \:77ed\:3044\:30d7\:30ec\:30fc\:30b9\:30db\:30eb\:30c0\:30fc\:3092\:5165\:308c\:308b\:3002\:9805\:76ee\:3092\:30b9\:30ad\:30c3\:30d7\:3057\:3066\:306f\:3044\:3051\:306a\:3044\:3002\n",
+        "8. \:30bb\:30eb\:5185\:306e\:81ea\:7136\:8a00\:8a9e\:30c6\:30ad\:30b9\:30c8 (\:30bf\:30a4\:30c8\:30eb\:3001\:672c\:6587\:3001\:8aac\:660e\:7b49) \:306f\n",
+        "   \:5143\:306e payload \:306e\:8a00\:8a9e\:3092\:4fdd\:6301\:3059\:308b\:3002\:65e5\:672c\:8a9e\:306e payload \:304b\:3089\:306f\n",
+        "   \:65e5\:672c\:8a9e\:306e Cell \:3092\:66f8\:304f\:3002\:660e\:793a\:6307\:793a\:304c\:306a\:3044\:9650\:308a\:7ffb\:8a33\:3057\:306a\:3044\:3002\n\n",
+        "\:51fa\:529b\:4f8b:\n",
+        "```mathematica\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"\:5143\:8a73\:6599\:984c\", \"Title\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"\:306f\:3058\:3081\:306b\", \"Section\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"\:3053\:306e\:30b9\:30e9\:30a4\:30c9\:3067\:306f\:80cc\:666f\:3092\:8aac\:660e\:3057\:307e\:3059\:3002\", \"Text\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"Plot[Sin[x], {x, 0, 2 Pi}]\", \"Input\"]];\n",
+        "(* ... \:30b9\:30e9\:30a4\:30c9\:3054\:3068\:306b\:8907\:6570\:306e NotebookWrite ... *)\n",
+        "```\n",
+        "\:3059\:3079\:3066\:306e\:9805\:76ee\:3092\:66f8\:304d\:7d42\:3048\:305f\:3089\:3001\:77ed\:3044\:78ba\:8a8d\:6587\:3068 [DONE] \:3067\:7d42\:3048\:308b\:3002\n\n",
+        "=== ReducedArtifact.Payload (InputForm) ===\n",
+        payloadStr, "\n",
+        "=== END ReducedArtifact.Payload ===\n"],
+      (* ---- English ---- *)
+      StringJoin[
+        "=== COMMITTER ROLE (read carefully) ===\n",
+        "You are the SINGLE COMMITTER for this orchestration turn.\n",
+        "Your ONLY job is to write the ReducedArtifact below into the ",
+        "user's current notebook.\n\n",
+        "STRICT RULES:\n",
+        "1. You MUST produce ```mathematica``` code blocks containing ",
+        "`NotebookWrite[EvaluationNotebook[], Cell[...]]` calls \:2014 ",
+        "one call per slide / section / item.\n",
+        "2. Use EvaluationNotebook[] to refer to the target notebook. ",
+        "The orchestrator will rewrite EvaluationNotebook[] to the ",
+        "correct notebook handle. Do NOT use SelectedNotebook[] or a file path.\n",
+        "3. Do NOT call CreateNotebook, DocumentNotebook, NotebookPut, ",
+        "NotebookSave, NotebookClose, Export, or any file I/O.\n",
+        "4. Do NOT produce [DONE] until you have written one Cell for ",
+        "every item in the payload below.\n",
+        "5. Prefer cell styles \"Title\" / \"Section\" / \"Subsection\" / ",
+        "\"Text\" / \"Code\" / \"Input\" as appropriate.\n",
+        "6. If an item has {Title, Body, Code, ...} sub-fields, emit ",
+        "MULTIPLE NotebookWrite calls for that item (title + body + code etc.).\n",
+        "7. If you are unsure about a value, emit a Cell with \"Text\" ",
+        "style containing a short placeholder \:2014 do NOT skip the item.\n",
+        "8. For free-form natural-language cell content (titles, body text, ",
+        "descriptions), preserve the language of the original payload. ",
+        "Do not translate unless explicitly instructed.\n\n",
+        "EXAMPLE output shape:\n",
+        "```mathematica\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"My Presentation\", \"Title\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"Introduction\", \"Section\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"This slide covers the background.\", \"Text\"]];\n",
+        "NotebookWrite[EvaluationNotebook[], Cell[\"Plot[Sin[x], {x, 0, 2 Pi}]\", \"Input\"]];\n",
+        "(* ... one or more NotebookWrite per slide ... *)\n",
+        "```\n",
+        "After ALL items are written, respond with a brief text ",
+        "confirmation and [DONE].\n\n",
+        "=== ReducedArtifact.Payload (InputForm) ===\n",
+        payloadStr, "\n",
+        "=== END ReducedArtifact.Payload ===\n"]];
     guideStr
   ];
 
@@ -5488,17 +5623,24 @@ iLaunchReducePhase[orchId_String] :=
     If[Length[artifacts] <= 1,
       Return[iRunReducePhaseSync[orchId]]];
     
-    (* iLLMReducer \:3068\:540c\:3058\:30d7\:30ed\:30f3\:30d7\:30c8\:69cb\:7bc9 *)
+    (* iLLMReducer \:3068\:540c\:3058\:30d7\:30ed\:30f3\:30d7\:30c8\:69cb\:7bc9
+       v2026-04-21 T20: $Language \:306b\:3088\:308a system prompt / label \:3092\:5207\:308a\:66ff\:3048\:308b\:3002 *)
     artifactSummary = StringJoin[
       KeyValueMap[
         Function[{tid, art},
           "--- Artifact: " <> tid <> " ---\n" <>
           ToString[Lookup[art, "Payload", <||>], InputForm] <> "\n\n"],
         artifacts]];
-    prompt = $iReducerSystemPrompt <> "\n\n" <>
-      "ARTIFACTS TO MERGE (" <> ToString[Length[artifacts]] <> " total):\n\n" <>
-      artifactSummary <>
-      "\nMerge these artifacts into a single JSON object.";
+    Module[{isJaR = $Language === "Japanese"},
+      prompt = If[isJaR, $iReducerSystemPromptJa, $iReducerSystemPrompt] <>
+        "\n\n" <>
+        If[isJaR,
+          "\:7d71\:5408\:5bfe\:8c61\:306e artifact (\:5168 " <> ToString[Length[artifacts]] <> " \:500b):\n\n",
+          "ARTIFACTS TO MERGE (" <> ToString[Length[artifacts]] <> " total):\n\n"] <>
+        artifactSummary <>
+        If[isJaR,
+          "\n\:4e0a\:8a18 artifact \:7fa4\:3092 1 \:3064\:306e JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306b\:30de\:30fc\:30b8\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
+          "\nMerge these artifacts into a single JSON object."]];
     
     workDir = Quiet @ Check[
       ClaudeCode`$ClaudeWorkingDirectory, $TemporaryDirectory];
@@ -6537,7 +6679,9 @@ iOrchHookDispatch[task_, targetNb_, refText_, verbose_, model_:Automatic] :=
         $Failed,
         (
           If[verbose,
-            Print[Style["[ClaudeEval\[Rule]Orchestrator] \:975e\:540c\:671f\:5b9f\:884c\:958b\:59cb orchJobId=" <> orchId,
+            Print[Style[iL[
+              "[ClaudeEval\[Rule]Orchestrator] \:975e\:540c\:671f\:5b9f\:884c\:958b\:59cb orchJobId=" <> orchId,
+              "[ClaudeEval\[Rule]Orchestrator] async execution started; orchJobId=" <> orchId],
               Italic, GrayLevel[0.4]]]];
           <|"Status"    -> "Pending",
             "Async"     -> True,
@@ -6592,9 +6736,15 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
             iResolveTargetNotebook[task, verbose],
             "TargetNotebook", None];
           If[verbose,
-            Print[Style["[ClaudeEval\:2192Orchestrator] Orchestrated \:30e2\:30fc\:30c9\:3067 " <>
-              If[TrueQ[$ClaudeOrchestratorAsyncMode],
-                "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <> " \:3092\:8d77\:52d5\:3002",
+            Print[Style[iL[
+              "[ClaudeEval\:2192Orchestrator] Orchestrated \:30e2\:30fc\:30c9\:3067 " <>
+                If[TrueQ[$ClaudeOrchestratorAsyncMode],
+                  "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <>
+                " \:3092\:8d77\:52d5\:3002",
+              "[ClaudeEval\:2192Orchestrator] Launching " <>
+                If[TrueQ[$ClaudeOrchestratorAsyncMode],
+                  "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <>
+                " in Orchestrated mode."],
               Italic, GrayLevel[0.4]]]];
           (* v2026-04-20: AsyncMode \:5207\:308a\:66ff\:3048\:306b\:3088\:308a\:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:30d6\:30ed\:30c3\:30af\:3092\:56de\:907f\:3002 *)
           result = iOrchHookDispatch[task, targetNb, refText, verbose, model];
@@ -6603,7 +6753,9 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
               (AssociationQ[result] && Lookup[result, "Status", ""] === "PlanningFailed"),
               (
                 If[verbose,
-                  Print[Style["[ClaudeEval\:2192Orchestrator] Planning \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                  Print[Style[iL[
+                    "[ClaudeEval\:2192Orchestrator] Planning \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                    "[ClaudeEval\:2192Orchestrator] Planning failed \:2192 falling back to Single."],
                     Italic, GrayLevel[0.4]]]];
                 retval = $Failed
               ),
@@ -6611,8 +6763,13 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
               retval = result,
             True,
               (
-                Print[Style["[ClaudeEval\:2192Orchestrator] Orchestration \:306f Status=" <>
-                  ToString[Lookup[result, "Status", "?"]] <> " \:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3057\:307e\:3059\:3002",
+                Print[Style[iL[
+                  "[ClaudeEval\:2192Orchestrator] Orchestration \:306f Status=" <>
+                    ToString[Lookup[result, "Status", "?"]] <>
+                    " \:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3057\:307e\:3059\:3002",
+                  "[ClaudeEval\:2192Orchestrator] Orchestration has Status=" <>
+                    ToString[Lookup[result, "Status", "?"]] <>
+                    "; falling back to Single."],
                   RGBColor[0.8, 0.5, 0]]];
                 retval = $Failed
               )],
@@ -6633,19 +6790,29 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
             If[!gatePass,
               (* \:8efd\:91cf\:30bf\:30b9\:30af: planner \:3092\:547c\:3070\:305a\:306b\:5373 Single *)
               If[verbose,
-                Print[Style["[ClaudeEval\:2192Orchestrator] Auto: len=" <>
-                  ToString[taskLen] <> "<" <> ToString[minLen] <>
-                  " && nl=" <> ToString[nlCount] <> "<" <> ToString[minNL] <>
-                  " \:2192 LLM planner \:30b9\:30ad\:30c3\:30d7\:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                Print[Style[iL[
+                  "[ClaudeEval\:2192Orchestrator] Auto: len=" <>
+                    ToString[taskLen] <> "<" <> ToString[minLen] <>
+                    " && nl=" <> ToString[nlCount] <> "<" <> ToString[minNL] <>
+                    " \:2192 LLM planner \:30b9\:30ad\:30c3\:30d7\:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                  "[ClaudeEval\:2192Orchestrator] Auto: len=" <>
+                    ToString[taskLen] <> "<" <> ToString[minLen] <>
+                    " && nl=" <> ToString[nlCount] <> "<" <> ToString[minNL] <>
+                    " \:2192 skipping LLM planner, falling back to Single."],
                   Italic, GrayLevel[0.4]]]];
               retval = $Failed
               ,
               (* \:91cd\:91cf\:30bf\:30b9\:30af: LLM planner \:3092\:547c\:3076 *)
               If[verbose,
-                Print[Style["[ClaudeEval\:2192Orchestrator] Auto: len=" <>
-                  ToString[taskLen] <> "/" <> ToString[minLen] <>
-                  " nl=" <> ToString[nlCount] <> "/" <> ToString[minNL] <>
-                  " \:2192 LLM planner \:3092\:547c\:3073\:51fa\:3057\:3002",
+                Print[Style[iL[
+                  "[ClaudeEval\:2192Orchestrator] Auto: len=" <>
+                    ToString[taskLen] <> "/" <> ToString[minLen] <>
+                    " nl=" <> ToString[nlCount] <> "/" <> ToString[minNL] <>
+                    " \:2192 LLM planner \:3092\:547c\:3073\:51fa\:3057\:3002",
+                  "[ClaudeEval\:2192Orchestrator] Auto: len=" <>
+                    ToString[taskLen] <> "/" <> ToString[minLen] <>
+                    " nl=" <> ToString[nlCount] <> "/" <> ToString[minNL] <>
+                    " \:2192 invoking LLM planner."],
                   Italic, GrayLevel[0.4]]]];
               (* T03: Check \:3092\:524a\:9664 (harmless Message \:3067\:8aa4 $Failed \:3092\:9632\:3050) *)
               plan = Quiet @ ClaudePlanTasks[task, "Planner" -> "LLM"];
@@ -6654,7 +6821,9 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
                   Lookup[plan, "Status", ""] =!= "Planned",
                   (
                     If[verbose,
-                      Print[Style["[ClaudeEval\:2192Orchestrator] Auto: ClaudePlanTasks(LLM) \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                      Print[Style[iL[
+                        "[ClaudeEval\:2192Orchestrator] Auto: ClaudePlanTasks(LLM) \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                        "[ClaudeEval\:2192Orchestrator] Auto: ClaudePlanTasks(LLM) failed \:2192 falling back to Single."],
                         Italic, GrayLevel[0.4]]]];
                     retval = $Failed
                   ),
@@ -6664,10 +6833,15 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
                     !ListQ[tasks] || Length[tasks] < threshold,
                       (
                         If[verbose,
-                          Print[Style["[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
-                            ToString[If[ListQ[tasks], Length[tasks], 0]] <>
-                            " < threshold=" <> ToString[threshold] <>
-                            " \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                          Print[Style[iL[
+                            "[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
+                              ToString[If[ListQ[tasks], Length[tasks], 0]] <>
+                              " < threshold=" <> ToString[threshold] <>
+                              " \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                            "[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
+                              ToString[If[ListQ[tasks], Length[tasks], 0]] <>
+                              " < threshold=" <> ToString[threshold] <>
+                              " \:2192 falling back to Single."],
                             Italic, GrayLevel[0.4]]]];
                         retval = $Failed
                       ),
@@ -6677,11 +6851,17 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
                         iResolveTargetNotebook[task, verbose],
                         "TargetNotebook", None];
                       If[verbose,
-                        Print[Style["[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
-                          ToString[Length[tasks]] <> " \:3001" <>
-                          If[TrueQ[$ClaudeOrchestratorAsyncMode],
-                            "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <>
-                          "(LLM planner) \:3092\:8d77\:52d5\:3002",
+                        Print[Style[iL[
+                          "[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
+                            ToString[Length[tasks]] <> " \:3001" <>
+                            If[TrueQ[$ClaudeOrchestratorAsyncMode],
+                              "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <>
+                            "(LLM planner) \:3092\:8d77\:52d5\:3002",
+                          "[ClaudeEval\:2192Orchestrator] Auto: Tasks=" <>
+                            ToString[Length[tasks]] <> ", launching " <>
+                            If[TrueQ[$ClaudeOrchestratorAsyncMode],
+                              "ClaudeRunOrchestrationAsync", "ClaudeRunOrchestration"] <>
+                            " (LLM planner)."],
                           Italic, GrayLevel[0.4]]]];
                       (* v2026-04-20: AsyncMode \:5207\:308a\:66ff\:3048\:306b\:3088\:308a\:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:30d6\:30ed\:30c3\:30af\:3092\:56de\:907f\:3002 *)
                       result = iOrchHookDispatch[task, targetNb, refText, verbose, model];
@@ -6690,7 +6870,9 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
                           (AssociationQ[result] && Lookup[result, "Status", ""] === "PlanningFailed"),
                           (
                             If[verbose,
-                              Print[Style["[ClaudeEval\:2192Orchestrator] Auto: Orchestration Planning \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                              Print[Style[iL[
+                                "[ClaudeEval\:2192Orchestrator] Auto: Orchestration Planning \:5931\:6557 \:2192 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                                "[ClaudeEval\:2192Orchestrator] Auto: Orchestration Planning failed \:2192 falling back to Single."],
                                 Italic, GrayLevel[0.4]]]];
                             retval = $Failed
                           ),
@@ -6698,8 +6880,13 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
                           retval = result,
                         True,
                           (
-                            Print[Style["[ClaudeEval\:2192Orchestrator] Orchestration \:306f Status=" <>
-                              ToString[Lookup[result, "Status", "?"]] <> " \:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3057\:307e\:3059\:3002",
+                            Print[Style[iL[
+                              "[ClaudeEval\:2192Orchestrator] Orchestration \:306f Status=" <>
+                                ToString[Lookup[result, "Status", "?"]] <>
+                                " \:3001Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3057\:307e\:3059\:3002",
+                              "[ClaudeEval\:2192Orchestrator] Orchestration has Status=" <>
+                                ToString[Lookup[result, "Status", "?"]] <>
+                                "; falling back to Single."],
                               RGBColor[0.8, 0.5, 0]]];
                             retval = $Failed
                           )]]]]],
@@ -6762,15 +6949,14 @@ If[!ClaudeOrchestrator`Private`iRuntimeLoadedQ[],
         loaded = ClaudeOrchestrator`Private`iRuntimeLoadedQ[],
         loaded = False]];
     If[!loaded,
-      Print[Style[If[$Language === "Japanese",
+      Print[Style[iL[
         "ClaudeOrchestrator: ClaudeRuntime \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557\:3002Orchestration \:306f\:4f7f\:3048\:307e\:305b\:3093 (Single \:306f\:5f71\:97ff\:306a\:3057)\:3002",
         "ClaudeOrchestrator: Failed to auto-load ClaudeRuntime. Orchestration unavailable (Single unaffected)."],
         RGBColor[0.8, 0.5, 0]]],
-      If[$Language === "Japanese",
-        Print[Style["ClaudeOrchestrator: ClaudeRuntime \:3092\:81ea\:52d5\:30ed\:30fc\:30c9\:3057\:307e\:3057\:305f\:3002",
-          Italic, GrayLevel[0.4]]],
-        Print[Style["ClaudeOrchestrator: ClaudeRuntime auto-loaded.",
-          Italic, GrayLevel[0.4]]]]]]];
+      Print[Style[iL[
+        "ClaudeOrchestrator: ClaudeRuntime \:3092\:81ea\:52d5\:30ed\:30fc\:30c9\:3057\:307e\:3057\:305f\:3002",
+        "ClaudeOrchestrator: ClaudeRuntime auto-loaded."],
+        Italic, GrayLevel[0.4]]]]]];
 
 Print[Style[If[$Language === "Japanese",
   "ClaudeOrchestrator パッケージがロードされました。(v" <>

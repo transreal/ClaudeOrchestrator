@@ -56,6 +56,10 @@ claudecode
 
 `ClaudeRunOrchestrationAsync` は Planning → Spawn → Reduce → Commit の全フェーズを DAG コールバックチェーンで非同期実行し、呼び出し元をブロックせずに `orchJobId` を即座に返します。`ClaudeOrchestrationStatus`・`ClaudeOrchestrationResult`・`ClaudeOrchestrationWait`・`ClaudeOrchestrationCancel` でジョブのライフサイクルを制御できます。
 
+### ClaudeEval との統合
+
+**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** 具体的には、パッケージ読み込み時に `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべて `ClaudeRunOrchestrationAsync`（または `$ClaudeOrchestratorAsyncMode -> False` の場合は `ClaudeRunOrchestration`）経由で実行されます。ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
+
 ### Real LLM 統合
 
 `$ClaudeOrchestratorRealLLMEndpoint` を `"ClaudeCode"`（ClaudeCode パッケージ経由）・`"CLI"`（claude CLI を RunProcess で呼ぶ）・カスタム関数のいずれかに設定することで、実際の LLM をプランナーとして利用できます。デフォルト（`None`）はモックのみで動作するため、CI 環境でも安全に使用できます。Windows 環境では `claude.cmd` を自動検出し、UTF-8 の文字化けを防ぐためにファイル経由の stdout 取得方式（`chcp 65001` + リダイレクト）を採用しています。
@@ -227,6 +231,10 @@ result[["Status"]]
 - **`ClaudeOrchestrationJobs[]`** — 追跡中のジョブ一覧を Dataset で返します。
 - **`ClaudeContinueBatch[runtimeId, batchInstructions, opts]`** — 単一 runtime セッションを維持したまま、複数プロンプトを `ClaudeContinueTurn` で順次投入します。ノートブック共有問題を回避する現実解です。
 
+#### ClaudeEval との統合
+
+ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書きされ、`ClaudeEval[...]` はオーケストレーターパイプライン経由で実行されます。`$ClaudeOrchestratorAsyncMode` で同期／非同期を切り替えられます。
+
 #### Real LLM 統合・診断
 
 - **`ClaudeRealLLMAvailable[]`** — 実 LLM 統合が設定されているか確認します。
@@ -259,6 +267,49 @@ result[["Status"]]
 ---
 
 ## 使用例・デモ
+
+### ClaudeEval のオーケストレーター統合について
+
+**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** パッケージ読み込み時に内部フック `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべてマルチエージェントパイプライン経由で実行されます。
+
+- `$ClaudeOrchestratorAsyncMode -> True`（既定）の場合 → `ClaudeRunOrchestrationAsync` を使用（ノートブックをブロックしない）
+- `$ClaudeOrchestratorAsyncMode -> False` の場合 → `ClaudeRunOrchestration` を使用（完了まで待機）
+
+ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
+
+### 例 0: ClaudeEval がオーケストレーターに切り替わることの確認
+
+```mathematica
+(* ClaudeOrchestrator ロード前 — ClaudeRuntime ベースの ClaudeEval *)
+Needs["ClaudeRuntime`", "ClaudeRuntime.wl"];
+$ClaudeEvalHook  (* ClaudeRuntime 既定のフック *)
+
+(* ClaudeOrchestrator をロード *)
+Block[{$CharacterEncoding = "UTF-8"},
+  Needs["ClaudeOrchestrator`", "ClaudeOrchestrator.wl"]];
+
+(* ロード後 — $ClaudeEvalHook がオーケストレーターに置き換わっていることを確認 *)
+$ClaudeEvalHook
+(* ClaudeOrchestrator ベースのフック関数が返る *)
+
+(* 以降の ClaudeEval 呼び出しはすべてオーケストレーターパイプラインを通る *)
+ClaudeEval["フィボナッチ数列の最初の 10 項を求めて表示する"]
+(* → ClaudeRunOrchestrationAsync 経由で非同期実行される *)
+```
+
+### 例 0b: 同期モードへの切り替えと ClaudeEval
+
+```mathematica
+(* 同期モードに切り替える（スクリプト・テスト用途） *)
+$ClaudeOrchestratorAsyncMode = False;
+
+(* ClaudeEval が ClaudeRunOrchestration（同期）を使って実行される *)
+ClaudeEval["素数を 10 個求めよ"]
+(* → ClaudeRunOrchestration 経由で同期実行し、完了後に結果を返す *)
+
+(* 非同期モードに戻す *)
+$ClaudeOrchestratorAsyncMode = True;
+```
 
 ### 例 1: タスク分解（モックプランナー）
 
