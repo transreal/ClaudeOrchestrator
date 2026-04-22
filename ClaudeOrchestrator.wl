@@ -115,6 +115,30 @@ $ClaudeOrchestratorDenyHeads::usage =
   "(NotebookWrite, CreateNotebook, EvaluationNotebook, RunProcess,\n" <>
   " SystemCredential など)。";
 
+(* Phase 32 Task 3.2: Auto ゲート強化用の公開ターミナル定数 *)
+
+$ClaudeEvalAutoSkipKeywords::usage =
+  "$ClaudeEvalAutoSkipKeywords (Phase 32 Task 3.2) \:306f\:3001Auto \:30e2\:30fc\:30c9\:3067\n" <>
+  "\:77ed\:3044 factual query \:3092 Single \:30d1\:30b9\:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3055\:305b\:308b\:305f\:3081\:306e\n" <>
+  "\:30c6\:30af\:30cb\:30ab\:30eb\:30de\:30fc\:30ab\:30fc\:30ea\:30b9\:30c8 (\:30d1\:30c3\:30b1\:30fc\:30b8\:540d\:3001\:95a2\:6570\:540d\:3001\:62e1\:5f35\:5b50\:7b49)\:3002\n" <>
+  "\:3053\:308c\:3089\:306e\:30c8\:30fc\:30af\:30f3\:306e\:3044\:305a\:308c\:304b\:304c\:30d7\:30ed\:30f3\:30d7\:30c8\:306b\:542b\:307e\:308c\:3001\:304b\:3064\n" <>
+  "\:30bf\:30b9\:30af\:304c 300 \:6587\:5b57\:672a\:6e80\:30fb\:8907\:96d1\:3055\:6307\:6a19\:306a\:3057\:306e\:5834\:5408\:3001\n" <>
+  "\:305d\:306e\:30bf\:30b9\:30af\:306f Orchestrator \:7d4c\:8def\:3092\:901a\:3089\:305a\:3001\:5f93\:6765\:306e Single \:30d1\:30b9\:3067\n" <>
+  "\:76f4\:63a5\:51e6\:7406\:3055\:308c\:308b\:3002\:30e6\:30fc\:30b6\:306f\:30ea\:30b9\:30c8\:3092\:62e1\:5f35\:3057\:3066\:30d7\:30ed\:30b8\:30a7\:30af\:30c8\:56fa\:6709\:306e\n" <>
+  "\:7279\:6709\:540d\:79f0\:3092\:8ffd\:52a0\:3067\:304d\:308b\:3002";
+
+$ClaudeEvalAutoFactualEndings::usage =
+  "$ClaudeEvalAutoFactualEndings (Phase 32 Task 3.2) \:306f\:3001Auto \:30e2\:30fc\:30c9\:3067\n" <>
+  "Single \:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3055\:305b\:308b\:305f\:3081\:306e\:300c\:8abf\:67fb\:30fb\:8cea\:554f\:578b\:300d\:306e\:8a9e\:5c3e\:30fb\n" <>
+  "\:30d5\:30ec\:30fc\:30ba\:30ea\:30b9\:30c8\:300c\:3092\:8abf\:3079\:3066\:300d\:300c\:3092\:6559\:3048\:3066\:300dcheck if compare \:7b49\:3002";
+
+$ClaudeEvalAutoComplexMarkers::usage =
+  "$ClaudeEvalAutoComplexMarkers (Phase 32 Task 3.2) \:306f\:3001Orchestrator \:7d4c\:8def\:3092\n" <>
+  "\:901a\:3059\:3079\:304d\:300c\:8907\:96d1\:30bf\:30b9\:30af\:300d\:3092\:8b58\:5225\:3059\:308b\:305f\:3081\:306e\:30de\:30fc\:30ab\:30fc\:30ea\:30b9\:30c8\:3002\n" <>
+  "\:30b9\:30e9\:30a4\:30c9\:30fb\:30ec\:30dd\:30fc\:30c8\:30fb\:30d7\:30ec\:30bc\:30f3\:30fb\:8907\:6570\:306e\:6210\:679c\:7269\:8981\:6c42\:306a\:3069\:304c\n" <>
+  "\:3053\:3053\:306b\:542b\:307e\:308c\:308b\:3002\:3053\:308c\:3089\:304c\:30d7\:30ed\:30f3\:30d7\:30c8\:306b\:73fe\:308c\:308b\:3068\:3001\:77ed\:3044\:30bf\:30b9\:30af\:3067\:3082\n" <>
+  "Orchestrator \:7d4c\:8def\:3092\:901a\:3059\:3088\:3046\:306b\:306a\:308b\:3002";
+
 $ClaudeOrchestratorRealLLMEndpoint::usage =
   "$ClaudeOrchestratorRealLLMEndpoint (Task 2):\n" <>
   "  None      (既定): real LLM 統合テストをスキップ\n" <>
@@ -192,7 +216,7 @@ Begin["`Private`"];
 (* ── iL: $Language に基づく日英切替 ── *)
 iL[ja_String, en_String] := If[$Language === "Japanese", ja, en];
 
-$ClaudeOrchestratorVersion = "2026-04-21T20-bilingual-prompts";
+$ClaudeOrchestratorVersion = "2026-04-22T02-phase32-task3-2";
 
 (* ══════════════════════════════════════════════════════════════════════
    T08 (2026-04-19): Template inheritance + figure/image cell kinds +
@@ -1482,11 +1506,229 @@ iHeldExprContainsDenyHead[HoldComplete[expr_], denyList_List] :=
 
 iHeldExprContainsDenyHead[_, _] := False;
 
+(* ════════════════════════════════════════════════════════════════════
+   Phase 32 Task 3.1: Committer 自然言語 Input 流入防止
+   
+   Committer LLM は NotebookWrite[nb, Cell["...", "Input"]] の形で
+   自然言語を Input セルに書き込むことがある。Mathematica は Input
+   セル内の日本語シンボル空白区切りを Times[_Symbol, _Symbol, ...] の
+   Orderless 評価として扱い、辞書順ソート結果を Output として返すため、
+   観察者に「意味不明な文字列が出る」という紛らわしい成果物になる。
+   
+   これを防ぐため、Commit role の validator で HeldExpr 中の
+   Cell[s_String, "Input", ___] を列挙し、s を iIsPlausibleInputCellContent
+   で検査する。評価不能な自然言語が検出されれば Deny する。
+   ════════════════════════════════════════════════════════════════════ *)
+
+(* HeldExpr の中にある Cell[s_String, "Input", ___] の文字列内容を
+   すべて抽出する。held は HoldComplete[...] 前提。
+   Cases で Unevaluated[expr] を走査することで、評価せずに構造を拾う。 *)
+iHeldExprInputCellStrings[HoldComplete[expr_]] :=
+  Cases[Unevaluated[expr], Cell[s_String, "Input", ___] :> s,
+    {0, Infinity}, Heads -> True];
+
+iHeldExprInputCellStrings[_] := {};
+
+(* iIsPlausibleInputCellContent[s]: Cell[s, "Input"] の s が
+   実際に評価可能な Mathematica 式として妥当かを判定する。
+   
+   判定:
+   - 空文字列 / $Failed / Null 系は NG
+   - HoldComplete[Times[__Symbol]] (2 個以上のシンボル乗算) は NG
+     … これが「日本語シンボル空白区切り」の典型パターン
+   - Plus/CompoundExpression/Sequence の __Symbol パターンも NG
+   - それ以外 (関数呼び出し / 単独シンボル / 数値式 / 文字列など) は OK *)
+ClearAll[iIsPlausibleInputCellContent];
+
+iIsPlausibleInputCellContent[s_String] :=
+  Module[{trimmed, parsed},
+    trimmed = StringTrim[s];
+    If[trimmed === "", Return[False]];
+    
+    parsed = Quiet @ Check[
+      ToExpression[trimmed, InputForm, HoldComplete],
+      $Failed];
+    
+    Which[
+      parsed === $Failed,
+        False,
+      !MatchQ[parsed, HoldComplete[_]],
+        False,
+      MatchQ[parsed, HoldComplete[Null]],
+        False,
+      MatchQ[parsed, HoldComplete[Times[_Symbol, _Symbol, ___Symbol]]],
+        False,
+      MatchQ[parsed, HoldComplete[Plus[_Symbol, _Symbol, ___Symbol]]],
+        False,
+      MatchQ[parsed, HoldComplete[CompoundExpression[_Symbol, _Symbol, ___Symbol]]],
+        False,
+      MatchQ[parsed, HoldComplete[Sequence[_Symbol, _Symbol, ___Symbol]]],
+        False,
+      True,
+        True
+    ]
+  ];
+
+iIsPlausibleInputCellContent[_] := False;
+
+(* ════════════════════════════════════════════════════════════════════
+   Phase 32 Task 3.2: Auto ゲート強化
+   
+   短い factual query (例: "$packageDirectory の X が GitHub より新しいか
+   調べて") が Auto モードで Orchestrator 経路に乗ると、LLM Planner が
+   複数タスクに分解し、Worker が GitHub API を呼べないため部分情報しか
+   返せず、最終成果物がローカル調査だけで完結する破綻が起きる。
+   
+   claudecode.wl の Single パス (従来 ClaudeEval) は 1 ショットで
+   「既存関数 GitHubCommits を使ってローカル + GitHub 両方取る」コードを
+   生成できるので、短い factual query はそちらに落としたほうが良い。
+   
+   判定の 2 層:
+     (A) iHasComplexTaskMarker: 複雑タスク指標があれば Orchestrator 通過
+     (B) iIsShortFactualQuery: A に該当せず、かつ短く factual なら Single
+   
+   タスクはユーザプロンプトの性質によって次の 3 カテゴリに分かれる:
+     - 明確に複雑 (A=True)              → Orchestrator 通過
+     - 明確に短 factual (A=False, B=True) → Single フォールバック
+     - それ以外 (A=False, B=False)       → 既存の Auto gate (threshold 判定)
+   ════════════════════════════════════════════════════════════════════ *)
+
+(* テクニカルマーカー: 既存パッケージ/関数/拡張子など、
+   1 ショット Single で完結できる可能性が高いことを示唆するキーワード *)
+$ClaudeEvalAutoSkipKeywords = {
+  "$packageDirectory", "$UserDocumentsDirectory", "$UserBaseDirectory",
+  ".wl", ".nb", ".m", ".mx", ".wls", ".paclet",
+  "FileDate", "FileNames", "FileExistsQ", "DirectoryQ",
+  "GitHub", "github", "GitHubRefreshAndCommit", "GitHubCommits",
+  "GitHubUpdatePackage", "GitHubInstallPackage", "GitHubPullRequest",
+  "ClaudeCode", "ClaudeRuntime", "NBAccess", "ClaudeEval", "ClaudeQuery",
+  "ClaudeMath", "ContinueEval",
+  "claudecode", "documentation", "PDFIndex", "ClaudeOrchestrator",
+  "ClaudeTestKit", "paclet", "PacletInfo"
+};
+
+(* factual 語尾/フレーズ: 「調べて」「教えて」「compare」「check if」などの
+   単発問いかけに現れる表現。これらが末尾付近にあれば factual query と判断 *)
+$ClaudeEvalAutoFactualEndings = {
+  "\:3092\:8abf\:3079\:3066", "\:3092\:8abf\:3079\:308b", "\:3092\:8abf\:3079\:307e\:3057\:305f",
+  "\:3092\:6559\:3048\:3066", "\:3092\:6559\:3048\:308b",
+  "\:3092\:6bd4\:8f03\:3057\:3066", "\:3092\:6bd4\:8f03\:3059\:308b",
+  "\:3092\:78ba\:8a8d\:3057\:3066", "\:3092\:78ba\:8a8d\:3059\:308b",
+  "\:3092\:4e00\:89a7\:3057\:3066", "\:3092\:4e00\:89a7\:306b\:3057\:3066",
+  "\:3092\:8868\:793a\:3057\:3066", "\:3092\:8868\:793a\:3059\:308b",
+  "\:3092\:6c42\:3081\:3066", "\:3092\:6c42\:3081\:308b",
+  "\:3092\:8a08\:7b97\:3057\:3066", "\:3092\:8a08\:7b97\:3059\:308b",
+  "\:304b\:3069\:3046\:304b\:8abf\:3079", "\:306e\:304b\:3069\:3046\:304b\:78ba\:8a8d",
+  "\:306f\:4f55\:3067\:3059\:304b", "\:3067\:3059\:304b\:3002",
+  "check if", "compare", "list",
+  "find out", "look up", "tell me", "show me",
+  "what is", "what are", "how many",
+  "is there", "does it", "is it"
+};
+
+(* 複雑タスク指標: スライド/レポート生成、順序接続詞多用、番号付きリスト
+   などが現れるプロンプトは Orchestrator 経路に通したほうが良い *)
+$ClaudeEvalAutoComplexMarkers = {
+  "\:30b9\:30e9\:30a4\:30c9", "\:30d7\:30ec\:30bc\:30f3", "\:30ec\:30dd\:30fc\:30c8",
+  "\:5831\:544a\:66f8", "\:8ad6\:6587", "\:8a18\:4e8b", "\:30c9\:30ad\:30e5\:30e1\:30f3\:30c8",
+  "\:30da\:30fc\:30b8\:3092\:4f5c", "\:30d7\:30ec\:30bc\:30f3\:3092\:4f5c",
+  "slide", "Slide", "slides", "Slides", "SlideDraft", "SlideOutline",
+  "presentation", "Presentation",
+  "report", "Report", "article", "Article",
+  "\:6b21\:306b\:3001\:307e\:305f",  (* \:300c\:6b21\:306b\:3001\:307e\:305f\:300d sequential clause *)
+  "\:306f\:3058\:3081\:306b"
+};
+
+(* \:65e5\:672c\:8a9e\:306e\:9806\:5e8f\:63a5\:7d9a\:8a9e (\:4e8c\:500b\:4ee5\:4e0a\:3067\:8907\:96d1\:3068\:5224\:5b9a):
+   \:300c\:307e\:305a\:300d\:300c\:6b21\:306b\:300d\:300c\:305d\:308c\:304b\:3089\:300d\:300c\:305d\:306e\:6b21\:300d\:300c\:6700\:5f8c\:306b\:300d *)
+$iClaudeEvalAutoSequentialJa = {
+  "\:307e\:305a", "\:6b21\:306b", "\:305d\:308c\:304b\:3089", "\:305d\:306e\:6b21",
+  "\:305d\:306e\:3042\:3068", "\:6700\:5f8c\:306b", "\:3055\:3089\:306b", "\:3064\:3065\:3044\:3066"
+};
+
+$iClaudeEvalAutoSequentialEn = {
+  "first, ", "First, ", "then, ", "Then, ", "next, ", "Next, ",
+  "finally, ", "Finally, ", "afterward", "Afterward"
+};
+
+(* iContainsAnyLiteral[s, keywords]: s \:306b keywords \:5185\:306e\:3044\:305a\:308c\:304b\:304c
+   \:542b\:307e\:308c\:308b\:306a\:3089 True\:3002\:5358\:7d14\:306a StringContainsQ \:30d9\:30fc\:30b9 (\:6b63\:898f\:8868\:73fe\:3067\:306f\:306a\:3044)\:3002 *)
+iContainsAnyLiteral[s_String, keywords_List] :=
+  AnyTrue[keywords, StringContainsQ[s, #] &];
+
+iContainsAnyLiteral[_, _] := False;
+
+(* iCountAny[s, keywords]: keywords \:306e\:51fa\:73fe\:56de\:6570\:5408\:8a08\:3092\:8fd4\:3059 *)
+iCountAny[s_String, keywords_List] :=
+  Total[StringCount[s, #] & /@ keywords];
+
+iCountAny[_, _] := 0;
+
+(* iHasComplexTaskMarker[s]: \:77ed\:3044\:30d7\:30ed\:30f3\:30d7\:30c8\:3067\:3082 Orchestrator \:7d4c\:8def\:3092
+   \:901a\:3057\:305f\:307b\:3046\:304c\:3044\:3044\:300c\:8907\:96d1\:30bf\:30b9\:30af\:300d\:3092\:691c\:51fa *)
+iHasComplexTaskMarker[s_String] :=
+  Module[{len, nlCount, seqJaCount, seqEnCount, listFormat,
+          deliverableHit},
+    len = StringLength[s];
+    nlCount = StringCount[s, "\n"];
+    
+    (* \:9577\:3055\:3001\:591a\:884c\:3001\:660e\:3089\:304b\:306b\:5927\:304d\:3044\:5834\:5408\:306f\:7121\:6761\:4ef6\:3067\:8907\:96d1 *)
+    If[len >= 500, Return[True]];
+    If[nlCount >= 5, Return[True]];
+    
+    (* \:9806\:5e8f\:63a5\:7d9a\:8a9e\:304c 2 \:500b\:4ee5\:4e0a *)
+    seqJaCount = iCountAny[s, $iClaudeEvalAutoSequentialJa];
+    seqEnCount = iCountAny[s, $iClaudeEvalAutoSequentialEn];
+    If[seqJaCount + seqEnCount >= 2, Return[True]];
+    
+    (* \:756a\:53f7\:4ed8\:304d\:30ea\:30b9\:30c8\:30d1\:30bf\:30fc\:30f3: \:884c\:982d 1. 2. ... \:304c 2 \:4ef6\:4ee5\:4e0a *)
+    listFormat = Length[StringCases[s,
+      RegularExpression["(?m)^\\s*[1-9][0-9]?\\.\\s"]]];
+    If[listFormat >= 2, Return[True]];
+    
+    (* \:6210\:679c\:7269\:8981\:6c42\:30ad\:30fc\:30ef\:30fc\:30c9 (\:30b9\:30e9\:30a4\:30c9\:3001\:30ec\:30dd\:30fc\:30c8\:7b49) *)
+    deliverableHit = iContainsAnyLiteral[s, $ClaudeEvalAutoComplexMarkers];
+    If[TrueQ[deliverableHit], Return[True]];
+    
+    False
+  ];
+
+iHasComplexTaskMarker[_] := False;
+
+(* iIsShortFactualQuery[s]: \:77ed\:304f\:3066 factual \:306a query (Single \:306b\:5009\:3057\:306a\:308a\:307e
+   Orchestrator \:7d4c\:8def\:3092\:8df3\:3070\:3057\:3066 claudecode.wl \:306e\:5f93\:6765\:5b9f\:88c5\:3092\:4f7f\:3046\:65b9\:304c
+   \:3046\:307e\:304f\:3044\:304f case) \:3092\:8b58\:5225\:3059\:308b\:3002
+   
+   True \:3068\:306a\:308b\:6761\:4ef6:
+     - StringLength[s] < 300
+     - iHasComplexTaskMarker[s] == False
+     - (\:30c6\:30af\:30cb\:30ab\:30eb\:30de\:30fc\:30ab\:30fc\:304c\:542b\:307e\:308c\:308b) \:307e\:305f\:306f
+       (factual \:8a9e\:5c3e\:30d5\:30ec\:30fc\:30ba\:304c\:542b\:307e\:308c\:308b)
+   
+   \:9577\:3044\:30bf\:30b9\:30af\:3084\:8907\:96d1\:30bf\:30b9\:30af\:3001\:30de\:30fc\:30ab\:30fc\:304c\:898b\:3064\:304b\:3089\:306a\:3044\:77ed\:30bf\:30b9\:30af\:306f
+   False \:3092\:8fd4\:3057\:3001\:547c\:3073\:51fa\:3057\:5143\:306f\:65e2\:5b58\:306e Auto gate \:5224\:5b9a\:306b\:9032\:3080\:3002 *)
+iIsShortFactualQuery[s_String] :=
+  Module[{len, hasTechMarker, hasFactualEnding},
+    len = StringLength[s];
+    If[len >= 300, Return[False]];
+    If[len < 10, Return[False]];
+    
+    If[TrueQ[iHasComplexTaskMarker[s]], Return[False]];
+    
+    hasTechMarker    = iContainsAnyLiteral[s, $ClaudeEvalAutoSkipKeywords];
+    hasFactualEnding = iContainsAnyLiteral[s, $ClaudeEvalAutoFactualEndings];
+    
+    TrueQ[hasTechMarker] || TrueQ[hasFactualEnding]
+  ];
+
+iIsShortFactualQuery[_] := False;
+
 (* iValidateWorkerProposal: worker 用 proposal 検証。
    deny head を含んでいたら Deny を返す。 *)
 iValidateWorkerProposal[proposal_Association, contextPacket_,
     role_String] :=
-  Module[{held, denyList, hit},
+  Module[{held, denyList, hit, inputCellStrings, badStrings,
+          firstBadPreview},
     held = Lookup[proposal, "HeldExpr", None];
     If[held === None || !MatchQ[held, HoldComplete[_]],
       (* 提案がなければ何も検証しない (text-only 応答は許容) *)
@@ -1512,6 +1754,26 @@ iValidateWorkerProposal[proposal_Association, contextPacket_,
              "Worker cannot use NotebookWrite / CreateNotebook / RunProcess etc. Respond with an artifact instead."],
         "SanitizedExpr" -> None
       |>]];
+    
+    (* Phase 32 Task 3.1: Commit role のとき Cell[_, "Input"] の
+       中身が実際に評価可能な Mathematica 式であるかを検査。
+       自然言語が混入している提案は Deny する。 *)
+    If[role === "Commit",
+      inputCellStrings = iHeldExprInputCellStrings[held];
+      badStrings = Select[inputCellStrings,
+        ! TrueQ[iIsPlausibleInputCellContent[#]] &];
+      If[Length[badStrings] > 0,
+        firstBadPreview = StringTake[First[badStrings],
+          UpTo[80]];
+        Return[<|
+          "Decision"    -> "Deny",
+          "ReasonClass" -> "NaturalLanguageInInputCell",
+          "VisibleExplanation" ->
+            iL["Cell[..., \"Input\"] \:306b\:8a55\:4fa1\:4e0d\:80fd\:306a\:5185\:5bb9\:304c\:542b\:307e\:308c\:3066\:3044\:307e\:3059\:3002\:81ea\:7136\:8a00\:8a9e\:306f \"Text\" \:30b9\:30bf\:30a4\:30eb\:3067\:66f8\:3044\:3066\:304f\:3060\:3055\:3044\:3002\:8a72\:5f53\:30bb\:30eb\:5148\:982d: " <> firstBadPreview,
+               "Cell[..., \"Input\"] contains non-evaluable content. Use \"Text\" style for natural-language prose. First offender (prefix): " <> firstBadPreview],
+          "SanitizedExpr"    -> None,
+          "OffendingStrings" -> badStrings
+        |>]]];
     
     <|
       "Decision"           -> "Permit",
@@ -3900,8 +4162,14 @@ iBuildCommitterHint[reducedArtifact_Association, targetNb_] :=
         "   NotebookClose / Export \:306a\:3069\:306e\:30d5\:30a1\:30a4\:30eb I/O \:306f\:4e00\:5207\:547c\:3070\:306a\:3044\:3002\n",
         "4. payload \:5185\:306e\:3059\:3079\:3066\:306e\:9805\:76ee\:306b\:5bfe\:3057 Cell \:3092\:66f8\:304d\:7d42\:3048\:308b\:307e\:3067\n",
         "   [DONE] \:3092\:51fa\:3055\:306a\:3044\:3002\n",
-        "5. \:30bb\:30eb\:306e\:30b9\:30bf\:30a4\:30eb\:306f \"Title\" / \"Section\" / \"Subsection\" /\n",
-        "   \"Text\" / \"Code\" / \"Input\" \:306a\:3069\:3001\:9069\:5207\:306a\:3082\:306e\:3092\:9078\:3076\:3002\n",
+        "5. \:30bb\:30eb\:306e\:30b9\:30bf\:30a4\:30eb: \"Title\" / \"Section\" / \"Subsection\" /\n",
+        "   \"Text\" / \"Code\" / \"Input\" \:3092\:9069\:5207\:306b\:9078\:3076\:3002\n",
+        "5a. [\:91cd\:8981] Cell[..., \"Input\"] \:306b\:306f\:8a55\:4fa1\:53ef\:80fd\:306a Mathematica \:5f0f\:306e\:307f\n",
+        "    \:5165\:308c\:308b\:3002\:4f8b: Cell[\"Plot[Sin[x], {x, 0, 2 Pi}]\", \"Input\"]\:3002\n",
+        "    \:81ea\:7136\:8a00\:8a9e (\:30bf\:30a4\:30c8\:30eb\:3001\:8aac\:660e\:3001\:672c\:6587\:3001\:8a08\:753b\:3001\n",
+        "    \:300c\:6b21\:306b...\:300d\:306e\:3088\:3046\:306a\:601d\:8003\:904e\:7a0b\:7b49) \:306f\:5fc5\:305a\n",
+        "    Cell[..., \"Text\"] \:306b\:5165\:308c\:308b\:3002\:81ea\:7136\:8a00\:8a9e\:3092 \"Input\" \:306b\n",
+        "    \:5165\:308c\:305f\:63d0\:6848\:306f validator \:3067 Deny \:3055\:308c\:3001\:5b9f\:884c\:3055\:308c\:306a\:3044\:3002\n",
         "6. \:9805\:76ee\:306b {Title, Body, Code, ...} \:306e\:30b5\:30d6\:30d5\:30a3\:30fc\:30eb\:30c9\:304c\:3042\:308c\:3070\:3001\n",
         "   \:305d\:306e\:9805\:76ee\:306b\:3064\:304d\:8907\:6570\:306e NotebookWrite \:3092\:767a\:884c\:3059\:308b\:3002\n",
         "7. \:5024\:304c\:4e0d\:78ba\:304b\:306a\:5834\:5408\:306f \"Text\" \:30b9\:30bf\:30a4\:30eb\:306e Cell \:306b\n",
@@ -3938,8 +4206,15 @@ iBuildCommitterHint[reducedArtifact_Association, targetNb_] :=
         "NotebookSave, NotebookClose, Export, or any file I/O.\n",
         "4. Do NOT produce [DONE] until you have written one Cell for ",
         "every item in the payload below.\n",
-        "5. Prefer cell styles \"Title\" / \"Section\" / \"Subsection\" / ",
+        "5. Cell styles: \"Title\" / \"Section\" / \"Subsection\" / ",
         "\"Text\" / \"Code\" / \"Input\" as appropriate.\n",
+        "5a. [CRITICAL] Cell[..., \"Input\"] MUST contain ONLY an evaluable ",
+        "Mathematica expression, e.g. Cell[\"Plot[Sin[x], {x, 0, 2 Pi}]\", \"Input\"]. ",
+        "Never put natural-language prose (titles, explanations, body text, ",
+        "plans, \"Next I will...\" style thinking-aloud) into \"Input\" cells. ",
+        "Such prose MUST go into Cell[..., \"Text\"]. Proposals that place ",
+        "natural-language content inside \"Input\" cells are rejected by the ",
+        "validator and will not be executed.\n",
         "6. If an item has {Title, Body, Code, ...} sub-fields, emit ",
         "MULTIPLE NotebookWrite calls for that item (title + body + code etc.).\n",
         "7. If you are unsure about a value, emit a Cell with \"Text\" ",
@@ -6787,6 +7062,19 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
             taskLen = StringLength[taskStr];
             nlCount = StringCount[taskStr, "\n"];
             gatePass = (taskLen >= minLen) || (nlCount >= minNL);
+            (* Phase 32 Task 3.2: \:77ed factual query \:65e9\:671f bypass\:3002
+               \:8907\:96d1\:30bf\:30b9\:30af\:6307\:6a19\:304c\:306a\:3044\:77ed\:3044\:30c6\:30af\:30cb\:30ab\:30eb query \:306f
+               Orchestrator \:7d4c\:8def\:3092\:8df3\:3070\:3057\:3066 Single \:30d1\:30b9 (claudecode.wl
+               \:5f93\:6765\:5b9f\:88c5) \:3067\:51e6\:7406\:3059\:308b\:3002 *)
+            If[gatePass && TrueQ[iIsShortFactualQuery[taskStr]],
+              If[verbose,
+                Print[Style[iL[
+                  "[ClaudeEval\:2192Orchestrator] Auto Task3.2: short factual query \:691c\:51fa len=" <>
+                    ToString[taskLen] <> " \:2192 Orchestrator bypass, Single \:30d1\:30b9\:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3002",
+                  "[ClaudeEval\:2192Orchestrator] Auto Task3.2: detected short factual query len=" <>
+                    ToString[taskLen] <> " \:2192 bypassing Orchestrator, falling back to Single path."],
+                  Italic, GrayLevel[0.4]]]];
+              gatePass = False];
             If[!gatePass,
               (* \:8efd\:91cf\:30bf\:30b9\:30af: planner \:3092\:547c\:3070\:305a\:306b\:5373 Single *)
               If[verbose,
