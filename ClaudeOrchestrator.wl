@@ -216,7 +216,7 @@ Begin["`Private`"];
 (* ── iL: $Language に基づく日英切替 ── *)
 iL[ja_String, en_String] := If[$Language === "Japanese", ja, en];
 
-$ClaudeOrchestratorVersion = "2026-04-22T02-phase32-task3-2";
+$ClaudeOrchestratorVersion = "2026-04-28-phase36-lmstudio-worker-async";
 
 (* ══════════════════════════════════════════════════════════════════════
    T08 (2026-04-19): Template inheritance + figure/image cell kinds +
@@ -1395,8 +1395,15 @@ iLLMPlannerFn[input_, plannerOpts_Association] :=
     
     (* LLM \:306b\:554f\:3044\:5408\:308f\:305b *)
     response = If[queryFn === Automatic,
-      (* T27: \:516c\:958b API ClaudeQueryBg (\:540c\:671f) \:3092\:4f7f\:7528\:3002
-         ClaudeQuery \:306f\:975e\:540c\:671f\:306a\:306e\:3067 Bg \:306b\:5909\:66f4\:3057\:3066 string \:3092\:78ba\:5b9f\:306b\:8fd4\:3059\:3002 *)
+      (* T27: \:516c\:958b API ClaudeQueryBg (\:540c\:671f) \:3092\:4f7f\:7528\u3002
+         ClaudeQuery \:306f\:975e\:540c\:671f\:306a\:306e\:3067 Bg \:306b\:5909\:66f4\:3057\:3066 string \:3092\:78ba\:5b9f\:306b\:8fd4\:3059\u3002
+         
+         \:6ce8: \:3053\:306e\:540c\:671f\:7d4c\:8def\:306f\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30bb\:30eb\:3067\:76f4\:63a5\:8a55\:4fa1\:3055\:308c\:308b\:3068
+         \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:3092\:30d6\:30ed\:30c3\:30af\:3059\:308b (rules/95 \:7bc0 A) \u3002
+         \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:975e\:30d6\:30ed\:30c3\:30af\:304c\:5fc5\:8981\:306a\:5834\:5408\:306f
+         ClaudeRunOrchestrationAsync["...", "Planner" -> "LLM"] \:3092\:4f7f\:3046\u3002
+         \:305d\:3061\:3089\:306f iLaunchPlanPhase (LMStudio + CLI \:4e21\:5bfe\:5fdc) \:3092\:7d4c\:7531\:3057
+         DAG ScheduledTask \:7d4c\:8def\:3067\:771f\:306e\:975e\:540c\:671f\:5b9f\:884c\:3055\:308c\:308b\u3002 *)
       Quiet @ Check[
         ClaudeCode`ClaudeQueryBg[prompt],
         $Failed],
@@ -2037,7 +2044,16 @@ iWorkerBuildSystemPrompt[role_String, task_Association,
       "{{DEPENDENCY_SECTION}}" -> depSection
     }];
     
-    If[slideHint =!= "",
+        (* === A4 hook: role 別 directive prefix 注入 === *)
+    If[Length[Names["ClaudeOrchestrator`A4InjectDirectivePrefix"]] > 0,
+      prompt = Quiet @ Check[
+        ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role,
+          ClaudeOrchestrator`A4ResolveModelForRole[role, Automatic],
+          ToString[Lookup[task, "Goal", ""]]],
+        prompt]];
+    (* === /A4 hook === *)
+    
+If[slideHint =!= "",
       prompt = prompt <> "\n\n" <> slideHint];
     
     prompt
@@ -2373,7 +2389,14 @@ iLLMWorkerAdapterBuilder[role_String, task_Association,
   Module[{queryFn, workerPrompt, outputSchema, adapter, jsonRetryMax,
           schemaKeys, refText},
     queryFn      = OptionValue["QueryFunction"];
-    outputSchema = Lookup[task, "OutputSchema", <||>];
+        (* === A4 hook: role 別 Model に応じて queryFn を解決 === *)
+    If[Length[Names["ClaudeOrchestrator`A4ResolveQueryFnForRole"]] > 0,
+      queryFn = Quiet @ Check[
+        ClaudeOrchestrator`A4ResolveQueryFnForRole[
+          queryFn, OptionValue["Model"], role]["QueryFunction"],
+        queryFn]];
+    (* === /A4 hook === *)
+outputSchema = Lookup[task, "OutputSchema", <||>];
     jsonRetryMax = Max[1, OptionValue["JSONRetryMax"]];
     refText      = OptionValue["ReferenceText"];
     schemaKeys   = If[AssociationQ[outputSchema], Keys[outputSchema], {}];
@@ -2681,35 +2704,113 @@ iLaunchSingleWorker[task_Association, builder_, queryFn_,
       Return[iRunSingleWorkerSync[task, builder, queryFn,
         depArtifacts, jsonRetryMax, refText]]];
     
-    batFile = Quiet @ Check[
-      ClaudeCode`iMakeBat[promptFile, outFile, {}, False, {}],
-      $Failed];
-    If[!StringQ[batFile] || !FileExistsQ[batFile],
-      Quiet @ DeleteFile[promptFile];
-      Return[iRunSingleWorkerSync[task, builder, queryFn,
-        depArtifacts, jsonRetryMax, refText]]];
-    
-    proc = Quiet @ Check[
-      RunProcess[{"cmd", "/c", batFile},
-        ProcessDirectory -> workDir,
-        "Process"],
-      $Failed];
-    If[proc === $Failed || !MatchQ[proc, _ProcessObject],
-      Quiet @ DeleteFile[promptFile];
-      Quiet @ DeleteFile[batFile];
-      Return[iRunSingleWorkerSync[task, builder, queryFn,
-        depArtifacts, jsonRetryMax, refText]]];
-    
-    (* runState: parseFn closure \:306b adapter \:3068 task \:3092\:6355\:6349\:3055\:305b\:308b *)
-    With[{tsk = task, adp = adapter},
-      <|"proc"       -> proc,
-        "outFile"    -> outFile,
-        "batFile"    -> batFile,
-        "promptFile" -> promptFile,
-        "startTime"  -> AbsoluteTime[],
-        "timeout"    -> 1200,
-        "parseFn"    -> Function[{raw},
-          iParseWorkerResult[tsk, adp, raw]]|>]
+    (* ───────────────────────────────────────────────
+       v2026-04-28 (Phase 36 §9.2 A): モデル振り分け。
+       $ClaudeModel がリスト形式 ({"lmstudio", model, url} 等) なら
+       LMStudio (ローカル LLM) 経路、それ以外 (Automatic / 文字列)
+       は従来の Claude CLI 経路。
+       
+       LMStudio 経路は claudecode の動作実証済み async 基盤
+       iStartFallbackAsync を使う。同期 API 互換のため、
+       ダミーの長時間プロセス (timeout cmd) を proc キーに置き、
+       callback で outFile を書きダミー proc を Kill することで
+       iLLMGraphDAGTick の deferred sync runState 仕様を満たす。
+       ─────────────────────────────────────────────── *)
+    Module[{modelSpec = $ClaudeModel, useLMStudio, nb,
+            dummyProc, errFile},
+      useLMStudio = ListQ[modelSpec] && Length[modelSpec] >= 2 &&
+                    StringQ[modelSpec[[1]]] &&
+                    ToLowerCase[modelSpec[[1]]] === "lmstudio";
+      
+      If[useLMStudio,
+        (* ─── LMStudio 経路: iStartFallbackAsync ─── *)
+        nb = Quiet @ Check[
+          ClaudeCode`Private`iUserNotebook[],
+          Quiet @ Check[EvaluationNotebook[], $Failed]];
+        If[!MatchQ[nb, _NotebookObject],
+          Quiet @ DeleteFile[promptFile];
+          Return[iRunSingleWorkerSync[task, builder, queryFn,
+            depArtifacts, jsonRetryMax, refText]]];
+        
+        (* ダミーの長時間プロセスを起動 (proc キー用) :
+           timeout コマンドで 1200 秒待つ。callback で KillProcess して終了させる。
+           これで iICollectChunkResult の ProcessStatus[proc] === "Finished"
+           判定が成立する。 *)
+        dummyProc = Quiet @ Check[
+          StartProcess[{"cmd", "/c",
+            "timeout /t 1200 /nobreak >nul"}],
+          $Failed];
+        If[dummyProc === $Failed || !MatchQ[dummyProc, _ProcessObject],
+          Quiet @ DeleteFile[promptFile];
+          Return[iRunSingleWorkerSync[task, builder, queryFn,
+            depArtifacts, jsonRetryMax, refText]]];
+        
+        errFile = FileNameJoin[{workDir,
+          "orch_worker_err_" <> uniqueTag <> ".txt"}];
+        
+        (* iStartFallbackAsync で本命の LLM 呼び出しを起動。
+           callback で outFile に raw 応答を書き、ダミー proc を Kill する
+           ことで DAG tick が「完了」を検出する。 *)
+        With[{ofile = outFile, dproc = dummyProc, mdl = modelSpec,
+              evalNb = nb},
+          ClaudeCode`Private`iStartFallbackAsync[
+            prompt, evalNb,
+            Function[rawResp,
+              (* outFile に応答を書く (StringQ でないときは空文字列) *)
+              Quiet @ Check[
+                Export[ofile,
+                  If[StringQ[rawResp], rawResp, ""],
+                  "Text", CharacterEncoding -> "UTF-8"],
+                Null];
+              (* ダミー proc を Kill して "Finished" にする *)
+              Quiet @ KillProcess[dproc]
+            ],
+            {mdl}]
+        ];
+        
+        (* deferred sync runState (LMStudio 版) *)
+        With[{tsk = task, adp = adapter},
+          <|"proc"       -> dummyProc,
+            "outFile"    -> outFile,
+            "errFile"    -> errFile,
+            "promptFile" -> promptFile,
+            "startTime"  -> AbsoluteTime[],
+            "timeout"    -> 1200,
+            "parseFn"    -> Function[{raw},
+              iParseWorkerResult[tsk, adp, raw]]|>],
+        
+        (* ─── Claude CLI 経路 (従来) ─── *)
+        batFile = Quiet @ Check[
+          ClaudeCode`iMakeBat[promptFile, outFile, {}, False, {}],
+          $Failed];
+        If[!StringQ[batFile] || !FileExistsQ[batFile],
+          Quiet @ DeleteFile[promptFile];
+          Return[iRunSingleWorkerSync[task, builder, queryFn,
+            depArtifacts, jsonRetryMax, refText]]];
+        
+        proc = Quiet @ Check[
+          RunProcess[{"cmd", "/c", batFile},
+            ProcessDirectory -> workDir,
+            "Process"],
+          $Failed];
+        If[proc === $Failed || !MatchQ[proc, _ProcessObject],
+          Quiet @ DeleteFile[promptFile];
+          Quiet @ DeleteFile[batFile];
+          Return[iRunSingleWorkerSync[task, builder, queryFn,
+            depArtifacts, jsonRetryMax, refText]]];
+        
+        (* runState (CLI 版): parseFn closure に adapter と task を捕捉させる *)
+        With[{tsk = task, adp = adapter},
+          <|"proc"       -> proc,
+            "outFile"    -> outFile,
+            "batFile"    -> batFile,
+            "promptFile" -> promptFile,
+            "startTime"  -> AbsoluteTime[],
+            "timeout"    -> 1200,
+            "parseFn"    -> Function[{raw},
+              iParseWorkerResult[tsk, adp, raw]]|>]
+      ]
+    ]
   ];
 
 (* \:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500
@@ -5707,7 +5808,7 @@ iRunPlanPhaseSync[orchId_String] :=
 iLaunchPlanPhase[orchId_String] :=
   Module[{state, input, optsList, planner, maxTasks, queryFn,
           prompt, plannerOpts, promptFile, outFile, batFile, proc,
-          workDir, uniqueTag},
+          workDir, uniqueTag, modelSpec, useLMStudio, nb},
     state    = iOrchGet[orchId];
     If[!AssociationQ[state], Return[iRunPlanPhaseSync[orchId]]];
     input    = Lookup[state, "Input", ""];
@@ -5733,47 +5834,121 @@ iLaunchPlanPhase[orchId_String] :=
       workDir = $TemporaryDirectory];
     
     uniqueTag = orchId <> "_" <> ToString[RandomInteger[999999]];
-    promptFile = FileNameJoin[{workDir,
-      "orch_plan_prompt_" <> uniqueTag <> ".txt"}];
-    outFile = FileNameJoin[{workDir,
-      "orch_plan_out_" <> uniqueTag <> ".txt"}];
     
-    Quiet @ Check[
-      Export[promptFile, prompt, "Text",
-        CharacterEncoding -> "UTF-8"], $Failed];
-    If[!FileExistsQ[promptFile],
-      Return[iRunPlanPhaseSync[orchId]]];
+    (* ───────────────────────────────────────
+       v2026-04-28 (Phase 36 §9.2 A): モデル振り分け。
+       $ClaudeModel がリスト形式 ({"lmstudio", model, url} 等) なら
+       LMStudio (ローカル LLM) 経路、それ以外 (Automatic / 文字列)
+       は従来の Claude CLI 経路。
+       
+       LMStudio 経路も PowerShell スクリプトを StartProcess で起動し、
+       同じ <|proc, outFile|> 形式の deferred sync runState を返すので
+       iLLMGraphDAGTick 側は同じコードで完了判定・結果収集する。
+       ─────────────────────────────────────── *)
+    modelSpec = $ClaudeModel;
+    useLMStudio = ListQ[modelSpec] && Length[modelSpec] >= 2 &&
+                  StringQ[modelSpec[[1]]] &&
+                  ToLowerCase[modelSpec[[1]]] === "lmstudio";
     
-    batFile = Quiet @ Check[
-      ClaudeCode`iMakeBat[promptFile, outFile, {}, False, {}],
-      $Failed];
-    If[!StringQ[batFile] || !FileExistsQ[batFile],
-      Quiet @ DeleteFile[promptFile];
-      Return[iRunPlanPhaseSync[orchId]]];
+    (* notebook 取得 (iStartFallbackAsync が必要、CLI 経路では使用しない) *)
+    nb = Quiet @ Check[
+      ClaudeCode`Private`iUserNotebook[],
+      Quiet @ Check[EvaluationNotebook[], $Failed]];
     
-    proc = Quiet @ Check[
-      RunProcess[{"cmd", "/c", batFile},
-        ProcessDirectory -> workDir,
-        "Process"],
-      $Failed];
-    If[proc === $Failed || !MatchQ[proc, _ProcessObject],
-      Quiet @ DeleteFile[promptFile];
-      Quiet @ DeleteFile[batFile];
-      Return[iRunPlanPhaseSync[orchId]]];
-    
-    (* deferred sync runState \:3092\:8fd4\:3059\:3002
-       iLLMGraphDAGTick \:304c\:3053\:308c\:3092 running \:72b6\:614b\:306b\:9077\:79fb\:3055\:305b\:3001
-       iICollectChunkResult \:3067\:30dd\:30fc\:30ea\:30f3\:30b0\:3059\:308b\:3002
-       \:5b8c\:4e86\:6642 parseFn (iParsePlanResult) \:304c raw response \:3092 planResult \:306b\:5909\:63db\:3059\:308b\:3002 *)
-    With[{oid = orchId, mxt = maxTasks},
-      <|"proc"       -> proc,
-        "outFile"    -> outFile,
-        "batFile"    -> batFile,
-        "promptFile" -> promptFile,
-        "startTime"  -> AbsoluteTime[],
-        "timeout"    -> 1200,
-        "parseFn"    -> Function[{raw},
-          iParsePlanResult[oid, raw, mxt]]|>]
+    If[useLMStudio,
+      (* ─── LMStudio 経路: iStartFallbackAsync + ダミー proc パターン。
+         worker (iLaunchSingleWorker) と全く同じ仕組みで、DAG tick の
+         deferred sync runState 仕様を満たす。
+         
+         1. ダミーの長時間プロセス (timeout cmd) を proc キーに置く
+         2. iStartFallbackAsync で本命 LLM 呼び出しを起動
+         3. callback で outFile に応答を書き、ダミー proc を Kill
+         4. DAG tick が ProcessStatus[proc] === "Finished" を検出
+         5. parseFn (iParsePlanResult) で構造化 → ノード result セット
+         6. DAG onComplete -> iOnPlanComplete -> Spawn フェーズ駆動
+         ─── *)
+      Module[{dummyProc, errFile, planOutFile},
+        planOutFile = FileNameJoin[{workDir,
+          "orch_plan_out_" <> uniqueTag <> ".txt"}];
+        errFile = FileNameJoin[{workDir,
+          "orch_plan_err_" <> uniqueTag <> ".txt"}];
+        
+        dummyProc = Quiet @ Check[
+          StartProcess[{"cmd", "/c",
+            "timeout /t 1200 /nobreak >nul"}],
+          $Failed];
+        If[dummyProc === $Failed || !MatchQ[dummyProc, _ProcessObject],
+          Return[iRunPlanPhaseSync[orchId]]];
+        
+        With[{ofile = planOutFile, dproc = dummyProc, mdl = modelSpec,
+              evalNb = nb},
+          ClaudeCode`Private`iStartFallbackAsync[
+            prompt,
+            If[MatchQ[evalNb, _NotebookObject],
+               evalNb,
+               Quiet @ Check[EvaluationNotebook[], $Failed]],
+            Function[rawResp,
+              Quiet @ Check[
+                Export[ofile,
+                  If[StringQ[rawResp], rawResp, ""],
+                  "Text", CharacterEncoding -> "UTF-8"],
+                Null];
+              Quiet @ KillProcess[dproc]
+            ],
+            {mdl}]
+        ];
+        
+        (* deferred sync runState (LMStudio 版) *)
+        With[{oid = orchId, mxt = maxTasks},
+          <|"proc"       -> dummyProc,
+            "outFile"    -> planOutFile,
+            "errFile"    -> errFile,
+            "startTime"  -> AbsoluteTime[],
+            "timeout"    -> 1200,
+            "parseFn"    -> Function[{raw},
+              iParsePlanResult[oid, raw, mxt]]|>]
+      ],
+      
+      (* ─── Claude CLI 経路 (従来) ─── *)
+      promptFile = FileNameJoin[{workDir,
+        "orch_plan_prompt_" <> uniqueTag <> ".txt"}];
+      outFile = FileNameJoin[{workDir,
+        "orch_plan_out_" <> uniqueTag <> ".txt"}];
+      
+      Quiet @ Check[
+        Export[promptFile, prompt, "Text",
+          CharacterEncoding -> "UTF-8"], $Failed];
+      If[!FileExistsQ[promptFile],
+        Return[iRunPlanPhaseSync[orchId]]];
+      
+      batFile = Quiet @ Check[
+        ClaudeCode`iMakeBat[promptFile, outFile, {}, False, {}],
+        $Failed];
+      If[!StringQ[batFile] || !FileExistsQ[batFile],
+        Quiet @ DeleteFile[promptFile];
+        Return[iRunPlanPhaseSync[orchId]]];
+      
+      proc = Quiet @ Check[
+        RunProcess[{"cmd", "/c", batFile},
+          ProcessDirectory -> workDir,
+          "Process"],
+        $Failed];
+      If[proc === $Failed || !MatchQ[proc, _ProcessObject],
+        Quiet @ DeleteFile[promptFile];
+        Quiet @ DeleteFile[batFile];
+        Return[iRunPlanPhaseSync[orchId]]];
+      
+      (* deferred sync runState (CLI 版) *)
+      With[{oid = orchId, mxt = maxTasks},
+        <|"proc"       -> proc,
+          "outFile"    -> outFile,
+          "batFile"    -> batFile,
+          "promptFile" -> promptFile,
+          "startTime"  -> AbsoluteTime[],
+          "timeout"    -> 1200,
+          "parseFn"    -> Function[{raw},
+            iParsePlanResult[oid, raw, mxt]]|>]
+    ]
   ];
 
 (* \:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500
@@ -7241,87 +7416,1728 @@ If[!ClaudeOrchestrator`Private`iRuntimeLoadedQ[],
         "ClaudeOrchestrator: ClaudeRuntime \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557\:3002Orchestration \:306f\:4f7f\:3048\:307e\:305b\:3093 (Single \:306f\:5f71\:97ff\:306a\:3057)\:3002",
         "ClaudeOrchestrator: Failed to auto-load ClaudeRuntime. Orchestration unavailable (Single unaffected)."],
         RGBColor[0.8, 0.5, 0]]],
-      Print[Style[iL[
-        "ClaudeOrchestrator: ClaudeRuntime \:3092\:81ea\:52d5\:30ed\:30fc\:30c9\:3057\:307e\:3057\:305f\:3002",
-        "ClaudeOrchestrator: ClaudeRuntime auto-loaded."],
-        Italic, GrayLevel[0.4]]]]]];
+      Null]]];
 
-Print[Style[If[$Language === "Japanese",
-  "ClaudeOrchestrator パッケージがロードされました。(v" <>
-    ClaudeOrchestrator`$ClaudeOrchestratorVersion <> ")",
-  "ClaudeOrchestrator package loaded. (v" <>
-    ClaudeOrchestrator`$ClaudeOrchestratorVersion <> ")"], Bold]];
+(* ロード完了メッセージは廃止 (2026-04-29).
+   失敗時の警告メッセージのみ残す。
+   バージョン情報は ClaudeOrchestrator`$ClaudeOrchestratorVersion 変数で参照可能。 *)
 
-Print[If[$Language === "Japanese", "
-  ClaudePlanTasks[input]                      \[Rule] TaskSpec DAG \:751f\:6210
-  ClaudePlanTasks[input, \"Planner\"->\"LLM\"]   \[Rule] LLM \:3067\:30bf\:30b9\:30af\:5206\:89e3 (Stage 2 / 3.5c \:65e5\:8a9e\:6700\:9069\:5316)
-  ClaudeValidateTaskSpec[taskSpec]            \[Rule] TaskSpec \:691c\:8a3c
-  ClaudeSpawnWorkers[tasksSpec]               \[Rule] artifact \:53ce\:96c6 (worker \:306f NotebookWrite \:7981\:6b62)
-  ClaudeSpawnWorkers[ts, \"WorkerAdapterBuilder\"->\"LLM\",\n                      \"JSONRetryMax\"->2]
-                                              \[Rule] LLM worker + JSON \:518d\:8a66\:884c (Stage 3.5a)
-  ClaudeSpawnWorkers[ts, \"MaxParallelism\"->4] \[Rule] LLMGraphDAGCreate \:3067\:4e26\:5217\:914d\:8eca (Stage 3.5b)
-  ClaudeCollectArtifacts[spawnResult]         \[Rule] artifact \:3092 Dataset \:306b\:6574\:5f62
-  ClaudeValidateArtifact[artifact, schema]    \[Rule] OutputSchema \:6e96\:62e0\:30c1\:30a7\:30c3\:30af
-  ClaudeReduceArtifacts[artifacts]            \[Rule] artifact \:7fa4\:3092\:7d71\:5408 (reducer)
-  ClaudeCommitArtifacts[targetNb, reduced]    \[Rule] committer \:304c notebook \:306b\:53cd\:6620 (Stage 3 \:5b8c\:5168\:7248)
-  ClaudeRunOrchestration[input]               \[Rule] Plan -> Spawn -> Reduce -> Commit
-  ClaudeContinueBatch[rid, batches]           \[Rule] \:5358\:4e00 runtime \:3067\:6bb5\:968e\:5b9f\:884c (\:73fe\:5b9f\:89e3)
+
+
+(* ====================================================================
+   PHASE 36: 統合サブモジュール (2026-04-28)
+   旧 4 ファイルをこのファイル末尾に統合した:
+     claudecode_orchestrator_directives.wl  -> Directives* (Public API)
+     claudecode_orchestrator_routing.wl     -> Routing* (Public API)
+     claudecode_commit_safety.wl            -> in-place 拡張
+     claudecode_a4_stub.wl                  -> A4* (Public API、in-place 拡張)
+   
+   旧 BeginPackage["ClaudeOrchestratorDirectives`"] / ["ClaudeOrchestratorRouting`"]
+   および Begin["ClaudeOrchestratorA4`Private`"] は廃止し、全機能を
+   ClaudeOrchestrator` 名前空間に統合した。
+   
+   改名 (旧 -> 新):
+     ClaudeOrchestratorDirectives`EnabledQ        -> ClaudeOrchestrator`DirectivesEnabledQ
+     ClaudeOrchestratorDirectives`PreviewPrefix   -> ClaudeOrchestrator`DirectivesPreviewPrefix
+     ClaudeOrchestratorDirectives`SelectedDirectives    -> ClaudeOrchestrator`DirectivesSelected
+     ClaudeOrchestratorDirectives`ResolveBundleForTask  -> ClaudeOrchestrator`DirectivesResolveBundle
+     ClaudeOrchestratorDirectives`InvalidateCache       -> ClaudeOrchestrator`DirectivesInvalidateCache
+     ClaudeOrchestratorDirectives`NormalizeModelSpec    -> ClaudeOrchestrator`DirectivesNormalizeModel
+     ClaudeOrchestratorDirectives`AutoLoadStatus        -> ClaudeOrchestrator`DirectivesAutoLoadStatus
+     ClaudeOrchestratorDirectives`ForceLoadRepository   -> ClaudeOrchestrator`DirectivesForceLoad
+     ClaudeOrchestratorDirectives`$Verbose              -> ClaudeOrchestrator`$DirectivesVerbose
+     
+     ClaudeOrchestratorRouting`EnabledQ                 -> ClaudeOrchestrator`RoutingEnabledQ
+     ClaudeOrchestratorRouting`PreviewModel             -> ClaudeOrchestrator`RoutingPreviewModel
+     ClaudeOrchestratorRouting`GetRouteInfo             -> ClaudeOrchestrator`RoutingGetInfo
+     ClaudeOrchestratorRouting`ListAvailablePaths       -> ClaudeOrchestrator`RoutingListPaths
+     ClaudeOrchestratorRouting`$Verbose                 -> ClaudeOrchestrator`$RoutingVerbose
+     
+     ClaudeOrchestratorA4`ClaudeInjectDirectivePrefix   -> ClaudeOrchestrator`A4InjectDirectivePrefix
+     ClaudeOrchestratorA4`ClaudeResolveQueryFnForRole   -> ClaudeOrchestrator`A4ResolveQueryFnForRole
+     ClaudeOrchestratorA4`ClaudeResolveModelForRole     -> ClaudeOrchestrator`A4ResolveModelForRole
+     ClaudeOrchestratorA4`$ClaudeA4StubVersion          -> ClaudeOrchestrator`$A4StubVersion
+   
+   オン/オフフラグ (BeginPackage より前に設定して効果あり、デフォルト True):
+     $ClaudeOrchestratorEnableDirectives    = True
+     $ClaudeOrchestratorEnableRouting       = True
+     $ClaudeOrchestratorEnableCommitSafety  = True
+     $ClaudeOrchestratorEnableA4Stub        = True
+   ==================================================================== *)
+
+(* フラグのデフォルト値設定 (未定義なら True) *)
+If[!ValueQ[$ClaudeOrchestratorEnableDirectives],
+  $ClaudeOrchestratorEnableDirectives = True];
+If[!ValueQ[$ClaudeOrchestratorEnableRouting],
+  $ClaudeOrchestratorEnableRouting = True];
+If[!ValueQ[$ClaudeOrchestratorEnableCommitSafety],
+  $ClaudeOrchestratorEnableCommitSafety = True];
+If[!ValueQ[$ClaudeOrchestratorEnableA4Stub],
+  $ClaudeOrchestratorEnableA4Stub = True];
+
+
+(* ============================================================
+   Directives 統合 (旧 ClaudeOrchestratorDirectives`)
+   ============================================================ *)
+
+If[TrueQ[$ClaudeOrchestratorEnableDirectives],
+  Begin["ClaudeOrchestrator`Private`"];
+(* ::Package:: *)
+
+(* claudecode_orchestrator_directives.wl -- Orchestrator Directives integration
+ *
+ * Phase 34 Phase A4.x / Directives Stage 2 (2026-04-26)
+ *
+ * 責務:
+ *   1. ClaudeOrchestrator`A4InjectDirectivePrefix を本格実装で再定義する。
+ *      passthrough だった stub (claudecode_a4_stub.wl) を、ClaudeDirectives 経由で
+ *      role / model / goal に応じた directive prefix を生成する実装に置き換える。
+ *   2. ClaudeOrchestrator 本体は一切触らない。既存 hook ポイント
+ *      (ClaudeOrchestrator.wl L2041-2046) を介して動作する。
+ *   3. ClaudeDirectives がロードされていない / リポジトリが空な場合は passthrough
+ *      にフォールバックして、worker 実行を壊さない。
+ *   4. Model spec は List 形式 ({"lmstudio", "qwen/qwen3.6-27b", "http://..."}) と
+ *      String 形式 ("claude-opus-4.7") と Automatic / None の三系統を内部で正規化する。
+ *
+ * 設計上の不変条件:
+ *   - ClaudeOrchestrator.wl への改変なし。
+ *   - claudecode_a4_stub.wl の他の関数 (ClaudeResolveQueryFnForRole /
+ *     ClaudeResolveModelForRole) には触らない。
+ *   - ClaudeDirectives に未配備でもエラーを起こさない (passthrough)。
+ *   - 再ロード安全 (ClearAll で自分の DownValues を消してから再定義)。
+ *   - 失敗してもユーザー副作用なし (Quiet @ Check で常に prompt を返す)。
+ *
+ * 動作:
+ *   ClaudeInjectDirectivePrefix[prompt, role, model, goal]:
+ *     1. ClaudeDirectives 未ロードまたは repository 未読込なら prompt 返す
+ *     2. role を String に正規化 (空文字なら None として bundle 解決)
+ *     3. model を文字列名に正規化:
+ *          String                             -> そのまま (claude-opus-4.7 等)
+ *          {"lmstudio","qwen/qwen3.6-27b",..} -> "qwen/qwen3.6-27b"
+ *          {"openai","gpt-4",..}              -> "gpt-4"
+ *          Automatic / None / その他          -> role 別 default ($ClaudeRoleDefaultModels)
+ *     4. goal を String に正規化 (空ならそのまま)
+ *     5. ClaudeDirectives`ClaudeBuildDirectivePromptForRole[role, model, goal] 呼ぶ
+ *     6. directive 文字列が空なら prompt 返す
+ *     7. directive 文字列を prompt の前に prepend して返す
+ *
+ *   ClaudeOrchestrator`DirectivesPreviewPrefix[role, model, goal]:
+ *     hook 経由を使わずに直接 prefix を取得する debug 用。
+ *
+ *   ClaudeOrchestrator`DirectivesSelected[role, model, goal]:
+ *     bundle の DirectiveMeta から SelectedRuleNames / SelectedSkillNames を返す。
+ *
+ *   ClaudeOrchestrator`DirectivesResolveBundle[taskSpec, opts]:
+ *     TaskSpec (Association) の "Role" / "Goal" / "DependsOn" / "Inputs" などから
+ *     ClaudeDirectives bundle を解決する。Orchestrator の TaskSpec 慣習を
+ *     ClaudeDirectives の opts 形式にブリッジする。
+ *
+ *   ClaudeOrchestrator`DirectivesEnabledQ[]:
+ *     ClaudeDirectives がロードされ、リポジトリも読み込まれていれば True。
+ *
+ *   ClaudeOrchestrator`DirectivesInvalidateCache[]:
+ *     ClaudeDirectives リポジトリキャッシュ破棄 (passthrough wrapper)。
+ *
+ * 依存:
+ *   - ClaudeOrchestrator.wl (hook ポイント L2041-2046)
+ *   - claudecode_directives.wl (ClaudeDirectives namespace) -- optional
+ *
+ * Load:
+ *   Block[{$CharacterEncoding = "UTF-8"},
+ *     Get["claudecode_orchestrator_directives.wl"]]
+ *
+ * 関連仕様書:
+ *   - claude_directives_spec_and_tasklist.md (本パッケージの基本仕様 Stage 2)
+ *   - claude_multi_agent_orchestration_spec.md (role 概念の出典)
+ *   - Phase34_phase_a42_handoff.md (前 Phase 状況)
+ *)
+
+(* === Version marker ============================================== *)
+
+ClaudeOrchestrator`$DirectivesVersion =
+  "v2026-04-26-phase-a4x-stage2-fix2";
+
+ClaudeOrchestrator`$DirectivesVersion::usage =
+  "$ClaudeOrchestratorDirectivesVersion is the version string of the orchestrator directives integration.";
+
+
+(* === Public API ================================================== *)
+
+ClaudeOrchestrator`DirectivesEnabledQ::usage =
+  "ClaudeOrchestrator`DirectivesEnabledQ[] returns True iff ClaudeDirectives is " <>
+  "loaded and a repository is available. False means the hook will passthrough.";
+
+ClaudeOrchestrator`DirectivesPreviewPrefix::usage =
+  "ClaudeOrchestrator`DirectivesPreviewPrefix[role, model, goal] returns the " <>
+  "directive prefix string that ClaudeInjectDirectivePrefix would prepend, " <>
+  "without going through the orchestrator hook. Useful for debugging.";
+
+ClaudeOrchestrator`DirectivesSelected::usage =
+  "ClaudeOrchestrator`DirectivesSelected[role, model, goal] returns " <>
+  "<|\"Rules\"->{...names...}, \"Skills\"->{...names...}, \"Mode\"->modeStr, " <>
+  "\"Tokens\"->n, \"Model\"->resolvedModelStr|>.";
+
+ClaudeOrchestrator`DirectivesResolveBundle::usage =
+  "ClaudeOrchestrator`DirectivesResolveBundle[taskSpec_Association, opts] " <>
+  "resolves a ClaudeDirectives bundle for a TaskSpec. Reads Role / Goal / Inputs / " <>
+  "DependsOn from taskSpec and bridges to ClaudeResolveDirectiveBundle. " <>
+  "opts: \"Model\" -> spec, \"Mode\" -> Automatic|\"Full\"|\"Summary\"|\"Index\"|\"Lazy\", " <>
+  "\"TokenBudget\" -> Integer|Automatic, \"MaxSkills\" -> Integer.";
+
+ClaudeOrchestrator`DirectivesInvalidateCache::usage =
+  "ClaudeOrchestrator`DirectivesInvalidateCache[] discards the cached " <>
+  "ClaudeDirectives repository so the next call re-loads from disk.";
+
+ClaudeOrchestrator`DirectivesNormalizeModel::usage =
+  "ClaudeOrchestrator`DirectivesNormalizeModel[modelSpec, role] returns the " <>
+  "string model name used for directive projection. Handles String, List " <>
+  "({provider, model, url}), Automatic / None.";
+
+ClaudeOrchestrator`$DirectivesVerbose::usage =
+  "ClaudeOrchestrator`$DirectivesVerbose, when True, prints diagnostic messages " <>
+  "every time the directive prefix is built. Default False.";
+
+ClaudeOrchestrator`DirectivesAutoLoadStatus::usage =
+  "ClaudeOrchestrator`DirectivesAutoLoadStatus[] returns a string describing the " <>
+  "outcome of the most recent ClaudeDirectives repository auto-load attempt. " <>
+  "Useful for diagnosing why EnabledQ[] returns False.";
+
+ClaudeOrchestrator`DirectivesForceLoad::usage =
+  "ClaudeOrchestrator`DirectivesForceLoad[] / [path] re-attempts loading " <>
+  "the ClaudeDirectives repository, optionally from a specific root path. " <>
+  "Resets the auto-load attempt flag so EnabledQ[] will retry.";
+
+
+(* === Internal state ============================================== *)
+
+ClaudeOrchestrator`$DirectivesVerbose = False;
+
+(* === iL バイリンガル ============================================== *)
+
+
+(* === ClaudeDirectives availability =============================== *)
+
+(* auto-load 試行フラグ (一度試行したら以降はスキップ) *)
+$iDirectivesAutoLoadAttempted = False;
+
+(* auto-load の最終結果メッセージ (デバッグ用) *)
+$iDirectivesAutoLoadStatus = "(not attempted)";
+
+(* ClaudeDirectives がロードされ、リポジトリも有効か判定。
+   リポジトリが未読なら一度だけ ClaudeLoadDirectiveRepository[] を試行する。
+   この auto-load は副作用としてリポジトリ探索メッセージを出すが、Quiet で抑制。 *)
+iDirectivesAvailableQ[] :=
+  Module[{},
+    (* Step 1: ClaudeDirectives namespace の関数が読まれているか *)
+    If[!(Length[Names["ClaudeDirectives`ClaudeBuildDirectivePromptForRole"]] > 0 &&
+         Length[Names["ClaudeDirectives`ClaudeLoadDirectiveRepository"]] > 0 &&
+         Length[Names["ClaudeDirectives`$ClaudeDirectiveRepository"]] > 0),
+      $iDirectivesAutoLoadStatus = "ClaudeDirectives namespace not loaded";
+      Return[False]];
+    
+    (* Step 2: リポジトリが既に読まれていれば即 True *)
+    If[ValueQ[ClaudeDirectives`$ClaudeDirectiveRepository] &&
+       AssociationQ[ClaudeDirectives`$ClaudeDirectiveRepository] &&
+       Length[ClaudeDirectives`$ClaudeDirectiveRepository] > 0,
+      $iDirectivesAutoLoadStatus = "repository already loaded";
+      Return[True]];
+    
+    (* Step 3: 一度だけ auto-load を試行 *)
+    If[!TrueQ[$iDirectivesAutoLoadAttempted],
+      $iDirectivesAutoLoadAttempted = True;
+      Quiet @ Check[
+        ClaudeDirectives`ClaudeLoadDirectiveRepository[],
+        $iDirectivesAutoLoadStatus = "auto-load threw"]];
+    
+    (* Step 4: auto-load 後の再判定 *)
+    If[ValueQ[ClaudeDirectives`$ClaudeDirectiveRepository] &&
+       AssociationQ[ClaudeDirectives`$ClaudeDirectiveRepository] &&
+       Length[ClaudeDirectives`$ClaudeDirectiveRepository] > 0,
+      $iDirectivesAutoLoadStatus = "auto-loaded successfully";
+      True,
+      $iDirectivesAutoLoadStatus = "auto-load did not find repository";
+      False]];
+
+(* === Model spec の正規化 ========================================= *)
+
+(* List 形式 {"provider", "qwen/qwen3.6-27b", "url", ...} の場合は
+   model 部分 ([[2]]) を返す。 *)
+iExtractModelFromList[lst_List] :=
+  Which[
+    Length[lst] >= 2 && StringQ[lst[[2]]], lst[[2]],
+    Length[lst] >= 1 && StringQ[lst[[1]]], lst[[1]],
+    True, ""];
+iExtractModelFromList[_] := "";
+
+(* role 別 default model lookup. ClaudeDirectives が読まれていれば
+   $ClaudeRoleDefaultModels を引く。なければ "claude-opus-4.7" 既定。 *)
+iRoleDefaultModel[role_String] :=
+  Module[{tbl},
+    If[Length[Names["ClaudeDirectives`$ClaudeRoleDefaultModels"]] > 0 &&
+       AssociationQ[ClaudeDirectives`$ClaudeRoleDefaultModels],
+      tbl = ClaudeDirectives`$ClaudeRoleDefaultModels;
+      Lookup[tbl, role, "claude-opus-4.7"],
+      "claude-opus-4.7"]];
+iRoleDefaultModel[___] := "claude-opus-4.7";
+
+(* model spec を文字列に正規化。Public 関数 *)
+ClaudeOrchestrator`DirectivesNormalizeModel[spec_, role_:None] :=
+  Module[{result},
+    result = Which[
+      StringQ[spec] && StringTrim[spec] =!= "", spec,
+      ListQ[spec],
+        Module[{m = iExtractModelFromList[spec]},
+          If[StringQ[m] && StringTrim[m] =!= "",
+            m,
+            iRoleDefaultModel[If[StringQ[role], role, ""]]]],
+      spec === Automatic || spec === None,
+        iRoleDefaultModel[If[StringQ[role], role, ""]],
+      True,
+        iRoleDefaultModel[If[StringQ[role], role, ""]]];
+    result];
+
+(* === Goal の正規化 =============================================== *)
+
+iNormalizeGoal[goal_] :=
+  Which[
+    StringQ[goal], goal,
+    goal === Null || goal === None, "",
+    True, ToString[goal]];
+
+(* === Role の正規化 =============================================== *)
+
+(* ClaudeBuildDirectivePromptForRole は String role を要求する。
+   空文字 / None は "" として渡す。 *)
+iNormalizeRole[role_] :=
+  Which[
+    StringQ[role], role,
+    role === None || role === Null, "",
+    True, ToString[role]];
+
+(* === Directive prefix builder ==================================== *)
+
+(* role + model + goal から directive prefix 文字列を構築。
+   失敗時 / 利用不可時は "" を返す。 *)
+iBuildDirectivePrefixSafe[role_, model_, goal_] :=
+  Module[{normRole, normModel, normGoal, raw},
+    If[!iDirectivesAvailableQ[],
+      Return[""]];
+    normRole  = iNormalizeRole[role];
+    normModel = ClaudeOrchestrator`DirectivesNormalizeModel[model, normRole];
+    normGoal  = iNormalizeGoal[goal];
+    raw = Quiet @ Check[
+      ClaudeDirectives`ClaudeBuildDirectivePromptForRole[
+        normRole, normModel, normGoal],
+      ""];
+    If[StringQ[raw], raw, ""]];
+
+(* === Hook 本格実装の登録 ======================================== *)
+
+(* A4 stub の DownValues を一旦消して、本格実装で再定義する。
+   stub があってもなくても、本格実装が最終形になる。 *)
+
+ClearAll[ClaudeOrchestrator`A4InjectDirectivePrefix];
+
+ClaudeOrchestrator`A4InjectDirectivePrefix[
+    prompt_, role_, model_, goal_] :=
+  Module[{promptStr, prefix, finalPrompt},
+    promptStr = If[StringQ[prompt], prompt, ToString[prompt]];
+    prefix = iBuildDirectivePrefixSafe[role, model, goal];
+    finalPrompt = If[StringQ[prefix] && StringTrim[prefix] =!= "",
+      prefix <> "\n\n---\n\n" <> promptStr,
+      promptStr];
+    
+    If[TrueQ[ClaudeOrchestrator`$DirectivesVerbose],
+      Print[Style[
+        "[orchestrator-directives] InjectDirectivePrefix: role=" <>
+          iNormalizeRole[role] <>
+          ", model=" <>
+          ClaudeOrchestrator`DirectivesNormalizeModel[
+            model, iNormalizeRole[role]] <>
+          ", prefixLen=" <> ToString[StringLength[prefix]] <>
+          ", finalLen=" <> ToString[StringLength[finalPrompt]],
+        Italic, GrayLevel[0.4]]]];
+    
+    finalPrompt];
+
+(* 引数 4 個でない呼び出しに対するフォールバック *)
+ClaudeOrchestrator`A4InjectDirectivePrefix[prompt_, ___] :=
+  If[StringQ[prompt], prompt, ToString[prompt]];
+
+ClaudeOrchestrator`A4InjectDirectivePrefix[___] := "";
+
+(* === Public API 実装 ============================================ *)
+
+ClaudeOrchestrator`DirectivesEnabledQ[] := iDirectivesAvailableQ[];
+
+ClaudeOrchestrator`DirectivesAutoLoadStatus[] := $iDirectivesAutoLoadStatus;
+
+(* ForceLoadRepository: 引数なしで再試行、または特定の root から強制再読み込み *)
+ClaudeOrchestrator`DirectivesForceLoad[] :=
+  Module[{},
+    $iDirectivesAutoLoadAttempted = False;
+    $iDirectivesAutoLoadStatus = "(force reload)";
+    iDirectivesAvailableQ[]];
+
+ClaudeOrchestrator`DirectivesForceLoad[root_String] :=
+  Module[{result},
+    If[!(Length[Names["ClaudeDirectives`ClaudeLoadDirectiveRepository"]] > 0),
+      $iDirectivesAutoLoadStatus = "ClaudeDirectives namespace not loaded";
+      Return[False]];
+    result = Quiet @ Check[
+      ClaudeDirectives`ClaudeLoadDirectiveRepository[root],
+      $iDirectivesAutoLoadStatus = "force load threw";
+      Return[False]];
+    $iDirectivesAutoLoadAttempted = True;
+    iDirectivesAvailableQ[]];
+
+ClaudeOrchestrator`DirectivesPreviewPrefix[role_:"", model_:Automatic,
+    goal_:""] :=
+  iBuildDirectivePrefixSafe[role, model, goal];
+
+(* iCoerceToStringList: Lookup の戻り値を必ず List of String に正規化する。
+   claudecode_directives.wl v0.1.7 以前にはバグがあり、SelectedSkillNames /
+   SelectedRuleNames が単一 String / Rule / List of Rules になることがあった
+   (`Lookup[#, "Name", ""] & /@ skills` で & が広く吸収される問題)。
+   v0.1.8 で修正済みだが、混在環境でも壊れないように防衛的に処理する。 *)
+iCoerceToStringList[raw_] :=
+  Which[
+    ListQ[raw],
+      Map[
+        Which[
+          StringQ[#], #,
+          Head[#] === Rule, ToString[Last[#]],
+          True, ToString[#]] &,
+        raw],
+    StringQ[raw], {raw},
+    Head[raw] === Rule, {ToString[Last[raw]]},
+    True, {}];
+
+ClaudeOrchestrator`DirectivesSelected[role_:"", model_:Automatic,
+    goal_:""] :=
+  Module[{normRole, normModel, normGoal, bundle, meta, rawRules, rawSkills},
+    If[!iDirectivesAvailableQ[],
+      Return[<|
+        "Rules" -> {}, "Skills" -> {},
+        "Mode"  -> "None",
+        "Tokens" -> 0,
+        "Model"  -> "",
+        "Available" -> False|>]];
+    normRole  = iNormalizeRole[role];
+    normModel = ClaudeOrchestrator`DirectivesNormalizeModel[model, normRole];
+    normGoal  = iNormalizeGoal[goal];
+    bundle = Quiet @ Check[
+      ClaudeDirectives`ClaudeResolveDirectiveBundle[
+        "Role" -> normRole,
+        "Model" -> normModel,
+        "TaskHint" -> normGoal],
+      <||>];
+    If[!AssociationQ[bundle],
+      Return[<|
+        "Rules" -> {}, "Skills" -> {},
+        "Mode"  -> "None",
+        "Tokens" -> 0,
+        "Model"  -> normModel,
+        "Available" -> False|>]];
+    meta = Lookup[bundle, "DirectiveMeta", <||>];
+    rawRules  = Lookup[meta, "SelectedRuleNames", {}];
+    rawSkills = Lookup[meta, "SelectedSkillNames", {}];
+    <|
+      "Rules"     -> iCoerceToStringList[rawRules],
+      "Skills"    -> iCoerceToStringList[rawSkills],
+      "Mode"      -> Lookup[bundle, "ProjectionMode", "Summary"],
+      "Tokens"    -> Lookup[meta, "EstimatedTokens", 0],
+      "Model"     -> Lookup[meta, "Model", normModel],
+      "ModelClass" -> Lookup[meta, "ModelClass", "Unknown"],
+      "Downgrades" -> Lookup[meta, "DowngradeCount", 0],
+      "Available"  -> True
+    |>];
+
+(* === ResolveBundleForTask: TaskSpec -> Bundle ==================== *)
+
+(* TaskSpec から TaskHint を組み立てる。Goal を主に、Inputs / DependsOn /
+   ExpectedArtifactType も taskHint に含めて skill 選別の手がかりとする。 *)
+iBuildTaskHintFromSpec[taskSpec_Association] :=
+  Module[{goal, inputs, expected, parts = {}},
+    goal     = Lookup[taskSpec, "Goal", ""];
+    inputs   = Lookup[taskSpec, "Inputs", {}];
+    expected = Lookup[taskSpec, "ExpectedArtifactType", ""];
+    
+    If[StringQ[goal] && goal =!= "", AppendTo[parts, goal]];
+    If[StringQ[expected] && expected =!= "",
+      AppendTo[parts, "Output type: " <> expected]];
+    If[ListQ[inputs] && Length[inputs] > 0,
+      AppendTo[parts, "Inputs: " <>
+        StringRiffle[
+          Map[If[StringQ[#], #, ToString[#]] &, inputs], ", "]]];
+    
+    StringRiffle[parts, " | "]];
+iBuildTaskHintFromSpec[_] := "";
+
+Options[ClaudeOrchestrator`DirectivesResolveBundle] = {
+  "Model"       -> Automatic,
+  "Mode"        -> Automatic,
+  "TokenBudget" -> Automatic,
+  "MaxSkills"   -> 5
+};
+
+ClaudeOrchestrator`DirectivesResolveBundle[taskSpec_Association,
+    opts:OptionsPattern[]] :=
+  Module[{role, taskHint, model, mode, budget, maxSkills, normRole, normModel},
+    If[!iDirectivesAvailableQ[],
+      Return[<|"Available" -> False|>]];
+    
+    role     = Lookup[taskSpec, "Role", ""];
+    normRole = iNormalizeRole[role];
+    taskHint = iBuildTaskHintFromSpec[taskSpec];
+    model    = OptionValue["Model"];
+    mode     = OptionValue["Mode"];
+    budget   = OptionValue["TokenBudget"];
+    maxSkills = OptionValue["MaxSkills"];
+    
+    normModel = ClaudeOrchestrator`DirectivesNormalizeModel[model, normRole];
+    
+    Quiet @ Check[
+      ClaudeDirectives`ClaudeResolveDirectiveBundle[
+        "Role" -> normRole,
+        "Model" -> normModel,
+        "Mode" -> mode,
+        "TaskHint" -> taskHint,
+        "TokenBudget" -> budget,
+        "MaxSkills" -> maxSkills],
+      <|"Available" -> False, "Error" -> "BundleResolveFailed"|>]];
+
+ClaudeOrchestrator`DirectivesResolveBundle[___] :=
+  <|"Available" -> False|>;
+
+(* === InvalidateCache ============================================ *)
+
+ClaudeOrchestrator`DirectivesInvalidateCache[] :=
+  If[Length[Names["ClaudeDirectives`ClaudeInvalidateDirectiveCache"]] > 0,
+    Quiet @ Check[
+      ClaudeDirectives`ClaudeInvalidateDirectiveCache[],
+      Null];
+    True,
+    False];
+
+
+
+(* === Load confirmation ============================================ *)
+
+Module[{available, repoSize},
+  available = ClaudeOrchestrator`DirectivesEnabledQ[];
+  repoSize = If[available,
+    Module[{r = ClaudeDirectives`$ClaudeDirectiveRepository},
+      "rules=" <> ToString[Length[Lookup[r, "Rules", {}]]] <>
+      ", skills=" <> ToString[Length[Lookup[r, "Skills", {}]]] <>
+      ", claudeMD=" <> ToString[StringLength[Lookup[r, "ClaudeMD", ""]]] <> "ch"],
+    "ClaudeDirectives unavailable -- hook will passthrough"];
   
-  Role: Explore / Plan / Draft / Verify / Reduce / Commit
-  Worker \:306f $ClaudeOrchestratorDenyHeads \:306e head \:3092\:63d0\:6848\:3067\:304d\:306a\:3044\:3002
-  \"QueryFunction\" -> fn \:3067 LLM \:547c\:3073\:51fa\:3057\:3092\:30ab\:30b9\:30bf\:30de\:30a4\:30ba\:53ef\:80fd\:3002
-  Stage 3: committer \:306f EvaluationNotebook[] / CreateNotebook[...] \:3092 targetNb \:306b\:66f8\:63db\:3057\:3001
-           \:305d\:306e\:4ed6\:306e nb \:8868\:8a18 (\:4f8b: \:7121\:4fee\:98fe nb) \:306f preserve \:3059\:308b (Stage 3.7)\:3002
-  Stage 3.5a: LLM worker \:306f JSON \:30d1\:30fc\:30b9\:5931\:6557\:6642 \"JSONRetryMax\" \:307e\:3067\:5fdc\:7b54\:518d\:8981\:6c42\:3002
-  Stage 3.5b: \"MaxParallelism\" > 1 \:307e\:305f\:306f \"UseDAG\" -> True \:3067 LLMGraphDAGCreate \:914d\:8eca\:3002
-  Stage 3.5c: $Language === \"Japanese\" \:6642\:3001 LLM planner \:30d7\:30ed\:30f3\:30d7\:30c8\:3092\:65e5\:672c\:8a9e\:5316\:3002
-  Stage 4: ClaudeCommitArtifacts[..., \"CommitMode\" -> \"Transactional\"] \:3067
-           shadow buffer \:7d4c\:7531 commit (\:5931\:6557\:6642 rollback, spec \:00a712.3)\:3002
-  Task 3: ClaudeReduceArtifacts[..., \"RetryMax\" -> N] \:3068
-           ClaudeCommitArtifacts[..., \"CommitRetryMax\" -> N] \:3067\:518d\:8a66\:884c\:3092\:6709\:52b9\:5316\:3002
-  Task 4: ClaudeSpawnWorkers[..., \"ParallelismMode\" -> \"CLIFork\"] \:3067
-           \:5225\:30d7\:30ed\:30bb\:30b9 Claude CLI \:306b\:3088\:308b\:771f\:306e\:4e26\:5217\:5316 (\"CLICommand\" \:3067\:62bd\:8c61\:5316)\:3002
-  Task 2: $ClaudeOrchestratorRealLLMEndpoint = \"ClaudeCode\"|\"CLI\"|fn \:307e\:305f\:306f
-           \:74b0\:5883\:5909\:6570 CLAUDE_ORCH_REAL_LLM \:3067 real LLM \:7d71\:5408\:30c6\:30b9\:30c8\:3092\:6709\:52b9\:5316\:3002
-  T10 (2026-04-20): deferred commit \:306b deterministic fallback \:3092\:5f90\:5fa9\:30fb\:62e1\:5f35\:3002
-           LLM \:304c HeldExpr \:3092\:8fd4\:3055\:305a\:30bb\:30eb\:304c\:66f8\:304b\:308c\:306a\:3044\:5834\:5408\:3001
-           iDeterministicSlideCommit \:2192 iGenericPayloadCommit \:306e\:9806\:3067\:81ea\:52d5\:88dc\:5b8c\:3002
-           \"DeterministicFallback\" -> False \:3067\:7121\:52b9\:5316\:3001
-           CommitResult[\"Diagnostics\"] \:306b HeldExprFound / LastProviderResponseHead \:304c\:4ed8\:5c5e\:3002
-", "
-  ClaudePlanTasks[input]                      \[Rule] Generate TaskSpec DAG
-  ClaudePlanTasks[input, \"Planner\"->\"LLM\"]   \[Rule] LLM-backed task decomposition (Stage 2 / 3.5c JP-aware)
-  ClaudeValidateTaskSpec[taskSpec]            \[Rule] Validate TaskSpec
-  ClaudeSpawnWorkers[tasksSpec]               \[Rule] Collect artifacts (workers can't NotebookWrite)
-  ClaudeSpawnWorkers[ts, \"WorkerAdapterBuilder\"->\"LLM\",\n                      \"JSONRetryMax\"->2]
-                                              \[Rule] LLM workers + JSON retry (Stage 3.5a)
-  ClaudeSpawnWorkers[ts, \"MaxParallelism\"->4] \[Rule] Parallel dispatch via LLMGraphDAGCreate (Stage 3.5b)
-  ClaudeCollectArtifacts[spawnResult]         \[Rule] Format artifacts as Dataset
-  ClaudeValidateArtifact[artifact, schema]    \[Rule] Check OutputSchema
-  ClaudeReduceArtifacts[artifacts]            \[Rule] Merge artifacts (reducer)
-  ClaudeCommitArtifacts[targetNb, reduced]    \[Rule] Committer writes to notebook (Stage 3 full)
-  ClaudeRunOrchestration[input]               \[Rule] Plan -> Spawn -> Reduce -> Commit
-  ClaudeContinueBatch[rid, batches]           \[Rule] Serial batch on single runtime (pragmatic)
+  (* ロード時メッセージは廃止 (2026-04-29).
+     repoSize は ClaudeOrchestrator`DirectivesAutoLoadStatus[] で参照可能。 *)
+  Null];
+
+  End[]; (* ClaudeOrchestrator`Private` *)
+];
+
+
+(* ============================================================
+   Routing 統合 (旧 ClaudeOrchestratorRouting`)
+   ============================================================ *)
+
+If[TrueQ[$ClaudeOrchestratorEnableRouting],
+  Begin["ClaudeOrchestrator`Private`"];
+(* ::Package:: *)
+
+(* claudecode_orchestrator_routing.wl -- Phase A4.5 model / queryFn routing
+ *
+ * Phase 34 Phase A4.5 (2026-04-26)
+ *
+ * 責務:
+ *   1. ClaudeOrchestrator`A4ResolveQueryFnForRole の本格実装で stub を置換。
+ *   2. ClaudeOrchestrator`A4ResolveModelForRole も本格実装に置換。
+ *   3. Model spec を解析し、適切な queryFn (CLI / API) を返す:
+ *        String "claude-opus-4.7"   → CLI (ClaudeQueryBg[prompt], Model 渡さない)
+ *        String "claude-sonnet-4.6" → CLI (同じく Model 渡さない: CLI デフォルト)
+ *        String "qwen3.6-27b"      → $ClaudePrivateModel に自動展開して API 経路
+ *        List {prov, model, url}    → API (iQueryViaAPI[prov, model, prompt, url])
+ *        Automatic + role            → $ClaudeRoleDefaultModels で role 別 default を引く
+ *        明示的な queryFn            → passthrough (ユーザー override 尊重)
+ *   4. ClaudeOrchestrator 本体は触らない (既存 hook 経由)。
+ *
+ * 設計上の不変条件:
+ *   - ClaudeQueryBg の Model オプションは Fallback->True でないと効かない (= CLI 経路では
+ *     常に CLI のデフォルトモデル = claude-opus-4.7 が呼ばれる)。これを受け入れた設計。
+ *   - String "qwen..." → $ClaudePrivateModel への自動展開で、課金なしの LM Studio 経路が
+ *     Verify role 等で自動的に有効化される (本 Phase のメイン成果)。
+ *   - ClaudeDirectives / iQueryViaAPI / ClaudeQueryBg いずれが欠けても、最後は
+ *     ClaudeQueryBg の素呼びにフォールバック。
+ *   - 再ロード安全 (ClearAll で stub を消してから本格実装で再定義)。
+ *
+ * Phase A4.5 と Stage 2 (directives) の関係:
+ *   - 本 Phase は queryFn 振り分け (= どの LLM が走るか) を扱う。
+ *   - Stage 2 は worker prompt の前置 (= LLM に何を読ませるか) を扱う。
+ *   - 両者は独立に動作する。Stage 2 の `NormalizeModelSpec` を本 Phase でも使う場面はあるが、
+ *     routing では List spec を保持する必要があるため別ロジック (iResolveModelInternal)。
+ *
+ * 依存:
+ *   - ClaudeOrchestrator.wl (hook L2386-2391)
+ *   - claudecode.wl (ClaudeQueryBg, ClaudeCode`Private`iQueryViaAPI, $ClaudePrivateModel)
+ *   - claudecode_directives.wl (optional: $ClaudeRoleDefaultModels の参照)
+ *
+ * Load:
+ *   Block[{$CharacterEncoding = "UTF-8"},
+ *     Get["claudecode_orchestrator_routing.wl"]]
+ *
+ * 関連仕様書:
+ *   - claude_multi_agent_orchestration_spec.md
+ *   - Phase34_directives_stage2_handoff.md (前 Phase 引継ぎ)
+ *)
+
+(* === Version marker ============================================== *)
+
+ClaudeOrchestrator`$RoutingVersion =
+  "v2026-04-26-phase-a4-5-stage1";
+
+ClaudeOrchestrator`$RoutingVersion::usage =
+  "$ClaudeOrchestratorRoutingVersion is the version string of the orchestrator " <>
+  "routing module (Phase A4.5).";
+
+
+(* === Public API ================================================== *)
+
+ClaudeOrchestrator`RoutingEnabledQ::usage =
+  "ClaudeOrchestrator`RoutingEnabledQ[] returns True iff at least one query path " <>
+  "(CLI = ClaudeQueryBg or API = iQueryViaAPI) is callable.";
+
+ClaudeOrchestrator`RoutingPreviewModel::usage =
+  "ClaudeOrchestrator`RoutingPreviewModel[role, model] returns the resolved model " <>
+  "spec (after role-aware default lookup and qwen->$ClaudePrivateModel expansion). " <>
+  "Useful for inspecting what model would be used.";
+
+ClaudeOrchestrator`RoutingGetInfo::usage =
+  "ClaudeOrchestrator`RoutingGetInfo[role, model] returns " <>
+  "<|\"Source\"->str, \"Path\"->\"CLI\"|\"API\"|\"Default\", \"Model\"->resolved, " <>
+  "\"Role\"->role, \"QueryFunction\"->fn|>.";
+
+ClaudeOrchestrator`RoutingListPaths::usage =
+  "ClaudeOrchestrator`RoutingListPaths[] returns an Association indicating " <>
+  "which routing paths are available in the current session.";
+
+ClaudeOrchestrator`$RoutingVerbose::usage =
+  "ClaudeOrchestrator`$RoutingVerbose, when True, prints diagnostic messages every " <>
+  "time ClaudeResolveQueryFnForRole is called. Default False.";
+
+
+(* === Internal state ============================================== *)
+
+ClaudeOrchestrator`$RoutingVerbose = False;
+
+(* === iL バイリンガル ============================================== *)
+
+
+(* === Path availability ========================================== *)
+
+iCLIPathAvailableQ[] :=
+  Length[Names["ClaudeCode`ClaudeQueryBg"]] > 0 &&
+  Length[DownValues[ClaudeCode`ClaudeQueryBg]] > 0;
+
+iAPIPathAvailableQ[] :=
+  Length[Names["ClaudeCode`Private`iQueryViaAPI"]] > 0 &&
+  Length[DownValues[ClaudeCode`Private`iQueryViaAPI]] > 0;
+
+(* === $ClaudePrivateModel 取得 (List 形式期待) =================== *)
+
+iPrivateModelSpec[] :=
+  If[Length[Names["ClaudeCode`$ClaudePrivateModel"]] > 0 &&
+     ValueQ[ClaudeCode`$ClaudePrivateModel] &&
+     ListQ[ClaudeCode`$ClaudePrivateModel] &&
+     Length[ClaudeCode`$ClaudePrivateModel] >= 2,
+    ClaudeCode`$ClaudePrivateModel,
+    None];
+
+(* === Role default model lookup =================================== *)
+
+iRoleDefaultModelString[role_String] :=
+  Module[{tbl},
+    If[Length[Names["ClaudeDirectives`$ClaudeRoleDefaultModels"]] > 0 &&
+       AssociationQ[ClaudeDirectives`$ClaudeRoleDefaultModels],
+      tbl = ClaudeDirectives`$ClaudeRoleDefaultModels;
+      Lookup[tbl, role, "claude-opus-4.7"],
+      "claude-opus-4.7"]];
+iRoleDefaultModelString[___] := "claude-opus-4.7";
+
+(* === String spec の expansion ===================================
+   "qwen3.6-27b" のようなローカル LLM 名を、ユーザー設定の
+   $ClaudePrivateModel (List 形式 {provider, model, url}) に展開する。
+   これは Verify role default が "qwen3.6-27b" のとき、自動的に
+   LM Studio 経由 (iQueryViaAPI) に振り分けるための工夫。 *)
+
+iIsLocalModelString[s_String] :=
+  StringQ[s] &&
+  Or[
+    StringContainsQ[ToLowerCase[s], "qwen"],
+    StringContainsQ[ToLowerCase[s], "llama"],
+    StringContainsQ[ToLowerCase[s], "mistral"],
+    StringContainsQ[ToLowerCase[s], "phi-"],
+    StringContainsQ[ToLowerCase[s], "deepseek"],
+    StringContainsQ[ToLowerCase[s], "gemma"]];
+iIsLocalModelString[_] := False;
+
+iExpandStringToList[s_String] :=
+  Module[{priv},
+    priv = iPrivateModelSpec[];
+    Which[
+      (* ローカル LLM 名で $ClaudePrivateModel が List 形式 → 展開 *)
+      iIsLocalModelString[s] && priv =!= None,
+        priv,
+      (* それ以外は String のまま *)
+      True, s]];
+
+(* === Model spec の内部解決 ====================================== *)
+
+iResolveModelInternal[role_, model_] :=
+  Which[
+    (* 明示的な List spec はそのまま (ユーザーが意図的に渡したと判断) *)
+    ListQ[model] && Length[model] >= 2, model,
+    
+    (* 明示的な non-empty String *)
+    StringQ[model] && StringTrim[model] =!= "" && model =!= "Automatic",
+      iExpandStringToList[model],
+    
+    (* Automatic / None / "" → role 別 default *)
+    True,
+      Module[{def},
+        def = If[StringQ[role] && role =!= "",
+          iRoleDefaultModelString[role],
+          "claude-opus-4.7"];
+        iExpandStringToList[def]]];
+
+(* === API queryFn 構築 ============================================ *)
+
+iBuildAPIQueryFn[modelSpec_List] :=
+  Module[{prov, mdl, url},
+    prov = If[Length[modelSpec] >= 1 && StringQ[modelSpec[[1]]],
+      modelSpec[[1]], "lmstudio"];
+    mdl = If[Length[modelSpec] >= 2 && StringQ[modelSpec[[2]]],
+      modelSpec[[2]], ""];
+    url = If[Length[modelSpec] >= 3 && StringQ[modelSpec[[3]]],
+      modelSpec[[3]], ""];
+    
+    If[mdl === "" || !iAPIPathAvailableQ[],
+      (* fallback: API が無いなら CLI 素呼び *)
+      Return[iBuildCLIQueryFn[]]];
+    
+    Function[prompt,
+      Quiet @ Check[
+        ClaudeCode`Private`iQueryViaAPI[prov, mdl, prompt, url],
+        ""]]];
+iBuildAPIQueryFn[_] := iBuildCLIQueryFn[];
+
+(* === CLI queryFn 構築 ============================================ *)
+
+(* CLI 経路は常に CLI のデフォルトモデル。Model オプションは渡さない。 *)
+iBuildCLIQueryFn[] :=
+  If[iCLIPathAvailableQ[],
+    Function[prompt,
+      Quiet @ Check[
+        ClaudeCode`ClaudeQueryBg[prompt],
+        ""]],
+    Function[prompt, ""]];
+
+(* === Empty (絶対 fallback) ====================================== *)
+
+iEmptyQueryFn[] := Function[prompt, ""];
+
+(* === Hook 本格実装の登録 ========================================= *)
+
+ClearAll[ClaudeOrchestrator`A4ResolveQueryFnForRole];
+
+ClaudeOrchestrator`A4ResolveQueryFnForRole[
+    queryFn_, model_, role_] :=
+  Module[{resolvedModel, fn, source, path},
+    
+    (* Step 1: queryFn が明示的に渡されているなら respect (ユーザー override) *)
+    If[queryFn =!= Automatic && queryFn =!= None &&
+       (Head[queryFn] === Symbol || Head[queryFn] === Function),
+      If[TrueQ[ClaudeOrchestrator`$RoutingVerbose],
+        Print[Style[
+          "[orchestrator-routing] role=" <> ToString[role] <>
+            " explicit queryFn passed through (model arg ignored)",
+          Italic, GrayLevel[0.4]]]];
+      Return[<|
+        "QueryFunction" -> queryFn,
+        "Source" -> "Explicit",
+        "Path"   -> "Explicit",
+        "Model"  -> model,
+        "Role"   -> role|>]];
+    
+    (* Step 2: role-aware model resolution *)
+    resolvedModel = iResolveModelInternal[role, model];
+    
+    (* Step 3: spec 形式に応じて closure 構築 *)
+    Which[
+      ListQ[resolvedModel] && Length[resolvedModel] >= 2 && iAPIPathAvailableQ[],
+        fn = iBuildAPIQueryFn[resolvedModel];
+        path = "API";
+        source = "API:" <> ToString[resolvedModel[[1]]] <>
+                 "/" <> ToString[resolvedModel[[2]]],
+      
+      iCLIPathAvailableQ[],
+        fn = iBuildCLIQueryFn[];
+        path = "CLI";
+        source = "CLI:default(" <>
+                 If[StringQ[resolvedModel], resolvedModel,
+                   ToString[resolvedModel]] <> "-requested)",
+      
+      True,
+        fn = iEmptyQueryFn[];
+        path = "Empty";
+        source = "Empty (no path available)"];
+    
+    If[TrueQ[ClaudeOrchestrator`$RoutingVerbose],
+      Print[Style[
+        "[orchestrator-routing] role=" <> ToString[role] <>
+          ", model=" <> ToString[model] <>
+          ", resolved=" <> ToString[resolvedModel] <>
+          ", path=" <> path <>
+          ", source=" <> source,
+        Italic, GrayLevel[0.4]]]];
+    
+    <|
+      "QueryFunction" -> fn,
+      "Source" -> source,
+      "Path"   -> path,
+      "Model"  -> resolvedModel,
+      "Role"   -> role
+    |>];
+
+(* 不正引数フォールバック *)
+ClaudeOrchestrator`A4ResolveQueryFnForRole[___] :=
+  <|
+    "QueryFunction" -> If[iCLIPathAvailableQ[], iBuildCLIQueryFn[], iEmptyQueryFn[]],
+    "Source" -> "RoutingInvalidArgs",
+    "Path"   -> If[iCLIPathAvailableQ[], "CLI", "Empty"],
+    "Model"  -> Automatic,
+    "Role"   -> ""|>;
+
+(* === ClaudeResolveModelForRole の本格実装 ======================== *)
+
+ClearAll[ClaudeOrchestrator`A4ResolveModelForRole];
+
+ClaudeOrchestrator`A4ResolveModelForRole[role_, model_] :=
+  iResolveModelInternal[role, model];
+
+ClaudeOrchestrator`A4ResolveModelForRole[___] := Automatic;
+
+(* === Public API 実装 ============================================ *)
+
+ClaudeOrchestrator`RoutingEnabledQ[] :=
+  iCLIPathAvailableQ[] || iAPIPathAvailableQ[];
+
+ClaudeOrchestrator`RoutingPreviewModel[role_:"", model_:Automatic] :=
+  iResolveModelInternal[role, model];
+
+ClaudeOrchestrator`RoutingGetInfo[role_:"", model_:Automatic] :=
+  ClaudeOrchestrator`A4ResolveQueryFnForRole[Automatic, model, role];
+
+ClaudeOrchestrator`RoutingListPaths[] :=
+  <|
+    "CLI"   -> iCLIPathAvailableQ[],
+    "API"   -> iAPIPathAvailableQ[],
+    "PrivateModel" -> (iPrivateModelSpec[] =!= None),
+    "RoleDefaults" -> (Length[Names["ClaudeDirectives`$ClaudeRoleDefaultModels"]] > 0 &&
+                       AssociationQ[ClaudeDirectives`$ClaudeRoleDefaultModels])
+  |>;
+
+
+
+(* === Load confirmation ============================================ *)
+
+Module[{paths, cliOK, apiOK, privOK, summary},
+  paths = ClaudeOrchestrator`RoutingListPaths[];
+  cliOK = TrueQ[Lookup[paths, "CLI", False]];
+  apiOK = TrueQ[Lookup[paths, "API", False]];
+  privOK = TrueQ[Lookup[paths, "PrivateModel", False]];
+  summary = "CLI=" <> ToString[cliOK] <>
+            ", API=" <> ToString[apiOK] <>
+            ", PrivateModel=" <> ToString[privOK] <>
+            ", RoleDefaults=" <> ToString[Lookup[paths, "RoleDefaults", False]];
   
-  Roles: Explore / Plan / Draft / Verify / Reduce / Commit
-  Workers cannot propose heads in $ClaudeOrchestratorDenyHeads.
-  Use \"QueryFunction\" -> fn to customize LLM calls.
-  Stage 3: committer rewrites EvaluationNotebook[] / CreateNotebook[...] to targetNb;
-           other nb-like references (e.g., unqualified nb) are preserved (Stage 3.7).
-  Stage 3.5a: LLM worker requests JSON repair up to \"JSONRetryMax\" attempts on parse failure.
-  Stage 3.5b: \"MaxParallelism\" > 1 or \"UseDAG\" -> True dispatches via LLMGraphDAGCreate.
-  Stage 3.5c: When $Language === \"Japanese\", LLM planner prompt is localized.
-  Stage 4: ClaudeCommitArtifacts[..., \"CommitMode\" -> \"Transactional\"] stages
-           writes to a shadow buffer, then verifies and flushes (spec \:00a712.3).
-  Task 3: ClaudeReduceArtifacts[..., \"RetryMax\" -> N] and
-          ClaudeCommitArtifacts[..., \"CommitRetryMax\" -> N] enable retry loops.
-  Task 4: ClaudeSpawnWorkers[..., \"ParallelismMode\" -> \"CLIFork\"] spawns
-          separate Claude CLI processes (\"CLICommand\" hook for testability).
-  Task 2: Set $ClaudeOrchestratorRealLLMEndpoint = \"ClaudeCode\"|\"CLI\"|fn or
-          env CLAUDE_ORCH_REAL_LLM to opt into real-LLM integration tests.
-  T10 (2026-04-20): Deferred commit path now applies deterministic fallback.
-          When the LLM returns no HeldExpr and no cells are written, we try
-          iDeterministicSlideCommit -> iGenericPayloadCommit automatically.
-          Disable with \"DeterministicFallback\" -> False.
-          CommitResult[\"Diagnostics\"] carries HeldExprFound / LastProviderResponseHead.
-"]];
+  (* ロード時メッセージは廃止 (2026-04-29).
+     summary は ClaudeOrchestrator`RoutingListPaths[] で参照可能。 *)
+  Null];
+
+  End[]; (* ClaudeOrchestrator`Private` *)
+];
+
+
+(* ============================================================
+   CommitSafety 統合 (旧 claudecode_commit_safety.wl)
+   ============================================================ *)
+
+If[TrueQ[$ClaudeOrchestratorEnableCommitSafety],
+  Begin["ClaudeOrchestrator`Private`"];
+(* ::Package:: *)
+
+(* claudecode_commit_safety.wl -- Phase 34 Phase A4.2: 3rd-tier commit fallback
+ *
+ * Phase 34 Phase A4.2 (2026-04-26)
+ *
+ * 責務:
+ *   1. ClaudeRunOrchestration の commit 経路で、LLM-backed commit と
+ *      iDeterministicSlideCommit のいずれもが失敗 / 不十分だった場合の
+ *      最終 safety net (3rd-tier fallback) を提供する。
+ *   2. payload (reduce 結果) を直接 Markdown 解析して Cell list を生成し、
+ *      target notebook へ書き込む iSmartPayloadCommit を提供する。
+ *   3. 既存の iDeterministicSlideCommit を override して、不十分なら自動で
+ *      iSmartPayloadCommit へチェーンする。
+ *
+ * 背景 (Phase34_phase_a42_analysis.md):
+ *   result31.nb / result31c.nb で観測された:
+ *     - LLM-backed commit が CellsDelta=0 で fail
+ *     - iDeterministicSlideCommit が起動するも payload 構造に応じて
+ *       Title セルしか書けない (Body / 本文が消える)
+ *   現象は試行ごとに変わるため、payload 構造に依存しない汎用フォールバックが
+ *   必要。
+ *
+ * 設計上の不変条件:
+ *   - 既存の iCommitArtifactsOnce / ClaudeCommitArtifacts 本体を変更しない
+ *   - iDeterministicSlideCommit の戻り値 contract
+ *     (<|"Status" -> ..., "CellsWritten" -> N|>) を維持
+ *   - ClaudeOrchestrator.wl が既にロード済みであることを前提
+ *   - 元の iDeterministicSlideCommit の DownValues を保存し、
+ *     新しい定義から呼び出せるようにする
+ *
+ * 修正効果:
+ *   - LLM-backed commit が 0 cells でも、payload に Summary / Description /
+ *     KeyPoints などの典型的キーがあれば自動で本文を Text/Section/ItemParagraph
+ *     セルに変換して書き込む
+ *   - Markdown コードブロック (```mathematica ... ```) を Input セルに変換
+ *   - heading (#, ##, ###) を Section / Subsection に変換
+ *   - bullet (- および asterisk) を ItemParagraph に変換
+ *
+ * 依存:
+ *   - ClaudeOrchestrator.wl (既にロード済み)
+ *
+ * Load:
+ *   Block[{$CharacterEncoding = "UTF-8"}, Get["claudecode_commit_safety.wl"]]
+ *
+ * 関連仕様書:
+ *   - Phase34_phase_a42_analysis.md  (本パッケージの設計根拠)
+ *   - claude_multi_agent_orchestration_spec.md
+ *)
+
+(* このパッケージは ClaudeOrchestrator`Private` context に直接書き込む。
+   独立した BeginPackage は使わない (override 対象シンボルが Private の
+   ため)。 *)
+
+(* 依存チェック: ClaudeOrchestrator パッケージがロード済みであることを確認。
+   ValueQ は関数の DownValues を見ないので、$Packages と Names で確認する。 *)
+If[Length[Names["ClaudeOrchestrator`ClaudeRunOrchestration"]] === 0 &&
+   Length[Names["ClaudeOrchestrator`Private`iDeterministicSlideCommit"]] === 0,
+  Print[Style[
+    "[claudecode_commit_safety] ERROR: ClaudeOrchestrator must be loaded first.",
+    Red, Bold]];
+  Abort[]];
+
+
+(* === Version marker ============================================== *)
+
+ClaudeOrchestrator`$ClaudeCommitSafetyVersion =
+  "v2026-04-26-phase-a42-stage4-inlinecode";
+
+ClaudeOrchestrator`$ClaudeCommitSafetyVersion::usage =
+  "$ClaudeCommitSafetyVersion is the version string of the Phase A4.2 " <>
+  "commit safety patch.";
+
+(* === iSmartCellsFromPayload ====================================== *)
+
+(* payload (Association | String | List | other) を Cell list に変換する。
+ *
+ * ルール:
+ *   String  → Markdown 解析で Text/Code/heading/bullet セル列に
+ *   List    → 各要素を再帰処理して flatten
+ *   Assoc   → 各 key を見て:
+ *     - Title 系  → Section セル
+ *     - Text 系   → Markdown 解析で Text 系セル列に
+ *     - Code 系   → Input セル
+ *     - List 系   → key を Subsection に + 値を ItemParagraph 群に
+ *     - その他    → key を Subsection に + 値を再帰処理
+ *   other   → InputForm を Text セルに
+ *)
+
+ClearAll[iSmartCellsFromPayload];
+
+(* String の場合: Markdown 解析 *)
+iSmartCellsFromPayload[payload_String] :=
+  iParseMarkdownToCells[payload];
+
+(* List の場合: 各要素を再帰、flatten *)
+iSmartCellsFromPayload[payload_List] :=
+  Module[{cells = {}},
+    Do[
+      cells = Join[cells, iSmartCellsFromPayload[item]],
+      {item, payload}];
+    cells];
+
+(* Association の場合: key 別に処理 *)
+iSmartCellsFromPayload[payload_Association] :=
+  Module[{cells = {}, keys, value, kStr,
+          isTextKey, isCodeKey, isListKey, isTitleKey},
+    
+    isTextKey = MemberQ[
+      {"Summary", "Description", "Explanation", "Note", "Body",
+       "Content", "Text", "Abstract", "Overview", "Detail",
+       "Details", "Notes", "Comment", "Comments", "Message",
+       "Result", "Answer", "Output"},
+      #] &;
+    
+    isCodeKey = MemberQ[
+      {"Code", "Source", "Input", "Implementation", "Snippet",
+       "Function", "Definition", "Script", "Example", "Examples"},
+      #] &;
+    
+    isListKey = MemberQ[
+      {"KeyPoints", "Bullets", "Items", "Points", "Highlights",
+       "Steps", "Findings", "Recommendations", "Issues", "Warnings",
+       "Variations", "Alternatives", "Options", "Methods", "Approaches",
+       "References", "Sources"},
+      #] &;
+    
+    isTitleKey = MemberQ[
+      {"Title", "Heading", "Header", "Subject", "Topic", "Name"},
+      #] &;
+    
+    keys = Keys[payload];
+    
+    (* タイトル系を先に処理 (1 つだけ Section として先頭に) *)
+    Do[
+      kStr = ToString[k];
+      If[isTitleKey[kStr],
+        value = payload[k];
+        If[StringQ[value] && value =!= "",
+          AppendTo[cells, Cell[value, "Section"]];
+          Break[]]],
+      {k, keys}];
+    
+    (* メイン処理 *)
+    Do[
+      kStr = ToString[k];
+      value = payload[k];
+      Which[
+        (* タイトル系は既に処理済 *)
+        isTitleKey[kStr],
+          Null,
+        
+        (* テキスト系 → 値を Markdown 解析 *)
+        isTextKey[kStr],
+          (* key 自体は section にしない (内容自体が本文なので) *)
+          Which[
+            StringQ[value] && value =!= "",
+              cells = Join[cells, iParseMarkdownToCells[value]],
+            ListQ[value] && Length[value] > 0,
+              cells = Join[cells, iSmartCellsFromPayload[value]],
+            AssociationQ[value] && Length[value] > 0,
+              cells = Join[cells, iSmartCellsFromPayload[value]]
+          ],
+        
+        (* コード系 → Input セル *)
+        isCodeKey[kStr],
+          Which[
+            StringQ[value] && value =!= "",
+              (* Markdown ``` で囲まれているかも、解析を通す *)
+              cells = Join[cells, iParseMarkdownToCells[value, "DefaultMode" -> "Code"]],
+            ListQ[value] && Length[value] > 0,
+              Do[
+                If[StringQ[c],
+                  cells = Join[cells,
+                    iParseMarkdownToCells[c, "DefaultMode" -> "Code"]]],
+                {c, value}]
+          ],
+        
+        (* リスト系 → key を Subsection に、値を ItemParagraph 群に *)
+        isListKey[kStr],
+          AppendTo[cells, Cell[kStr, "Subsection"]];
+          cells = Join[cells, iCellsFromBulletList[value]],
+        
+        (* その他: 値を見て判定 *)
+        True,
+          AppendTo[cells, Cell[kStr, "Subsection"]];
+          Which[
+            StringQ[value] && value =!= "",
+              cells = Join[cells, iParseMarkdownToCells[value]],
+            ListQ[value] && Length[value] > 0,
+              cells = Join[cells, iSmartCellsFromPayload[value]],
+            AssociationQ[value] && Length[value] > 0,
+              cells = Join[cells, iSmartCellsFromPayload[value]],
+            True,
+              AppendTo[cells, Cell[ToString[value, InputForm], "Text"]]
+          ]
+      ],
+      {k, keys}];
+    
+    cells];
+
+(* fallback: その他の値 *)
+iSmartCellsFromPayload[other_] :=
+  {Cell[ToString[other, InputForm], "Text"]};
+
+(* === iCellsFromBulletList ======================================== *)
+
+(* List → ItemParagraph セル群。各項目に Markdown インラインコード
+ * (backtick で囲まれた部分) があれば Input セルに分離する。 *)
+
+ClearAll[iCellsFromBulletList, iSplitInlineCode];
+
+(* iSplitInlineCode: 1 行の文字列を Markdown インラインコードで分割し、
+ *   Cell list を生成する。
+ *
+ *   引数:
+ *     text         - 分割対象の文字列
+ *     defaultStyle - インラインコードがない場合の単一セル style
+ *                    (例: "ItemParagraph", "Text")
+ *
+ *   戻り値:
+ *     インラインコードを含まない場合: {Cell[text, defaultStyle]}
+ *     インラインコードを含む場合:
+ *       前 plain  → Cell[..., defaultStyle]
+ *       コード     → Cell[..., "Input"]
+ *       後続 plain → Cell[..., "Text"]   (継続説明)
+ *
+ *   実装: backtick で StringSplit すると、奇数番目 (1, 3, 5...) は plain、
+ *         偶数番目 (2, 4, 6...) は code として交互に出る (正規な Markdown
+ *         インラインコードは backtick 偶数個を仮定)。 *)
+
+iSplitInlineCode[text_String, defaultStyle_String] :=
+  Module[{pieces, cells = {}, hasAnyCode},
+    (* backtick が含まれていなければ そのまま defaultStyle で 1 セル *)
+    If[!StringContainsQ[text, "`"],
+      Return[{Cell[text, defaultStyle]}, Module]];
+    
+    pieces = StringSplit[text, "`"];
+    
+    (* backtick が奇数個の場合 (壊れた Markdown) は、
+     * 先頭〜最後の backtick まで処理し、残りの不完全部分は Text にする。
+     * Length[pieces] が奇数なら正常 (plain code plain code plain)、
+     * 偶数なら不完全 (奇数個の backtick)。 *)
+    
+    hasAnyCode = Length[pieces] >= 3;  (* 少なくとも 1 ペアの backtick *)
+    
+    If[!hasAnyCode,
+      (* 単独 backtick とか奇妙なケース: 全体を defaultStyle に *)
+      Return[{Cell[text, defaultStyle]}, Module]];
+    
+    Do[
+      Module[{p = StringTrim[pieces[[i]]]},
+        Which[
+          p === "",
+            Null,
+          (* 偶数 index = backtick で囲まれていた部分 = code *)
+          EvenQ[i],
+            AppendTo[cells, Cell[p, "Input"]],
+          (* 奇数 index = plain 部分 *)
+          True,
+            AppendTo[cells, Cell[p,
+              (* 最初の plain は defaultStyle (ItemParagraph 等)、
+               * 後続は Text にする (継続説明として読みやすい) *)
+              If[Length[cells] === 0, defaultStyle, "Text"]]]
+        ]
+      ],
+      {i, Length[pieces]}];
+    
+    (* 何も生成できなかった場合 (全部空) のフォールバック *)
+    If[Length[cells] === 0,
+      cells = {Cell[text, defaultStyle]}];
+    
+    cells];
+
+iSplitInlineCode[other_, defaultStyle_String] :=
+  {Cell[ToString[other], defaultStyle]};
+
+iCellsFromBulletList[lst_List] :=
+  Module[{cells = {}},
+    Do[
+      Which[
+        StringQ[item] && item =!= "",
+          (* インラインコードを分離 *)
+          cells = Join[cells, iSplitInlineCode[item, "ItemParagraph"]],
+        AssociationQ[item],
+          (* Association な item は Title + Body 構造を期待 *)
+          Module[{title, body, t},
+            title = Lookup[item, "Title",
+                     Lookup[item, "Heading",
+                      Lookup[item, "Name", None]]];
+            body  = Lookup[item, "Body",
+                     Lookup[item, "Description",
+                      Lookup[item, "Content",
+                       Lookup[item, "Detail", None]]]];
+            If[StringQ[title] && title =!= "",
+              AppendTo[cells, Cell[title, "Subsubsection"]]];
+            Which[
+              StringQ[body] && body =!= "",
+                cells = Join[cells, iParseMarkdownToCells[body]],
+              ListQ[body] && Length[body] > 0,
+                cells = Join[cells, iCellsFromBulletList[body]],
+              True,
+                (* Title / Body どちらもない場合は Association 全体を再帰 *)
+                If[!StringQ[title] && Length[item] > 0,
+                  cells = Join[cells, iSmartCellsFromPayload[item]]]]],
+        ListQ[item],
+          cells = Join[cells, iCellsFromBulletList[item]],
+        True,
+          AppendTo[cells, Cell[ToString[item, InputForm], "ItemParagraph"]]],
+      {item, lst}];
+    cells];
+
+iCellsFromBulletList[other_] :=
+  {Cell[ToString[other], "Text"]};
+
+(* === iParseMarkdownToCells ======================================= *)
+
+(* Markdown 風テキストを Cell list に変換する。
+ *
+ * 認識する構造:
+ *   ```mathematica / ```wolfram / ```wl  → Input セル
+ *   ```python / ```bash / ```js / ...    → Program セル (sanitize)
+ *   ```                                  → コードブロック (デフォルト言語)
+ *   # heading                            → Section
+ *   ## heading                           → Subsection
+ *   ### heading                          → Subsubsection
+ *   #### heading                         → Subsubsubsection
+ *   - item / * item                      → ItemParagraph
+ *   N. item / N) item                    → ItemParagraph
+ *   通常の段落                            → Text セル (空行で区切る)
+ *
+ * オプション:
+ *   "DefaultMode" -> "Para" | "Code"
+ *     Code モードでは、コードブロック記号 ``` がない場合にも全体を
+ *     Input セルとして扱う (Code キーから来た場合の用途)。
+ *)
+
+ClearAll[iParseMarkdownToCells];
+
+Options[iParseMarkdownToCells] = {
+  "DefaultMode" -> "Para"
+};
+
+iParseMarkdownToCells[text_String, opts:OptionsPattern[]] :=
+  Module[{lines, cells = {}, current = {}, codeLang = "",
+          inCodeBlock = False, defaultMode, hasAnyCodeBlock,
+          flushPara, flushCode, makeCodeCell, sanitizeStyle,
+          trimmedText},
+    
+    defaultMode = OptionValue["DefaultMode"];
+    trimmedText = StringTrim[text];
+    
+    (* 空文字列は何も返さない *)
+    If[trimmedText === "",
+      Return[{}, Module]];
+    
+    (* DefaultMode が "Code" で、かつ ``` を含まない場合は、
+       全体を 1 つの Input セルとして返す *)
+    hasAnyCodeBlock = StringContainsQ[text, "```"];
+    If[defaultMode === "Code" && !hasAnyCodeBlock,
+      Return[{Cell[trimmedText, "Input"]}, Module]];
+    
+    (* Style の sanitize: existing iSanitizeCellStyle が利用可能なら使う。
+       ValueQ は関数の DownValues を見ないので Length[DownValues[...]] で確認。 *)
+    sanitizeStyle[s_String] := If[
+      Length[DownValues[ClaudeOrchestrator`Private`iSanitizeCellStyle]] > 0,
+      ClaudeOrchestrator`Private`iSanitizeCellStyle[s],
+      s];
+    
+    makeCodeCell[code_String, lang_String] := Module[{normalLang, style},
+      normalLang = ToLowerCase[StringTrim[lang]];
+      style = Which[
+        normalLang === "" || normalLang === "mathematica" ||
+          normalLang === "wolfram" || normalLang === "wl",
+          "Input",
+        True,
+          (* 他の言語: Program セル (Mathematica の generic code style) *)
+          "Program"];
+      Cell[code, style]
+    ];
+    
+    flushPara[] := Module[{joined},
+      If[Length[current] > 0,
+        joined = StringTrim[StringRiffle[current, "\n"]];
+        If[joined =!= "",
+          (* インラインコード (`...`) があれば分離。なければ Text 1 セル *)
+          cells = Join[cells, iSplitInlineCode[joined, "Text"]]];
+        current = {}]];
+    
+    flushCode[] := Module[{joined},
+      If[Length[current] > 0,
+        joined = StringRiffle[current, "\n"];
+        If[StringTrim[joined] =!= "",
+          AppendTo[cells, makeCodeCell[joined, codeLang]]];
+        current = {}]];
+    
+    (* 改行で分割 (空行も保持) *)
+    lines = StringSplit[text, "\n", All];
+    
+    Do[
+      Module[{line = lines[[i]], trimmed},
+        trimmed = StringTrim[line];
+        
+        Which[
+          (* コードブロックの境界。StringStartsQ で literal 比較。 *)
+          StringStartsQ[trimmed, "```"],
+            If[inCodeBlock,
+              (* 終了 *)
+              flushCode[];
+              inCodeBlock = False;
+              codeLang = "",
+              (* 開始 *)
+              flushPara[];
+              inCodeBlock = True;
+              codeLang = StringTrim[StringDrop[trimmed, 3]]],
+          
+          (* コードブロック内: そのまま蓄積 *)
+          inCodeBlock,
+            AppendTo[current, line],
+          
+          (* heading。StringStartsQ で literal 比較。 *)
+          StringStartsQ[trimmed, "#### "],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringDrop[trimmed, 5]],
+              sanitizeStyle["Subsubsubsection"]]],
+          StringStartsQ[trimmed, "### "],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringDrop[trimmed, 4]],
+              sanitizeStyle["Subsubsection"]]],
+          StringStartsQ[trimmed, "## "],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringDrop[trimmed, 3]],
+              sanitizeStyle["Subsection"]]],
+          StringStartsQ[trimmed, "# "],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringDrop[trimmed, 2]],
+              sanitizeStyle["Section"]]],
+          
+          (* bullet。WARNING: StringMatchQ は "*" を wildcard として解釈する。
+           * "This is..." でも `"* " ~~ ___` パターンに誤マッチするため、
+           * literal 比較する StringStartsQ を使う必要がある。 *)
+          StringStartsQ[trimmed, "- "] ||
+            StringStartsQ[trimmed, "* "],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringDrop[trimmed, 2]],
+              sanitizeStyle["ItemParagraph"]]],
+          
+          (* numbered list (1. , 2) など) *)
+          StringMatchQ[trimmed,
+            DigitCharacter .. ~~ ("." | ")") ~~ " " ~~ ___],
+            flushPara[];
+            AppendTo[cells, Cell[
+              StringTrim[StringReplace[trimmed,
+                StartOfString ~~ DigitCharacter .. ~~ ("." | ")") ~~ " " :>
+                  ""]],
+              sanitizeStyle["ItemParagraph"]]],
+          
+          (* 空行 → 段落区切り *)
+          trimmed === "",
+            flushPara[],
+          
+          (* 通常の行: para に蓄積 *)
+          True,
+            AppendTo[current, line]
+        ]
+      ],
+      {i, Length[lines]}];
+    
+    (* 残った buffer を flush *)
+    If[inCodeBlock, flushCode[], flushPara[]];
+    
+    cells];
+
+iParseMarkdownToCells[other_, ___] :=
+  {Cell[ToString[other], "Text"]};
+
+(* === iSmartPayloadCommit ========================================= *)
+
+(* payload を強力に Markdown 解析して target notebook に書き込む。
+ * 戻り値: <|"Status" -> "OK"|"NoCells"|"NotANotebook"|"Failed",
+ *           "CellsWritten" -> N, "TotalCells" -> M,
+ *           "Source" -> "iSmartPayloadCommit"|>
+ *)
+
+ClearAll[iSmartPayloadCommit];
+
+iSmartPayloadCommit[targetNb_, reducedArtifact_Association] :=
+  Module[{payload, cells, written = 0, writeResult},
+    
+    If[!MatchQ[targetNb, _NotebookObject],
+      Return[<|"Status" -> "NotANotebook",
+               "CellsWritten" -> 0,
+               "Source" -> "iSmartPayloadCommit"|>]];
+    
+    payload = Lookup[reducedArtifact, "Payload", <||>];
+    cells = Quiet @ Check[
+      iSmartCellsFromPayload[payload],
+      {}];
+    
+    If[!ListQ[cells] || Length[cells] === 0,
+      Return[<|"Status" -> "NoCells",
+               "CellsWritten" -> 0,
+               "Source" -> "iSmartPayloadCommit"|>]];
+    
+    (* selection を末尾へ移動 (iDeterministicSlideCommit と同じ防御) *)
+    Quiet @ Check[
+      SelectionMove[targetNb, After, Notebook],
+      Null];
+    
+    Do[
+      writeResult = Quiet @ Check[
+        NotebookWrite[targetNb, c],
+        $Failed];
+      If[writeResult =!= $Failed, written++],
+      {c, cells}];
+    
+    <|"Status"       -> If[written > 0, "OK", "Failed"],
+      "CellsWritten" -> written,
+      "TotalCells"   -> Length[cells],
+      "Source"       -> "iSmartPayloadCommit"|>
+  ];
+
+iSmartPayloadCommit[___] :=
+  <|"Status" -> "Failed",
+    "CellsWritten" -> 0,
+    "Source" -> "iSmartPayloadCommit",
+    "Error" -> "InvalidArguments"|>;
+
+(* === iDeterministicSlideCommit override =========================== *)
+
+(* 元の iDeterministicSlideCommit の DownValues を別シンボルへ複製してから
+ * 新しい定義で置き換える。これにより、新しい定義から元の動作を呼び出せる。
+ *
+ * 何度ロードされても元の DownValues は最初の 1 回だけ保存される。 *)
+
+If[!ValueQ[$iCommitSafetyOriginalSlideDV],
+  $iCommitSafetyOriginalSlideDV =
+    DownValues[iDeterministicSlideCommit] /.
+      HoldPattern[iDeterministicSlideCommit] ->
+        $iCommitSafetyOriginalSlideCommit;
+  
+  ClearAll[$iCommitSafetyOriginalSlideCommit];
+  DownValues[$iCommitSafetyOriginalSlideCommit] =
+    $iCommitSafetyOriginalSlideDV;
+];
+
+(* override: payload 構造で分岐:
+ *   - Slide 構造 (Slides/Sections/Pages 等のキー) → 元の commit を主軸
+ *   - それ以外 (rich payload / String / 単一キー) → smart commit を主軸
+ *
+ * これにより、result33.nb で観察された問題:
+ *   - 元の commit が単一キー payload を <|"Title"->key, "Body"->InputForm|>
+ *     に機械変換するため、Markdown / List 構造の情報がロスする
+ *   - 結果として 2 cells (Title+Text) が書かれ smart commit がトリガー
+ *     されない
+ * を解消する。
+ *)
+ClearAll[iDeterministicSlideCommit];
+
+iDeterministicSlideCommit[targetNb_, reducedArtifact_Association] :=
+  Module[{payload, isOriginalSlideStructure,
+          origResult, smartResult, isVerbose,
+          origStatus, origWritten,
+          smartStatus, smartWritten},
+    
+    isVerbose = TrueQ[
+      ValueQ[ClaudeOrchestrator`Private`$iCommitSafetyVerbose] &&
+      ClaudeOrchestrator`Private`$iCommitSafetyVerbose];
+    
+    payload = Lookup[reducedArtifact, "Payload", <||>];
+    
+    (* Slide 構造判定:
+     * payload が Association であって、既知の slide 系キー
+     * (Slides/Sections/Pages/Outline/Items/SlideList/Cells) のいずれかを
+     * 含む場合は、元の iDeterministicSlideCommit を主軸とする。 *)
+    isOriginalSlideStructure = AssociationQ[payload] &&
+      AnyTrue[{"Slides", "Sections", "Pages", "Outline",
+               "Items", "SlideList", "Cells"},
+        KeyExistsQ[payload, #] &];
+    
+    Which[
+      (* === Case 1: 既知の Slide 構造 → 元の commit を主軸 === *)
+      isOriginalSlideStructure,
+        If[isVerbose,
+          Print[Style[
+            "[commit-safety] Slide structure detected. " <>
+              "Using original iDeterministicSlideCommit.",
+            Italic, GrayLevel[0.4]]]];
+        
+        origResult = Quiet @ Check[
+          $iCommitSafetyOriginalSlideCommit[targetNb, reducedArtifact],
+          <|"Status" -> "Failed",
+            "CellsWritten" -> 0,
+            "Error" -> "OriginalSlideCommitThrew"|>];
+        
+        If[!AssociationQ[origResult],
+          origResult = <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        
+        origStatus  = Lookup[origResult, "Status", "Failed"];
+        origWritten = Lookup[origResult, "CellsWritten", 0];
+        
+        (* Slide 構造でも 0 cells で fail した場合は smart commit にフォールバック *)
+        If[origStatus === "OK" && origWritten >= 1,
+          Return[
+            Append[origResult, "Source" -> "iDeterministicSlideCommit"],
+            Module]];
+        
+        If[isVerbose,
+          Print[Style[
+            "[commit-safety] Original slide commit failed (status=" <>
+              ToString[origStatus] <> ", written=" <>
+              ToString[origWritten] <> "). Falling back to smart commit.",
+            Italic, GrayLevel[0.4]]]];
+        
+        smartResult = Quiet @ Check[
+          iSmartPayloadCommit[targetNb, reducedArtifact],
+          <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        If[!AssociationQ[smartResult],
+          smartResult = <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        smartWritten = Lookup[smartResult, "CellsWritten", 0];
+        
+        <|"Status"         -> If[smartWritten > 0, "OK", "Failed"],
+          "CellsWritten"   -> origWritten + smartWritten,
+          "OriginalResult" -> origResult,
+          "SmartResult"    -> smartResult,
+          "Source"         -> "iDeterministicSlideCommit+iSmartPayloadCommit"|>,
+      
+      (* === Case 2: 非 Slide 構造 (rich payload / String / その他) ===
+       *      → smart commit を主軸 (Markdown 解析、List → ItemParagraph) *)
+      True,
+        If[isVerbose,
+          Print[Style[
+            "[commit-safety] Non-slide payload (Type=" <>
+              ToString[Head[payload]] <>
+              "). Using iSmartPayloadCommit as primary.",
+            Italic, GrayLevel[0.4]]]];
+        
+        smartResult = Quiet @ Check[
+          iSmartPayloadCommit[targetNb, reducedArtifact],
+          <|"Status" -> "Failed",
+            "CellsWritten" -> 0,
+            "Error" -> "SmartCommitThrew"|>];
+        
+        If[!AssociationQ[smartResult],
+          smartResult = <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        
+        smartStatus  = Lookup[smartResult, "Status", "Failed"];
+        smartWritten = Lookup[smartResult, "CellsWritten", 0];
+        
+        (* Smart commit が成功 (1 セル以上書けた、または NoCells で payload 自体が空) → 完了 *)
+        If[smartStatus === "OK" || smartStatus === "NoCells",
+          Return[
+            Append[smartResult,
+              "Source" -> "iSmartPayloadCommit (primary)"],
+            Module]];
+        
+        (* Smart commit が NotANotebook → 元の commit でも同じ結果。そのまま返す *)
+        If[smartStatus === "NotANotebook",
+          Return[
+            Append[smartResult,
+              "Source" -> "iSmartPayloadCommit (primary)"],
+            Module]];
+        
+        (* Smart commit が Failed (NotebookWrite 例外等の rare case)
+         *   → 最後の手段として元の commit を試す *)
+        If[isVerbose,
+          Print[Style[
+            "[commit-safety] Smart commit failed (status=" <>
+              ToString[smartStatus] <>
+              "). Falling back to original commit.",
+            Italic, GrayLevel[0.4]]]];
+        
+        origResult = Quiet @ Check[
+          $iCommitSafetyOriginalSlideCommit[targetNb, reducedArtifact],
+          <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        If[!AssociationQ[origResult],
+          origResult = <|"Status" -> "Failed", "CellsWritten" -> 0|>];
+        origWritten = Lookup[origResult, "CellsWritten", 0];
+        
+        <|"Status"         -> If[origWritten > 0, "OK", "Failed"],
+          "CellsWritten"   -> smartWritten + origWritten,
+          "SmartResult"    -> smartResult,
+          "OriginalResult" -> origResult,
+          "Source"         -> "iSmartPayloadCommit+iDeterministicSlideCommit"|>
+    ]
+  ];
+
+(* invalid args: 元の iDeterministicSlideCommit と同じく Failed *)
+iDeterministicSlideCommit[___] :=
+  <|"Status" -> "Failed",
+    "CellsWritten" -> 0,
+    "Error" -> "InvalidArguments",
+    "Source" -> "iDeterministicSlideCommit (override)"|>;
+
+(* === Verbose toggle (optional) ==================================== *)
+
+(* ユーザーが Verbose を有効にしたいときは:
+ *   ClaudeOrchestrator`Private`$iCommitSafetyVerbose = True
+ * とすると override の動作がトレースされる。 *)
+
+If[!ValueQ[$iCommitSafetyVerbose],
+  $iCommitSafetyVerbose = False];
+
+
+(* === Load confirmation ============================================ *)
+
+
+  End[]; (* ClaudeOrchestrator`Private` *)
+];
+
+
+(* ============================================================
+   A4Stub 統合 (旧 claudecode_a4_stub.wl, ClaudeOrchestratorA4`)
+   ============================================================ *)
+
+If[TrueQ[$ClaudeOrchestratorEnableA4Stub],
+  Begin["ClaudeOrchestrator`Private`"];
+(* ::Package:: *)
+
+(* claudecode_a4_stub.wl -- A4 hook stub for ClaudeOrchestrator
+ *
+ * Phase 34 Phase A4.4 (2026-04-26)
+ *
+ * 責務:
+ *   1. ClaudeOrchestratorA4 namespace の 3 関数
+ *      (ClaudeResolveQueryFnForRole / ClaudeResolveModelForRole /
+ *       ClaudeInjectDirectivePrefix) の最小実装 (stub) を提供する。
+ *   2. ClaudeOrchestrator 本体が `Length[Names["ClaudeOrchestratorA4`...*"]] > 0`
+ *      で hook 存在を判定するため、シンボル名が宣言されているのに DownValues が
+ *      無いと「未評価式が orchestrator 内部で伝播」して LLM 呼び出しが空文字列
+ *      になる問題を解消する。
+ *   3. stub は passthrough (model-aware routing は実装しない)。本格実装は
+ *      Phase A4.5 以降で行う。
+ *
+ * 背景 (Phase A4.4 analysis, result37/38.nb):
+ *   ClaudeOrchestratorA4 のシンボルは Names で見つかるが DownValues が無く、
+ *   `ClaudeResolveQueryFnForRole[Automatic, "claude-opus-4.7", "Explore"]`
+ *   が未評価式のまま orchestrator 内部の queryFn に代入される。その結果、
+ *   QueryProvider 内 `Quiet @ Check[queryFn[prompt], ""]` が空文字列を返し、
+ *   ParseProposal が `<|"Summary" -> ""|>` を artifact payload とする。
+ *
+ * 設計上の不変条件:
+ *   - 既存のシンボル定義 (DownValues 既存) を上書きしない。再ロード安全。
+ *   - ClaudeOrchestrator 本体を変更しない。
+ *   - stub は最小機能 (passthrough)。model-aware routing は実装範囲外。
+ *
+ * 動作 (passthrough):
+ *   - ClaudeResolveQueryFnForRole[queryFn, model, role]:
+ *     queryFn === Automatic なら ClaudeCode`ClaudeQueryBg を返す。
+ *     それ以外なら queryFn をそのまま返す。
+ *   - ClaudeResolveModelForRole[role, model]:
+ *     model をそのまま返す。
+ *   - ClaudeInjectDirectivePrefix[prompt, role, model, goal]:
+ *     prompt をそのまま返す (directive 注入はしない)。
+ *
+ * 依存:
+ *   - ClaudeOrchestrator.wl (既にロード済み、シンボルは宣言だけされている想定)
+ *   - ClaudeCode`ClaudeQueryBg (queryFn のデフォルト)
+ *
+ * Load:
+ *   Block[{$CharacterEncoding = "UTF-8"}, Get["claudecode_a4_stub.wl"]]
+ *
+ * 関連仕様書:
+ *   - Phase34_phase_a42_analysis.md
+ *   - Phase34_phase_a41_analysis.md (Model 伝播問題: A4 hook 未実装の派生)
+ *   - claude_multi_agent_orchestration_spec.md
+ *)
+
+(* === Version marker ============================================== *)
+
+ClaudeOrchestrator`$A4StubVersion =
+  "v2026-04-26-phase-a44-stub";
+
+ClaudeOrchestrator`$A4StubVersion::usage =
+  "$ClaudeA4StubVersion is the version string of the Phase A4.4 hook stub.";
+
+
+(* === ClaudeResolveQueryFnForRole ================================= *)
+
+(* 既存定義があれば触らない (再ロード安全) *)
+If[Length[DownValues[
+    ClaudeOrchestrator`A4ResolveQueryFnForRole]] === 0,
+  
+  ClaudeOrchestrator`A4ResolveQueryFnForRole[
+      queryFn_, model_, role_] :=
+    <|"QueryFunction" -> Which[
+        (* queryFn がすでに関数なら そのまま使う *)
+        queryFn === Automatic,
+          (* デフォルトは ClaudeQueryBg。ロード済みのはずだが防御的にチェック *)
+          If[Length[Names["ClaudeCode`ClaudeQueryBg"]] > 0 &&
+             Length[DownValues[ClaudeCode`ClaudeQueryBg]] > 0,
+            ClaudeCode`ClaudeQueryBg,
+            (* 最後の手段: 何もしない (空文字列を返す identity) *)
+            Function[prompt, ""]],
+        True,
+          queryFn],
+      "Source" -> "A4StubPassthrough",
+      "Model"  -> model,
+      "Role"   -> role|>;
+  
+  (* 引数が違う形で来ても落ちないように: 不正引数は空 Association *)
+  ClaudeOrchestrator`A4ResolveQueryFnForRole[___] :=
+    <|"QueryFunction" -> If[
+        Length[DownValues[ClaudeCode`ClaudeQueryBg]] > 0,
+        ClaudeCode`ClaudeQueryBg,
+        Function[prompt, ""]],
+      "Source" -> "A4StubPassthroughInvalidArgs"|>;
+  
+  Null,
+  Null];
+
+(* === ClaudeResolveModelForRole =================================== *)
+
+If[Length[DownValues[
+    ClaudeOrchestrator`A4ResolveModelForRole]] === 0,
+  
+  (* role に応じた model 解決は本格実装範囲。stub では model をそのまま返す。 *)
+  ClaudeOrchestrator`A4ResolveModelForRole[role_, model_] :=
+    Which[
+      model === Automatic || model === None,
+        (* default model: $ClaudePrivateModel があればそれ、なければ Automatic *)
+        If[Length[Names["ClaudeCode`$ClaudePrivateModel"]] > 0 &&
+           ValueQ[ClaudeCode`$ClaudePrivateModel],
+          ClaudeCode`$ClaudePrivateModel,
+          Automatic],
+      True,
+        model];
+  
+  ClaudeOrchestrator`A4ResolveModelForRole[___] := Automatic;
+  
+  Null,
+  Null];
+
+(* === ClaudeInjectDirectivePrefix ================================ *)
+
+If[Length[DownValues[
+    ClaudeOrchestrator`A4InjectDirectivePrefix]] === 0,
+  
+  (* directive prefix の注入は本格実装範囲。stub では prompt を passthrough。 *)
+  ClaudeOrchestrator`A4InjectDirectivePrefix[
+      prompt_, role_, model_, goal_] :=
+    If[StringQ[prompt], prompt, ToString[prompt]];
+  
+  ClaudeOrchestrator`A4InjectDirectivePrefix[prompt_, ___] :=
+    If[StringQ[prompt], prompt, ToString[prompt]];
+  
+  ClaudeOrchestrator`A4InjectDirectivePrefix[___] := "";
+  
+  Null,
+  Null];
+
+
+(* === Load confirmation ============================================ *)
+
+
+  End[]; (* ClaudeOrchestrator`Private` *)
+];
+

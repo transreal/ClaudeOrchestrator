@@ -32,6 +32,10 @@ ClaudeOrchestrator は [ClaudeRuntime](https://github.com/transreal/ClaudeRuntim
 NBAccess → claudecode_base → ClaudeRuntime → ClaudeOrchestrator → claudecode
 ```
 
+**ClaudeEval の非同期化（v2026-04-20 以降）:**
+
+`$ClaudeEvalHook`（ClaudeEval）はデフォルトで **非同期モード** で動作します。`$ClaudeOrchestratorAsyncMode` が `True`（既定値）の場合、`$ClaudeEvalHook` はオーケストレーションを `ClaudeRunOrchestrationAsync` 経由で起動し、フロントエンド（ノートブック UI）をブロックせずに `orchJobId` を即座に返します。完了後の結果は `ClaudeOrchestrationResult` で取得できます。同期動作に戻したい場合は `$ClaudeOrchestratorAsyncMode = False` に設定してください。
+
 ---
 
 ## 基本的な使い方
@@ -51,6 +55,17 @@ result = ClaudeRunOrchestration[
 ];
 result["Status"]
 (* "Complete" *)
+```
+
+フロントエンドをブロックせずに実行したい場合（既定の動作）は `ClaudeRunOrchestrationAsync` を使用します。
+
+```wolfram
+jobId = ClaudeRunOrchestrationAsync[
+  "30ページのスライド資料を作成する",
+  MaxTasks -> 5
+];
+(* すぐに orchJobId が返る — ノートブック UI はブロックされない *)
+ClaudeOrchestrationResult[jobId]  (* 完了後に結果を取得 *)
 ```
 
 ---
@@ -280,6 +295,8 @@ commitResult["Status"]
 
 Planning → Spawn → Reduce → Commit の全フェーズを直列で実行します。小〜中規模のタスクに適しています。
 
+フロントエンドをブロックしない非同期版は [`ClaudeRunOrchestrationAsync`](#clauderunorchestrationasync) を使用してください。`$ClaudeEvalHook` は既定でこちらを使います。
+
 **シグネチャ:**
 ```wolfram
 ClaudeRunOrchestration[input, opts]
@@ -322,7 +339,11 @@ result = ClaudeRunOrchestration[
 
 ## 非同期実行 API
 
-長時間かかるオーケストレーションはフロントエンドをブロックしないよう非同期実行が推奨です。`$ClaudeOrchestratorAsyncMode` が `True`（既定）のとき、`$ClaudeEvalHook` はこの非同期パスを使います。
+長時間かかるオーケストレーションはフロントエンドをブロックしないよう非同期実行が推奨です。
+
+**v2026-04-20 以降、`$ClaudeEvalHook`（ClaudeEval）はデフォルトで非同期モードで動作します。** `$ClaudeOrchestratorAsyncMode` が `True`（既定）のとき、`$ClaudeEvalHook` はオーケストレーションを `ClaudeRunOrchestrationAsync` 経由で起動し、`orchJobId` を即座に返します。フロントエンドのセル評価はブロックされません。
+
+同期モードに戻すには `$ClaudeOrchestratorAsyncMode = False` を設定してください（詳細は[グローバル設定変数](#グローバル設定変数)を参照）。
 
 ### ClaudeRunOrchestrationAsync
 
@@ -335,7 +356,19 @@ ClaudeRunOrchestrationAsync[input, opts]
 
 オプションは `ClaudeRunOrchestration` と同じです。
 
-**使用例:**
+**`$ClaudeEvalHook` との関係:**
+
+`$ClaudeOrchestratorAsyncMode` が `True` のとき、`$ClaudeEvalHook` は内部的にこの関数を呼び出します。ノートブックのセルを評価するとバックグラウンドでオーケストレーションが開始され、セルの評価は即座に完了します。結果は `ClaudeOrchestrationResult` で後から取得します。
+
+```wolfram
+(* $ClaudeEvalHook 経由の動作イメージ（内部） *)
+(* $ClaudeOrchestratorAsyncMode = True のとき *)
+jobId = ClaudeRunOrchestrationAsync["論文要約を 3 つ作成する", MaxTasks -> 3];
+jobId
+(* "orch-20260421-001" — フロントエンドはここで返る *)
+```
+
+**直接呼び出しの例:**
 ```wolfram
 jobId = ClaudeRunOrchestrationAsync["論文要約を 3 つ作成する", MaxTasks -> 3];
 jobId
@@ -547,7 +580,7 @@ pd["Status"]     (* "OK" / "Failed" *)
 | `$ClaudeOrchestratorDenyHeads` | `{NotebookWrite, CreateNotebook, ...}` | ワーカー禁止ヘッド一覧 |
 | `$ClaudeOrchestratorRealLLMEndpoint` | `None` | Real LLM エンドポイント設定 |
 | `$ClaudeOrchestratorCLICommand` | `Automatic` | CLI コマンド名/パス |
-| `$ClaudeOrchestratorAsyncMode` | `True` | 非同期モードの有効/無効 |
+| `$ClaudeOrchestratorAsyncMode` | `True` | `$ClaudeEvalHook` の非同期モード有効/無効 |
 
 ### `$ClaudeOrchestratorRealLLMEndpoint` の設定値
 
@@ -562,6 +595,10 @@ pd["Status"]     (* "OK" / "Failed" *)
 
 ### `$ClaudeOrchestratorAsyncMode` の切り替え
 
+`$ClaudeOrchestratorAsyncMode` は `$ClaudeEvalHook`（ClaudeEval）が非同期経路（`ClaudeRunOrchestrationAsync`）と同期経路（`ClaudeRunOrchestration`）のどちらを使うかを制御します。
+
+**既定は `True`（非同期）です。** ノートブックのセル評価はブロックされず、バックグラウンドでオーケストレーションが実行されます。
+
 ```wolfram
 (* 同期モードに切り替える（旧来の挙動） *)
 $ClaudeOrchestratorAsyncMode = False;
@@ -569,6 +606,19 @@ $ClaudeOrchestratorAsyncMode = False;
 (* 非同期モードに戻す（既定） *)
 $ClaudeOrchestratorAsyncMode = True;
 ```
+
+**非同期モード（`True`）の動作フロー:**
+
+1. `$ClaudeEvalHook` が `ClaudeRunOrchestrationAsync` を呼び出し、`orchJobId` を即座に返す
+2. バックグラウンドで DAG コールバックチェーンが Planning → Spawn → Reduce → Commit を実行
+3. `ClaudeOrchestrationStatus[jobId]` で進捗を確認
+4. `ClaudeOrchestrationResult[jobId]` で完了後の結果を取得
+
+**同期モード（`False`）の動作フロー:**
+
+1. `$ClaudeEvalHook` が `ClaudeRunOrchestration` を呼び出す
+2. 全フェーズ完了まで評価セルがブロックされる
+3. 完了時に結果が直接返される
 
 ---
 
@@ -582,6 +632,8 @@ $ClaudeOrchestratorAsyncMode = True;
 | `SpawnResult["Status"] == "Partial"` | 一部ワーカーが失敗 | `SpawnResult["Failures"]` を確認し、該当タスクを再実行する |
 | `CommitResult["Status"] == "RolledBack"` | Verifier が検証失敗 | `CommitResult["Details"]` を確認し、reduced artifact を修正する |
 | `ClaudeRealLLMQuery` が `$Failed` を返す | エンドポイントの設定誤り | `ClaudeRealLLMDiagnose` で詳細を確認する |
+| `ClaudeOrchestrationResult[jobId]` が `Missing` を返す | ジョブが未完了 | `ClaudeOrchestrationStatus[jobId]["Status"]` で進捗を確認する |
+| 非同期ジョブが `"Failed"` 状態になる | バックグラウンド実行中のエラー | `ClaudeOrchestrationResult[jobId]["Failures"]` でエラー詳細を確認する |
 
 ### TaskSpec の必須キー
 

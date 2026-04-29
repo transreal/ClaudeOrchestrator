@@ -56,9 +56,16 @@ claudecode
 
 `ClaudeRunOrchestrationAsync` は Planning → Spawn → Reduce → Commit の全フェーズを DAG コールバックチェーンで非同期実行し、呼び出し元をブロックせずに `orchJobId` を即座に返します。`ClaudeOrchestrationStatus`・`ClaudeOrchestrationResult`・`ClaudeOrchestrationWait`・`ClaudeOrchestrationCancel` でジョブのライフサイクルを制御できます。
 
-### ClaudeEval との統合
+### ClaudeEval との統合（非同期化 — v2026-04-20 以降）
 
-**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** 具体的には、パッケージ読み込み時に `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべて `ClaudeRunOrchestrationAsync`（または `$ClaudeOrchestratorAsyncMode -> False` の場合は `ClaudeRunOrchestration`）経由で実行されます。ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
+**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** 具体的には、パッケージ読み込み時に `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべてオーケストレーターパイプライン経由で実行されます。
+
+v2026-04-20 以降、`$ClaudeEvalHook` はデフォルトで **非同期モード** で動作します。`$ClaudeOrchestratorAsyncMode` が `True`（既定値）の場合、`ClaudeEval[...]` はオーケストレーションを `ClaudeRunOrchestrationAsync` 経由で起動し、フロントエンド（ノートブック UI）をブロックせずに `orchJobId` を即座に返します。完了後の結果は `ClaudeOrchestrationResult` で取得できます。
+
+- `$ClaudeOrchestratorAsyncMode = True`（既定）→ `ClaudeRunOrchestrationAsync` 経由で非同期実行（ノートブックをブロックしない）
+- `$ClaudeOrchestratorAsyncMode = False` → `ClaudeRunOrchestration` 経由で同期実行（完了まで待機）
+
+ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
 
 ### Real LLM 統合
 
@@ -178,7 +185,7 @@ result[["Status"]]
 |------|--------|------|
 | `$ClaudeOrchestratorRealLLMEndpoint` | `None` | `"ClaudeCode"` / `"CLI"` / カスタム関数 |
 | `$ClaudeOrchestratorCLICommand` | `Automatic` | CLI 実行ファイルのパス（Windows では `claude.cmd`）|
-| `$ClaudeOrchestratorAsyncMode` | `True` | `True`: 非同期、`False`: 同期 |
+| `$ClaudeOrchestratorAsyncMode` | `True` | `True`: 非同期（既定）、`False`: 同期 |
 
 環境変数による設定も可能です。
 
@@ -231,9 +238,9 @@ result[["Status"]]
 - **`ClaudeOrchestrationJobs[]`** — 追跡中のジョブ一覧を Dataset で返します。
 - **`ClaudeContinueBatch[runtimeId, batchInstructions, opts]`** — 単一 runtime セッションを維持したまま、複数プロンプトを `ClaudeContinueTurn` で順次投入します。ノートブック共有問題を回避する現実解です。
 
-#### ClaudeEval との統合
+#### ClaudeEval との統合（非同期化）
 
-ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書きされ、`ClaudeEval[...]` はオーケストレーターパイプライン経由で実行されます。`$ClaudeOrchestratorAsyncMode` で同期／非同期を切り替えられます。
+ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書きされ、`ClaudeEval[...]` はオーケストレーターパイプライン経由で実行されます。v2026-04-20 以降、デフォルトは **非同期モード**（`$ClaudeOrchestratorAsyncMode = True`）です。`ClaudeEval[...]` はノートブック UI をブロックせず `orchJobId` を即座に返し、完了後の結果は `ClaudeOrchestrationResult` で取得します。`$ClaudeOrchestratorAsyncMode = False` に設定すると旧来の同期動作に戻せます。
 
 #### Real LLM 統合・診断
 
@@ -260,7 +267,7 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 | ファイル | 内容 |
 |----------|------|
 | `api.md` | API リファレンス（全関数・データ型・グローバル変数の仕様） |
-| `user_manual.md` | ユーザーマニュアル（各フェーズの詳細な使い方） |
+| `user_manual.md` | ユーザーマニュアル（各フェーズの詳細な使い方・ClaudeEval 非同期化の詳細） |
 | `setup.md` | インストール手順書（動作要件・環境構築・トラブルシューティング） |
 | `example.md` | 使用例集（バージョン確認からバッチ処理まで 11 例） |
 
@@ -268,12 +275,12 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 
 ## 使用例・デモ
 
-### ClaudeEval のオーケストレーター統合について
+### ClaudeEval の非同期化について（v2026-04-20 以降）
 
-**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** パッケージ読み込み時に内部フック `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべてマルチエージェントパイプライン経由で実行されます。
+**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** v2026-04-20 以降、デフォルトは非同期モードです。パッケージ読み込み時に内部フック `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべてマルチエージェントパイプライン経由で非同期実行されます。
 
-- `$ClaudeOrchestratorAsyncMode -> True`（既定）の場合 → `ClaudeRunOrchestrationAsync` を使用（ノートブックをブロックしない）
-- `$ClaudeOrchestratorAsyncMode -> False` の場合 → `ClaudeRunOrchestration` を使用（完了まで待機）
+- `$ClaudeOrchestratorAsyncMode = True`（既定）の場合 → `ClaudeRunOrchestrationAsync` を使用（ノートブックをブロックしない）
+- `$ClaudeOrchestratorAsyncMode = False` の場合 → `ClaudeRunOrchestration` を使用（完了まで待機）
 
 ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
 
@@ -292,9 +299,9 @@ Block[{$CharacterEncoding = "UTF-8"},
 $ClaudeEvalHook
 (* ClaudeOrchestrator ベースのフック関数が返る *)
 
-(* 以降の ClaudeEval 呼び出しはすべてオーケストレーターパイプラインを通る *)
+(* 以降の ClaudeEval 呼び出しはすべてオーケストレーターパイプラインを通る（非同期） *)
 ClaudeEval["フィボナッチ数列の最初の 10 項を求めて表示する"]
-(* → ClaudeRunOrchestrationAsync 経由で非同期実行される *)
+(* → ClaudeRunOrchestrationAsync 経由で非同期実行される（orchJobId を即座に返す） *)
 ```
 
 ### 例 0b: 同期モードへの切り替えと ClaudeEval
