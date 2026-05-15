@@ -31,6 +31,20 @@
 
 BeginPackage["ClaudeOrchestrator`"];
 
+(* NBAccess パッケージを依存ロード (Phase 21: NBFileImport / NBFileExport
+   ファサードを Commit phase の file_contents handler から呼ぶため)
+   $InputFileName から自分自身のディレクトリを取得し、$Path に一時的に
+   prepend して NBAccess.wl を確実に発見できるようにする。 *)
+Block[{$CharacterEncoding = "UTF-8",
+       iOrchPkgDir = Which[
+         StringQ[$InputFileName] && $InputFileName =!= "",
+           DirectoryName[$InputFileName],
+         StringQ[Quiet @ Symbol["Global`$packageDirectory"]],
+           Symbol["Global`$packageDirectory"],
+         True, Directory[]]},
+  Quiet @ Block[{$Path = Prepend[$Path, iOrchPkgDir]},
+    Needs["NBAccess`", "NBAccess.wl"]]];
+
 (* ════════════════════════════════════════════════════════
    Public API
    ════════════════════════════════════════════════════════ *)
@@ -1960,7 +1974,9 @@ You must respond with a JSON object matching this schema:
 RULES:
 1. Respond ONLY with a JSON object (inside ```json ... ``` fences).
 2. You MUST NOT use NotebookWrite, CreateNotebook, RunProcess,
-   ExternalEvaluate, SystemCredential, or any file I/O operations.
+   ExternalEvaluate, SystemCredential, Import, Export, or any direct
+   file I/O operations. These are blocked by the Allowed Expression
+   Surface and will be denied.
 3. Your output is an artifact that will be passed to downstream tasks.
 4. Be concise and precise. Focus only on your assigned task.
 5. All keys from the OutputSchema must be present in your response.
@@ -1968,7 +1984,30 @@ RULES:
    descriptions, etc.), preserve the language of the task Goal and
    dependency artifacts. If the task is written in a specific natural
    language, produce those fields in the SAME language. Do not translate
-   unless the task explicitly requests translation.";
+   unless the task explicitly requests translation.
+
+SIDE EFFECTS (file I/O, evaluation):
+- If your task requires CREATING or MODIFYING files, declare them in
+  the artifact payload under the field \"file_contents\" as an array
+  of objects: [{\"path\": \"<absolute path>\", \"content\":
+  \"<full text>\"}, ...]. These will be executed by the Commit phase
+  under access controls (NBFileExport with NBGetAccessibleDirs[]).
+- If your task requires RUNNING TESTS or EVALUATING expressions,
+  declare them under \"evaluations\" as an array of objects:
+  [{\"label\": \"<test name>\", \"expression\":
+  \"<Mathematica expression as text>\"}, ...]. These will be executed
+  by the Verify phase, NOT by you.
+
+HONESTY RULE (CRITICAL):
+- DO NOT claim that files were created, tests passed, or any side
+  effect was performed UNLESS the corresponding declaration is present
+  in your payload (file_contents / evaluations).
+- Specifically, do NOT write summary text such as \"created file X\",
+  \"all 12 tests passed\", \"package installed\" unless the actual
+  file content / test expression is in your payload for downstream
+  execution.
+- Hallucinated success claims will be detected by the verification
+  framework and will cause your artifact to be rejected.";
 
 (* v2026-04-21 T20: \:65e5\:672c\:8a9e\:7248 worker system prompt\:3002
    $Language === \"Japanese\" \:306e\:3068\:304d iWorkerBuildSystemPrompt \:304c\:3053\:3061\:3089\:3092\:4f7f\:3046\:3002
@@ -1989,14 +2028,33 @@ $iWorkerSystemPromptJaTemplate =
 \:30eb\:30fc\:30eb:
 1. ```json ... ``` \:3067\:56f2\:307e\:308c\:305f JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306e\:307f\:3067\:5fdc\:7b54\:3059\:308b\:3002
 2. NotebookWrite / CreateNotebook / RunProcess / ExternalEvaluate /
-   SystemCredential / \:30d5\:30a1\:30a4\:30eb I/O \:7b49\:306e\:526f\:4f5c\:7528\:64cd\:4f5c\:306f\:4e00\:5207\:4f7f\:308f\:306a\:3044\:3002
+   SystemCredential / Import / Export / \:30d5\:30a1\:30a4\:30eb I/O \:7b49\:306e\:526f\:4f5c\:7528\:64cd\:4f5c\:306f
+   \:4e00\:5207\:4f7f\:308f\:306a\:3044\:3002\:3053\:308c\:3089\:306f Allowed Expression Surface \:3067\:62d2\:5426\:3055\:308c\:308b\:3002
 3. \:51fa\:529b\:306f\:5f8c\:7d9a\:30bf\:30b9\:30af\:306b\:6e21\:3055\:308c\:308b artifact \:3067\:3042\:308b\:3002
 4. \:7c21\:6f54\:304b\:3064\:6b63\:78ba\:306b\:3002\:5272\:308a\:5f53\:3066\:3089\:308c\:305f\:30bf\:30b9\:30af\:306b\:96c6\:4e2d\:3059\:308b\:3002
 5. OutputSchema \:306e\:5168\:30ad\:30fc\:3092\:5fdc\:7b54\:306b\:542b\:3081\:308b\:3002
 6. \:81ea\:7531\:8a18\:8ff0\:306e\:81ea\:7136\:8a00\:8a9e\:30d5\:30a3\:30fc\:30eb\:30c9 (\:30bf\:30a4\:30c8\:30eb\:3001\:8981\:7d04\:3001\:672c\:6587\:3001\:8aac\:660e\:7b49) \:306f\:3001
    \:30bf\:30b9\:30af\:306e Goal \:3068\:4f9d\:5b58 artifact \:306e\:8a00\:8a9e\:3092\:4fdd\:6301\:3059\:308b\:3002
    \:65e5\:672c\:8a9e\:3067\:6307\:793a\:3055\:308c\:305f\:30bf\:30b9\:30af\:306b\:5bfe\:3057\:3066\:306f\:3053\:308c\:3089\:306e\:30d5\:30a3\:30fc\:30eb\:30c9\:3082
-   \:65e5\:672c\:8a9e\:3067\:8a18\:8ff0\:3059\:308b\:3002\:660e\:793a\:7684\:306a\:7ffb\:8a33\:6307\:793a\:304c\:306a\:3044\:9650\:308a\:7ffb\:8a33\:306f\:3057\:306a\:3044\:3002";
+   \:65e5\:672c\:8a9e\:3067\:8a18\:8ff0\:3059\:308b\:3002\:660e\:793a\:7684\:306a\:7ffb\:8a33\:6307\:793a\:304c\:306a\:3044\:9650\:308a\:7ffb\:8a33\:306f\:3057\:306a\:3044\:3002
+
+\:526f\:4f5c\:7528 (\:30d5\:30a1\:30a4\:30eb I/O\:3001\:5f0f\:8a55\:4fa1):
+- \:30d5\:30a1\:30a4\:30eb\:306e\:4f5c\:6210\:30fb\:5909\:66f4\:304c\:5fc5\:8981\:306a\:5834\:5408\:3001 artifact payload \:306e
+  \"file_contents\" \:30d5\:30a3\:30fc\:30eb\:30c9\:306b\:914d\:5217\:3068\:3057\:3066\:5ba3\:8a00\:3059\:308b:
+  [{\"path\": \"<\:7d76\:5bfe\:30d1\:30b9>\", \"content\": \"<\:30d5\:30a1\:30a4\:30eb\:5168\:6587>\"}, ...]
+  \:5ba3\:8a00\:3055\:308c\:305f\:5185\:5bb9\:306f Commit phase \:304c
+  NBFileExport (NBGetAccessibleDirs[] \:5236\:7d04\:4e0b) \:3067\:5b9f\:884c\:3059\:308b\:3002
+- \:30c6\:30b9\:30c8\:5b9f\:884c\:30fb\:5f0f\:8a55\:4fa1\:304c\:5fc5\:8981\:306a\:5834\:5408\:3001 \"evaluations\" \:30d5\:30a3\:30fc\:30eb\:30c9\:306b\:914d\:5217\:3068\:3057\:3066\:5ba3\:8a00\:3059\:308b:
+  [{\"label\": \"<\:30c6\:30b9\:30c8\:540d>\", \"expression\":
+  \"<Mathematica \:5f0f\:6587\:5b57\:5217>\"}, ...]
+  \:5ba3\:8a00\:3055\:308c\:305f\:5f0f\:306f Verify phase \:304c\:5b9f\:884c\:3059\:308b\:3002 worker \:81ea\:8eab\:306f\:5b9f\:884c\:3057\:306a\:3044\:3002
+
+\:6b63\:76f4\:30eb\:30fc\:30eb (\:91cd\:8981):
+- \:30d5\:30a1\:30a4\:30eb\:304c\:4f5c\:6210\:3055\:308c\:305f\:3001 \:30c6\:30b9\:30c8\:304c\:901a\:3063\:305f\:3001 \:526f\:4f5c\:7528\:304c\:5b9f\:884c\:3055\:308c\:305f\:3001\:7b49\:3001
+  payload \:306b file_contents / evaluations \:3068\:3057\:3066\:5ba3\:8a00\:3055\:308c\:3066\:3044\:306a\:3044\:9650\:308a\:4e3b\:5f35\:3057\:306a\:3044\:3002
+- \:7279\:306b \"X \:3092\:4f5c\:6210\:3057\:307e\:3057\:305f\"\:3001 \"12/12 \:30c6\:30b9\:30c8\:5408\:683c\"\:3001 \"\:30d1\:30c3\:30b1\:30fc\:30b8\:3092\:30a4\:30f3\:30b9\:30c8\:30fc\:30eb\:6e08\"\:3001
+  \:306a\:3069\:306e\:8981\:7d04\:6587\:306f\:3001 \:5f8c\:6bb5\:3067\:5b9f\:884c\:3055\:308c\:308b\:5ba3\:8a00\:304c payload \:306b\:5b58\:5728\:3057\:306a\:3044\:9650\:308a\:8a18\:8f09\:3057\:306a\:3044\:3002
+- \:865a\:507d\:306e\:6210\:529f\:4e3b\:5f35\:306f\:691c\:8a3c\:30d5\:30ec\:30fc\:30e0\:30ef\:30fc\:30af\:3067\:691c\:51fa\:3055\:308c\:3001 artifact \:304c\:5374\:4e0b\:3055\:308c\:308b\:3002";
 
 iWorkerBuildSystemPrompt[role_String, task_Association,
     depArtifacts_Association, referenceText_:None] :=
@@ -2553,14 +2611,23 @@ iCollectDepArtifactsFromJob[job_Association, deps_List,
     Association @@ Map[# -> Lookup[result, #, <||>] &, deps]
   ];
 
-(* iRunSingleWorkerSync: \:5358\:4e00 worker \:30bf\:30b9\:30af\:3092 adapter \:76f4\:63a5\:547c\:3073\:51fa\:3057\:3067
-   \:5b9f\:884c\:3001 artifact \:3092\:8fd4\:3059\:3002 DAG \:30cf\:30f3\:30c9\:30e9\:304b\:3089\:3082\:3001 \:7e26\:5217\:30d1\:30b9\:306e
-   fallback \:304b\:3089\:3082\:5229\:7528\:53ef\:80fd\:3002 *)
+(* iRunSingleWorkerSync: \:5358\:4e00 worker \:30bf\:30b9\:30af\:3092 adapter 6 \:95a2\:6570\:30d5\:30eb\:7d4c\:8def\:3067
+   \:5b9f\:884c\:3057\:3001 artifact \:3092\:8fd4\:3059\:3002 DAG \:30cf\:30f3\:30c9\:30e9\:304b\:3089\:3082\:3001 \:7e26\:5217\:30d1\:30b9\:306e
+   fallback \:304b\:3089\:3082\:5229\:7528\:53ef\:80fd\:3002
+   
+   Phase 21 (2026-05): nested DAG \:3092\:907f\:3051\:308b\:305f\:3081 ClaudeRunTurn \:306f\:547c\:3070\:305a\:3001
+   adapter \:306e BuildContext \[Rule] QueryProvider \[Rule] ParseProposal \[Rule]
+   ValidateProposal \[Rule] ExecuteProposal \[Rule] RedactResult \:3092 sync \:3067
+   \:9806\:6b21\:547c\:3076\:3002Validate \:304c Deny / Execute \:304c Success=False \:306e\:3068\:304d\:306f
+   artifact Status="Failed" \:3068\:306a\:308a\:3001\:7406\:7531\:3092 Diagnostics \:306b\:69cb\:9020\:5316\:3057\:3066
+   \:8a18\:9332\:3059\:308b\:3002 *)
 iRunSingleWorkerSync[task_Association, builder_, queryFn_,
     depArtifacts_Association, jsonRetryMax_Integer,
     refText_:None] :=
   Module[{role, taskId, adapter, ctxPacket, queryResp, parsed,
-          payload, input, schemaValidation, artifact},
+          validation, execResult, redacted, finalPayload,
+          input, schemaValidation, artifact, validateOK, executeOK,
+          turnState},
     role   = Lookup[task, "Role", "Explore"];
     taskId = Lookup[task, "TaskId", ""];
     
@@ -2591,22 +2658,77 @@ iRunSingleWorkerSync[task_Association, builder_, queryFn_,
       "OutputSchema" -> Lookup[task, "OutputSchema", <||>]
     |>;
     
+    (* === adapter 6 \:95a2\:6570\:30d5\:30eb\:7d4c\:8def === *)
     ctxPacket = Quiet @ Check[adapter["BuildContext"][input, <||>], <||>];
     queryResp = Quiet @ Check[adapter["QueryProvider"][ctxPacket, <||>], None];
-    parsed = Quiet @ Check[adapter["ParseProposal"][queryResp], None];
-    payload = If[AssociationQ[parsed],
-      Lookup[parsed, "ArtifactPayload", None], None];
+    parsed    = Quiet @ Check[adapter["ParseProposal"][queryResp], None];
     
-    artifact = If[AssociationQ[payload],
+    (* ValidateProposal: HeldExpr \:306e\:5b89\:5168\:6027\:691c\:67fb (DenyHead \:7b49) *)
+    validation = If[AssociationQ[parsed],
+      Quiet @ Check[adapter["ValidateProposal"][parsed, ctxPacket],
+        <|"Decision" -> "Deny", "ReasonClass" -> "ValidatorFailed"|>],
+      <|"Decision" -> "Deny", "ReasonClass" -> "NoProposal"|>];
+    validateOK = Lookup[validation, "Decision", "Deny"] === "Permit";
+    
+    (* ExecuteProposal: validation \:7d50\:679c\:3092\:53d7\:3051\:3066\:5b9f\:884c
+       \:73fe\:884c adapter \:306e ExecuteProposal \:306f Validate \:304c Permit \:306a\:3089
+       parsed payload \:3092 RawResult \:3068\:3057\:3066\:8fd4\:3059 (\:5fdc\:7b54 JSON \:81ea\:4f53\:3092 artifact \:3068\:3059\:308b)\:3002
+       \:5c06\:6765 NBFileExport \:7d4c\:7531\:306e\:526f\:4f5c\:7528 proposal \:3092\:6271\:3046\:3068\:304d\:306f
+       \:3053\:3053\:3067 NBExecuteHeldExpr \:304c\:8d70\:308b\:3088\:3046\:62e1\:5f35\:3055\:308c\:308b *)
+    execResult = If[validateOK,
+      Quiet @ Check[adapter["ExecuteProposal"][parsed, validation],
+        <|"Success" -> False, "RawResult" -> None,
+          "Error" -> "ExecuteProposalFailed"|>],
+      <|"Success" -> False, "RawResult" -> None,
+        "Error" -> "ValidationDenied:" <> Lookup[validation, "ReasonClass", ""]|>];
+    executeOK = TrueQ[Lookup[execResult, "Success", False]];
+    
+    (* RedactResult: AccessSpec \:306b\:5fdc\:3058\:305f redaction *)
+    redacted = If[executeOK,
+      Quiet @ Check[adapter["RedactResult"][execResult, ctxPacket],
+        <|"RedactedResult" -> Lookup[execResult, "RawResult", None],
+          "Summary" -> ""|>],
+      <|"RedactedResult" -> None, "Summary" -> ""|>];
+    
+    (* finalPayload: redacted \:7d50\:679c\:3092\:512a\:5148\:3001 fallback \:3068\:3057\:3066 parsed payload *)
+    finalPayload = If[executeOK,
+      Module[{rr = Lookup[redacted, "RedactedResult", None]},
+        If[AssociationQ[rr], rr,
+          Lookup[parsed, "ArtifactPayload", <||>]]],
+      <||>];
+    
+    (* artifact \:69cb\:7bc9: Status \:306f Validate Permit && Execute Success \:306e\:3068\:304d\:306e\:307f Success *)
+    artifact = If[validateOK && executeOK &&
+                  AssociationQ[finalPayload] && Length[finalPayload] > 0,
       <|"TaskId" -> taskId,
         "Status" -> "Success",
         "ArtifactType" -> Lookup[task, "ExpectedArtifactType", "Generic"],
-        "Payload" -> payload,
-        "Diagnostics" -> <|"Source" -> "DAGWorkerDirect"|>|>,
-      <|"TaskId" -> taskId, "Status" -> "Failed",
+        "Payload" -> finalPayload,
+        "Diagnostics" -> <|
+          "Source"          -> "DAGWorkerSync",
+          "Decision"        -> Lookup[validation, "Decision", "Permit"],
+          "ReasonClass"     -> Lookup[validation, "ReasonClass", "OK"],
+          "ExecutionError"  -> Lookup[execResult, "Error", None],
+          "Attempts"        -> Lookup[queryResp, "Attempts", 1],
+          "JSONValid"       -> Lookup[queryResp, "JSONValid", True]|>|>,
+      <|"TaskId" -> taskId,
+        "Status" -> "Failed",
         "ArtifactType" -> Lookup[task, "ExpectedArtifactType", "Error"],
         "Payload" -> <||>,
-        "Diagnostics" -> <|"Error" -> "NoArtifactPayload"|>|>];
+        "Diagnostics" -> <|
+          "Source"             -> "DAGWorkerSync",
+          "Decision"           -> Lookup[validation, "Decision", "Deny"],
+          "ReasonClass"        -> Lookup[validation, "ReasonClass", "Unknown"],
+          "VisibleExplanation" -> Lookup[validation, "VisibleExplanation", ""],
+          "ExecutionSuccess"   -> executeOK,
+          "ExecutionError"     -> Lookup[execResult, "Error", None],
+          "Error"              -> Which[
+            !validateOK,
+              "ValidationDenied: " <> Lookup[validation, "ReasonClass", ""],
+            !executeOK,
+              "ExecutionFailed: " <> ToString @ Lookup[execResult, "Error", ""],
+            True,
+              "NoArtifactPayload"]|>|>];
     
     (* Schema \:691c\:8a3c (\:7e26\:5217\:30d1\:30b9\:3068\:540c\:3058\:30ed\:30b8\:30c3\:30af) *)
     If[Lookup[artifact, "Status", ""] === "Success" &&
@@ -3743,7 +3865,17 @@ iCommitArtifactsOnce[targetNotebook_, reducedArtifact_Association,
   Module[{builder, adapter, runtimeId, input, confirm, verbose,
           result, status, commitMode, verifier, effectiveTarget,
           buffer, verifyOk, flushResult, bufferCells,
-          cellsBefore, cellsAfter, cellsDelta, model},
+          cellsBefore, cellsAfter, cellsDelta, model,
+          fileContentsList, fileExportResults, anyFileFailed,
+          allAssocs, hasLLMPayload,
+          (* Phase 21 (Step 6): file_contents handler の早期終了は
+             純粋な if/else gate で実装する。Throw/Catch/Return/Quiet/Check は
+             どれも Mathematica の message システムや未文書化挙動 (Quiet @ Check
+             が messages 0 件でも $Failed を返す等) と相性が悪いため。
+             earlyResult が None でなければ通常 LLM Commit phase を skip し、
+             Module の最後の式 = If gate の値として返す。 *)
+          earlyResult},
+    earlyResult = None;
     builder    = OptionValue["CommitterAdapterBuilder"];
     confirm    = TrueQ[OptionValue["Confirm"]];
     verbose    = TrueQ[OptionValue["Verbose"]];
@@ -3769,6 +3901,133 @@ iCommitArtifactsOnce[targetNotebook_, reducedArtifact_Association,
       effectiveTarget = buffer,
       effectiveTarget = targetNotebook
     ];
+    
+    (* ════════════════════════════════════════════════════════
+       Phase 21 (Step 6): file_contents deterministic handler
+       
+       reducedArtifact およびその WorkerArtifacts payload 内の
+       "file_contents" 宣言 ([{"path", "content"}, ...]) を反復的に
+       走査し、NBAccess`NBFileExport で実行する。これは LLM-driven
+       Commit (Cell 書き) の前に走る deterministic ステップで、
+       NBGetAccessibleDirs[] による access control が効く。
+       
+       ハルシネーション抑制: worker prompt の honesty rule と組み合わせ、
+       「ファイル作成」を主張しても file_contents が無ければ何も書かれず、
+       file_contents があれば実書き込みが行われ、Diagnostics に結果が
+       残る。
+       
+       実装注意:
+       (1) Module 局所変数として関数定義 (DownValues) を作ると環境
+           依存の衝突を起こす可能性があるため、While ループによる
+           stack-based traversal を採用。
+       (2) 内側に Module を入れ子にすると Return[] が内側だけを抜けて
+           関数全体を抜けないため、ここは外側 Module 直下に書く。
+       ════════════════════════════════════════════════════════ *)
+    fileContentsList = {};
+    allAssocs = {};
+    Module[{queue, cur, fc, payload, wa},
+      queue = {reducedArtifact};
+      While[Length[queue] > 0,
+        cur = First[queue];
+        queue = Rest[queue];
+        If[AssociationQ[cur],
+          AppendTo[allAssocs, cur];
+          fc = Lookup[cur, "file_contents", None];
+          If[ListQ[fc], AppendTo[fileContentsList, fc]];
+          payload = Lookup[cur, "Payload", None];
+          If[AssociationQ[payload],
+            queue = Append[queue, payload]];
+          wa = Lookup[cur, "WorkerArtifacts", None];
+          If[AssociationQ[wa],
+            queue = Join[queue, Values[wa]]]
+        ]
+      ]
+    ];
+    fileContentsList = Flatten[fileContentsList, 1];
+    
+    If[Length[fileContentsList] > 0,
+      If[verbose,
+        Print["  [commit-files] ", Length[fileContentsList],
+          " file_contents entries declared, executing via NBFileExport"]];
+      
+      fileExportResults = Map[
+        Function[entry,
+          Module[{path, content},
+            If[!AssociationQ[entry],
+              Return[<|"Status" -> "Denied",
+                "ReasonClass" -> "InvalidEntry",
+                "Entry" -> entry|>, Module]];
+            path    = Lookup[entry, "path", None];
+            content = Lookup[entry, "content", None];
+            If[!StringQ[path] || content === None,
+              Return[<|"Status" -> "Denied",
+                "ReasonClass" -> "InvalidEntry",
+                "Path" -> path|>, Module]];
+            Quiet @ Check[
+              NBAccess`NBFileExport[path, content,
+                Overwrite -> True],
+              <|"Status" -> "ExecutionFailed",
+                "Path" -> path,
+                "ReasonClass" -> "NBFileExportThrew"|>]
+          ]],
+        fileContentsList];
+      
+      anyFileFailed = AnyTrue[fileExportResults,
+        Function[entry,
+          AssociationQ[entry] &&
+          Lookup[entry, "Status", ""] =!= "OK"]];
+      
+      If[verbose,
+        Module[{okCount, failedCount},
+          okCount     = Count[fileExportResults,
+            e_Association /; Lookup[e, "Status", ""] === "OK"];
+          failedCount = Length[fileExportResults] - okCount;
+          Print["  [commit-files] ",
+            okCount, " written, ", failedCount, " failed"]]];
+      
+      (* 結果を reducedArtifact に補完 (downstream visibility 用) *)
+      reducedArtifact = Append[reducedArtifact,
+        "FileContentsResults" -> fileExportResults];
+      
+      (* 1 つでも失敗があれば earlyResult を Failed に設定。
+         後段の通常処理は If[earlyResult === None, ...] で skip される。 *)
+      If[anyFileFailed,
+        If[commitMode === "Transactional" &&
+           AssociationQ[Quiet @ Check[buffer, $Failed]],
+          iShadowBufferDiscard[buffer]];
+        earlyResult = <|"Status"  -> "Failed",
+                        "Details" -> "FileContentsExecutionFailed",
+                        "FileContentsResults" -> fileExportResults,
+                        "ReducedArtifact"     -> reducedArtifact|>];
+      
+      (* file_contents-only mode: hasLLMPayload 判定 + 早期 result 設定 *)
+      hasLLMPayload = AnyTrue[allAssocs,
+        Function[a,
+          AnyTrue[
+            {"expression", "expressions", "cells", "code", "HeldExpr"},
+            Function[k, KeyExistsQ[a, k]]]]];
+      
+      If[!hasLLMPayload && earlyResult === None,
+        If[verbose,
+          Print["  [commit-files] file_contents-only mode: ",
+            "no LLM commit payload, returning early as Committed"]];
+        (* Transactional mode の shadow buffer は discard
+           (LLM Cell 書きしないので flush 不要) *)
+        If[commitMode === "Transactional" &&
+           AssociationQ[Quiet @ Check[buffer, $Failed]],
+          iShadowBufferDiscard[buffer]];
+        earlyResult = <|"Status"  -> "Committed",
+                        "Details" -> "FileContentsOnly",
+                        "FileContentsResults" -> fileExportResults,
+                        "ReducedArtifact"     -> reducedArtifact|>];
+    ];
+    
+    (* 通常処理 (LLM Commit phase) を If gate で wrap する。
+       earlyResult が設定されていれば (= file_contents handler が早期終了を要求)
+       それを Module の最後の式として返し、未設定なら通常処理を評価する。
+       純粋な if/else 評価のため、Mathematica の message システムや
+       Quiet/Check の罠を完全に回避する。 *)
+    If[earlyResult === None,
     
     (* v2026-04-20 T08: builder \:304c Options \:3092\:53d7\:3051\:53d6\:308c\:308b\:306a\:3089 Model \:3092\:6e21\:3059\:3002
        iDefaultCommitterAdapterBuilder \:306f Options \:5bfe\:5fdc\:2014
@@ -3987,31 +4246,41 @@ iCommitArtifactsOnce[targetNotebook_, reducedArtifact_Association,
         "FallbackCellsWritten" -> fbCellsWritten
       |>
     ]
-  ];
+    ,
+    earlyResult       (* If の else 節 = file_contents handler 由来の早期終了値 *)
+    ]                 (* If 閉じ (= Module の最後の式 = 関数戻り値) *)
+  ];                  (* Module 閉じ *)
 
-(* Task 3: Public ClaudeCommitArtifacts \:306f iRetryableInvoke \:3067\:5305\:3080\:3002
-   Status = "Committed" \:306f Success\:3001 "NotImplemented" \:306f Permanent (retry \:7121\:52b9)\:3001
-   "Failed" / "RolledBack" \:306f Retryable\:3002 *)
+(* Public ClaudeCommitArtifacts。
+   Status = "Committed" は Success、"NotImplemented" は Permanent (retry 無効)、
+   "Failed" / "RolledBack" は Retryable。
+   
+   注意: iRetryableInvoke (Quiet @ Check ベース) は messages 0 件にもかかわらず
+   $Failed を返す未文書化挙動があるため bypass し、direct retry loop を採用する。 *)
 ClaudeCommitArtifacts[targetNotebook_, reducedArtifact_Association,
     opts:OptionsPattern[]] :=
-  Module[{retryMax, invokeResult, finalResult},
+  Module[{retryMax, attempt, result, classification, finalResult},
     retryMax = Max[1, OptionValue["CommitRetryMax"]];
     
-    invokeResult = iRetryableInvoke[
-      Function[t, iCommitArtifactsOnce[t, reducedArtifact, opts]],
-      targetNotebook,
-      "MaxAttempts" -> retryMax,
-      "Classifier" -> Function[r,
-        Which[
-          !AssociationQ[r], "Retryable",
-          Lookup[r, "Status", ""] === "Committed", "Success",
-          Lookup[r, "Status", ""] === "NotImplemented", "Permanent",
-          True, "Retryable"]]];
+    (* iCommitArtifactsOnce を直接呼ぶ retry loop (Quiet も Check も使わない) *)
+    attempt = 0;
+    result = $Failed;
+    classification = "Retryable";
+    While[attempt < retryMax,
+      attempt++;
+      result = iCommitArtifactsOnce[targetNotebook, reducedArtifact, opts];
+      classification = Which[
+        !AssociationQ[result], "Retryable",
+        Lookup[result, "Status", ""] === "Committed", "Success",
+        Lookup[result, "Status", ""] === "NotImplemented", "Permanent",
+        True, "Retryable"];
+      If[classification === "Success" || classification === "Permanent",
+        Break[]]
+    ];
     
-    finalResult = Lookup[invokeResult, "Result", <|"Status" -> "Failed"|>];
+    finalResult = If[AssociationQ[result], result, <|"Status" -> "Failed"|>];
     If[AssociationQ[finalResult] && retryMax > 1,
-      finalResult = Append[finalResult,
-        "CommitAttempts" -> Lookup[invokeResult, "Attempts", 1]]];
+      finalResult = Append[finalResult, "CommitAttempts" -> attempt]];
     finalResult
   ];
 
@@ -7363,20 +7632,7 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
      v2026-04-21 T19: \:30e6\:30fc\:30b6\:30fc\:660e\:793a\:4f9d\:983c\:306b\:3088\:308a "Auto" \:3092\:65e2\:5b9a\:5024\:3068\:3057\:3066
      \:5f37\:5236\:30bb\:30c3\:30c8\:3002 \:5f8c\:304b\:3089 "Single" / "Orchestrated" \:306b\:624b\:52d5\:5909\:66f4\:53ef\:80fd\:3002 *)
   ClaudeCode`$ClaudeEvalMode = "Auto";
-
-  Print[Style[If[$Language === "Japanese",
-    "ClaudeOrchestrator: $ClaudeEvalHook \:3092\:767b\:9332\:3057\:307e\:3057\:305f\:3002\
-$ClaudeEvalMode = \"" <> ToString[ClaudeCode`$ClaudeEvalMode] <>
-    "\"\:3001$ClaudeOrchestratorAsyncMode = " <>
-    ToString[$ClaudeOrchestratorAsyncMode] <>
-    "\:3002Single \:306b\:623b\:3059\:306b\:306f ClaudeCode`$ClaudeEvalMode = \"Single\"\:3001\
-\:540c\:671f\:306b\:623b\:3059\:306b\:306f $ClaudeOrchestratorAsyncMode = False \:3068\:3059\:308b\:3002",
-    "ClaudeOrchestrator: $ClaudeEvalHook registered. $ClaudeEvalMode = \"" <>
-    ToString[ClaudeCode`$ClaudeEvalMode] <>
-    "\", $ClaudeOrchestratorAsyncMode = " <>
-    ToString[$ClaudeOrchestratorAsyncMode] <>
-    ". Set $ClaudeEvalMode = \"Single\" to revert, or $ClaudeOrchestratorAsyncMode = False for sync."],
-    Italic, GrayLevel[0.4]]]];
+];
 
 End[];
 EndPackage[];
@@ -9141,3 +9397,49 @@ If[Length[DownValues[
   End[]; (* ClaudeOrchestrator`Private` *)
 ];
 
+
+(* === Stage A-C \:5b8c\:6210\:5f8c\:306e\:4f9d\:5b58\:30d5\:30a1\:30a4\:30eb\:81ea\:52d5\:30ed\:30fc\:30c9 ====================
+   \:8ad6\:7406\:7684\:306b ClaudeOrchestrator \:914d\:4e0b\:306b\:4f4d\:7f6e\:3059\:308b\:30d5\:30a1\:30a4\:30eb\:7fa4 (Stage B/C \:3067
+   \:5b8c\:6210\:3057\:305f workflow engine \:7cfb + dispatcher \:4e92\:63db\:5c64) \:3092\:81ea\:52d5\:30ed\:30fc\:30c9\:3059\:308b\:3002
+   \:3053\:308c\:306b\:3088\:308a Get["claudecode.wl"]; Get["ClaudeRuntime.wl"]; 
+   Get["ClaudeOrchestrator.wl"] \:306e\:4e09\:672c\:67f1\:904b\:7528\:306b\:623b\:308b\:3002
+   ============================================================ *)
+
+ClaudeOrchestrator`Private`iLoadCompanion[file_String, contextStr_String] :=
+  Module[{loaded = False},
+    (* context \:304c\:65e2\:306b\:5b58\:5728\:3057\:4e2d\:8eab\:304c\:3042\:308c\:3070 skip *)
+    If[Length[Names[contextStr <> "*"]] > 0, Return[True]];
+    Quiet @ Check[
+      Block[{$CharacterEncoding = "UTF-8"}, Get[file]];
+      loaded = True,
+      loaded = False];
+    If[!loaded,
+      Print[Style[
+        "ClaudeOrchestrator: " <> file <> " \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
+        Italic, RGBColor[0.6, 0.4, 0.2]]]];
+    loaded
+  ];
+
+(* \:9806\:5e8f: engine \:672c\:4f53 -> shim -> \:4e92\:63db\:5c64 *)
+ClaudeOrchestrator`Private`iLoadCompanion[
+  "ClaudeOrchestrator_workflow.wl",
+  "ClaudeOrchestrator`Workflow`"];   (* 2026-05-06 \:7d71\:5408\:5f8c: shim \:3082\:540c\:30d5\:30a1\:30a4\:30eb\:5185\:306b\:542b\:307e\:308c\:308b *)
+
+ClaudeOrchestrator`Private`iLoadCompanion[
+  "ClaudeOrchestrator_stategraph.wl",
+  "ClaudeStateGraph`"];
+
+(* ClaudeOrchestrator_observability.wl の自動ロード (2026-05-15 追加)。
+   このファイルは BeginPackage を持たない読み込み型なので Names による
+   コンテキスト判定が使えない。代わりに $petriObservabilityVersion の
+   有無で重複ロードを回避する。
+   提供 API: ClaudeQueryBgLogged / instrumentNetForObservation /
+            plotPetriNetDetail / checkPetriNetVertices / traceTransitions /
+            showLLMCallLog / withLLMLogging ほか *)
+If[!ValueQ[Global`$petriObservabilityVersion],
+  Quiet @ Check[
+    Block[{$CharacterEncoding = "UTF-8"},
+      Get["ClaudeOrchestrator_observability.wl"]],
+    Print[Style[
+      "ClaudeOrchestrator: ClaudeOrchestrator_observability.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
+      Italic, RGBColor[0.6, 0.4, 0.2]]]]];

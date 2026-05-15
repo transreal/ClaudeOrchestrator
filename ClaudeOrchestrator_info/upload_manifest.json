@@ -1,7 +1,9 @@
 {
 	"packageName":"ClaudeOrchestrator",
 	"files":[
-		"ClaudeOrchestrator.wl"
+		"ClaudeOrchestrator.wl",
+		"ClaudeOrchestrator_observability.wl",
+		"ClaudeOrchestrator_workflow.wl"
 	],
 	"directories":[
 		"ClaudeOrchestrator_info"
