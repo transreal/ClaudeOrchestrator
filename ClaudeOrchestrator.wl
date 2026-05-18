@@ -1409,15 +1409,15 @@ iLLMPlannerFn[input_, plannerOpts_Association] :=
     
     (* LLM \:306b\:554f\:3044\:5408\:308f\:305b *)
     response = If[queryFn === Automatic,
-      (* T27: \:516c\:958b API ClaudeQueryBg (\:540c\:671f) \:3092\:4f7f\:7528\u3002
-         ClaudeQuery \:306f\:975e\:540c\:671f\:306a\:306e\:3067 Bg \:306b\:5909\:66f4\:3057\:3066 string \:3092\:78ba\:5b9f\:306b\:8fd4\:3059\u3002
+      (* T27: \:516c\:958b API ClaudeQueryBg (\:540c\:671f) \:3092\:4f7f\:7528\:3002
+         ClaudeQuery \:306f\:975e\:540c\:671f\:306a\:306e\:3067 Bg \:306b\:5909\:66f4\:3057\:3066 string \:3092\:78ba\:5b9f\:306b\:8fd4\:3059\:3002
          
          \:6ce8: \:3053\:306e\:540c\:671f\:7d4c\:8def\:306f\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30bb\:30eb\:3067\:76f4\:63a5\:8a55\:4fa1\:3055\:308c\:308b\:3068
-         \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:3092\:30d6\:30ed\:30c3\:30af\:3059\:308b (rules/95 \:7bc0 A) \u3002
+         \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:3092\:30d6\:30ed\:30c3\:30af\:3059\:308b (rules/95 \:7bc0 A) \:3002
          \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:975e\:30d6\:30ed\:30c3\:30af\:304c\:5fc5\:8981\:306a\:5834\:5408\:306f
-         ClaudeRunOrchestrationAsync["...", "Planner" -> "LLM"] \:3092\:4f7f\:3046\u3002
+         ClaudeRunOrchestrationAsync["...", "Planner" -> "LLM"] \:3092\:4f7f\:3046\:3002
          \:305d\:3061\:3089\:306f iLaunchPlanPhase (LMStudio + CLI \:4e21\:5bfe\:5fdc) \:3092\:7d4c\:7531\:3057
-         DAG ScheduledTask \:7d4c\:8def\:3067\:771f\:306e\:975e\:540c\:671f\:5b9f\:884c\:3055\:308c\:308b\u3002 *)
+         DAG ScheduledTask \:7d4c\:8def\:3067\:771f\:306e\:975e\:540c\:671f\:5b9f\:884c\:3055\:308c\:308b\:3002 *)
       Quiet @ Check[
         ClaudeCode`ClaudeQueryBg[prompt],
         $Failed],

@@ -129,6 +129,63 @@ ClaudeSubmitToken::usage =
   "Token は immutable に保たれ、後続 transition で consume + produce される。\n" <>
   "place を明示すると multi-source workflow の各 place を直接 seed できる。";
 
+ClaudeSubmitInputs::usage =
+  "ClaudeSubmitInputs[wid_String, payload_Association, place_:Automatic] は\n" <>
+  "payload を Kind=\"Task\" の Token として SourcePlace (または指定 place) に\n" <>
+  "投入する糖衣。petri-multi-provider-generation skill の規約に従い、最初の\n" <>
+  "worker が読む入力 (慣習的に <|\"Text\" -> ...|>) を 1 行で投入できる。\n\n" <>
+  "ClaudeSubmitInputs[wid, <|\"Text\" -> text|>] は\n" <>
+  "  ClaudeSubmitToken[wid,\n" <>
+  "    WorkflowToken[\"Kind\" -> \"Task\", \"Payload\" -> <|\"Text\" -> text|>]]\n" <>
+  "に等価。";
+
+ClaudeBindAndSubmit::usage =
+  "ClaudeBindAndSubmit[wid_String, vars__Symbol] or\n" <>
+  "ClaudeBindAndSubmit[wid_String, varsList_List]\n\n" <>
+  "Mathematica \:306e Global \:30b7\:30f3\:30dc\:30eb\:7fa4\:306e\:540d\:524d\:3068\:73fe\:5728\:5024\:304b\:3089 Payload\n" <>
+  "Association \:3092\:69cb\:7bc9\:3057\:3001SourcePlace \:306e Token \:3068\:3057\:3066\:6295\:5165\:3059\:308b\:3002\n" <>
+  "HoldRest \:5c5e\:6027\:3092\:6301\:3064\:3002\n\n" <>
+  "Payload \:30ad\:30fc\:306f SymbolName \:3092\:305d\:306e\:307e\:307e\:7528\:3044\:308b\:3002Mathematica \:306f case-sensitive\:3001\n" <>
+  "\:307e\:305f\:6f22\:5b57\:30fbUnicode \:306e\:5909\:6570\:540d\:3082\:8a31\:5bb9\:3055\:308c\:308b\:305f\:3081\:3001\:4f59\:8a08\:306a\:5909\:63db (case \:5909\:66f4\:7b49)\n" <>
+  "\:306f\:884c\:308f\:306a\:3044\:3002\n\n" <>
+  "## \:53ef\:5909\:9577\:5f62\:5f0f\n\n" <>
+  "  text = \"...\";\n" <>
+  "  ClaudeBindAndSubmit[wid, text]\n" <>
+  "  -> Payload <|\"text\" -> text\:306e\:5024|>\n\n" <>
+  "  title = \"...\"; text = \"...\";\n" <>
+  "  ClaudeBindAndSubmit[wid, title, text]\n" <>
+  "  -> Payload <|\"title\" -> title\:306e\:5024, \"text\" -> text\:306e\:5024|>\n\n" <>
+  "  \:672c\:6587 = \"...\";\n" <>
+  "  ClaudeBindAndSubmit[wid, \:672c\:6587]\n" <>
+  "  -> Payload <|\"\:672c\:6587\" -> \:672c\:6587\:306e\:5024|>\n\n" <>
+  "## List \:5f62\:5f0f (\:30d7\:30ed\:30b0\:30e9\:30de\:30d6\:30eb\:306b\:5909\:6570\:30ea\:30b9\:30c8\:3092\:69cb\:7bc9\:3057\:3066\:6e21\:3059\:5834\:5408\:7b49)\n\n" <>
+  "  ClaudeBindAndSubmit[wid, {title, text}]\n" <>
+  "  -> Payload <|\"title\" -> ..., \"text\" -> ...|>\n\n" <>
+  "List \:5f62\:5f0f\:3082 HoldRest \:306e\:6069\:6075\:3067\:3001\:30ea\:30b9\:30c8\:5185\:306e\:5404 Symbol \:306f\:672a\:8a55\:4fa1\:306e\n" <>
+  "\:307e\:307e\:6e21\:308b\:306e\:3067 SymbolName \:304c\:6b63\:3057\:304f\:53d6\:308c\:308b\:3002\n\n" <>
+  "LLM \:751f\:6210\:306e worker handler \:306f\:540c\:540d\:306e\:30ad\:30fc\:3067 Lookup \:3059\:308c\:3070\:3088\:3044:\n" <>
+  "  text = Lookup[binding[[\"Source\", \"Payload\"]], \"text\", \"\"]\n\n" <>
+  "Association \:3092\:76f4\:63a5\:6e21\:3057\:305f\:3044\:3068\:304d\:306f ClaudeSubmitInputs[wid, payload] \:3092\:4f7f\:3046\:3002";
+
+ClaudeApplyProposal::usage =
+  "ClaudeApplyProposal[] / ClaudeApplyProposal[proposal_Association] は\n" <>
+  "proposePetriNet が返す proposal Association の \"Code\" 文字列を ToExpression\n" <>
+  "\:3067\:8a55\:4fa1\:3057\:3001\"BuilderName\" \:304c\:6307\:3059 net builder \:95a2\:6570 (\:4f8b: buildDualReviewNet) \:3092\n" <>
+  "\:30bb\:30c3\:30b7\:30e7\:30f3\:306b\:5b9a\:7fa9\:3059\:308b\:3002\n\n" <>
+  "**\:91cd\:8981**: proposal Association \:3092\:8fd4\:3059\:306e\:306f proposePetriNet[goal]\:3002\n" <>
+  "reviewPetriProposal[goal] \:306f Column \:3092\:8fd4\:3059\:8868\:793a\:7528\:95a2\:6570\:3067\:3001Association \:306f\:8fd4\:3055\:306a\:3044\n" <>
+  "\:305f\:3081 ClaudeApplyProposal \:306e\:5f15\:6570\:306b\:306f\:4f7f\:3048\:306a\:3044\:3002\n\n" <>
+  "\:4f7f\:3044\:65b9:\n" <>
+  "  proposal = proposePetriNet[goal];\n" <>
+  "  builder  = ClaudeApplyProposal[proposal];\n" <>
+  "  wid      = ClaudeCreateWorkflowNet[builder[]];\n" <>
+  "  ClaudeBindAndSubmit[wid, text];\n" <>
+  "  ClaudeRunWorkflow[wid, \"Async\" -> False]\n\n" <>
+  "\:5f15\:6570\:306a\:3057\:7248 ClaudeApplyProposal[] \:306f Global`proposal \:3092\:53c2\:7167\:3059\:308b\n" <>
+  "(\:4e0a\:8a18\:306e\:3088\:3046\:306b proposal = proposePetriNet[goal] \:3068\:4ee3\:5165\:3057\:305f\:5834\:5408\:306b\:6709\:52b9)\:3002\n\n" <>
+  "\:8fd4\:308a\:5024: BuilderName \:304c\:6307\:3059 Symbol (\:4f8b: Global`buildDualReviewNet)\n" <>
+  "       BuilderName \:672a\:6307\:5b9a\:306a\:3089 Null\:3001\:30a8\:30e9\:30fc\:6642\:306f $Failed\:3002";
+
 ClaudeWorkflowStatus::usage =
   "ClaudeWorkflowStatus[wid_String] は WorkflowNet の現在の状態を\n" <>
   "Association で返す: <|\"Status\", \"CurrentMarking\", \"ElapsedSec\"|>.";
@@ -222,6 +279,56 @@ ClaudeCleanupAsyncJob::usage =
   "Completed entry を残し続けたくないときに明示的に呼ぶ。\n\n" <>
   "戻り値: <|\"Status\" -> \"Cleaned\"|\"NotFound\", \"WorkflowId\" -> wid|>";
 
+(* === Z\:6848 (\:975e\:540c\:671f callback handler): Awaiting LLM \:6a5f\:69cb (2026-05-16) === *)
+
+ClaudeCompleteHandlerOutput::usage =
+  "ClaudeCompleteHandlerOutput[wid_String, awaitId_String, output_] \:306f\n" <>
+  "AwaitingLLM \:72b6\:614b\:306b\:3042\:308b transition \:306e output token \:3092\:78ba\:5b9a\:7684\:306b produce \:3059\:308b\:3002\n" <>
+  "\:975e\:540c\:671f LLM \:547c\:51fa\:3057\:306e callback \:304b\:3089\:547c\:3076\:3053\:3068\:3092\:60f3\:5b9a\:3057\:3066\:3044\:308b\:3002\n\n" <>
+  "output \:306f Association \:3067\:3001\:6b21\:306e\:3044\:305a\:308c\:304b\:306e\:5f62\:5f0f\:3092\:8a31\:5bb9:\n" <>
+  "  <|\"Payload\" -> <|...|>|>          (\:63a8\:5968)\n" <>
+  "  <|... payload \:30ad\:30fc\:2026|>          (\"Payload\" \:30e9\:30c3\:30d1\:306a\:3057)\n\n" <>
+  "\:8a72\:5f53 awaitId \:304c\:898b\:3064\:304b\:3089\:306a\:3044\:5834\:5408 (Cancel \:5f8c\:306e callback \:8fdf\:5ef6\:5230\:7740\:7b49) \:306f\n" <>
+  "\:30b5\:30a4\:30ec\:30f3\:30c8\:306b $Failed \:304c\:8fd4\:3055\:308c\:308b (\:30e1\:30c3\:30bb\:30fc\:30b8\:306f\:51fa\:305d\:306a\:3044)\:3002\:4ed6\:306e Place \:3078\:306e\n" <>
+  "\:4f1d\:64ad\:306f\:6b21\:306e polling tick \:304c\:62fe\:3046\:3002\n\n" <>
+  "C (2026-05-17): timeout 機構との関係 \:2014 \n" <>
+  "  transition.RuntimeSpec.AwaitingLLMTimeout または\n" <>
+  "  wf.DefaultAwaitingLLMTimeout が指定されている場合、Awaiting branch 突入時に\n" <>
+  "  engine が SessionSubmit[ScheduledTask[...]] で timeout タイマーを仕込む。\n" <>
+  "  timeout 経過時にまだ AwaitingLLMTransitions[awaitId] が存在するなら、\n" <>
+  "  自動的に ClaudeCompleteHandlerOutput が呼ばれ、output Payload に\n" <>
+  "  '_timeout' -> True, '_handler' -> transitionName が追加される。\n" <>
+  "  本関数は二重発火に対し silent discard (TransitionCallbackDiscarded を\n" <>
+  "  Trace に残す) する設計のため、timeout 発火後に遅れた LLM 応答が到着しても\n" <>
+  "  安全 (逆方向も同様)。\n\n" <>
+  "\:623b\:308a\:5024: <|\"Status\" -> \"Completed\"|\"Discarded\"|\"NotFound\",\n" <>
+  "         \"WorkflowId\", \"AwaitId\", \"TransitionName\",\n" <>
+  "         \"ProducedTokens\", \"Marking\"|>";
+
+ClaudeAwaitingTransitions::usage =
+  "ClaudeAwaitingTransitions[wid_String] \:306f\:73fe\:5728 AwaitingLLM \:72b6\:614b\:306b\:3042\:308b\n" <>
+  "transition \:306e\:4e00\:89a7\:3092 Dataset \:3067\:8fd4\:3059\:3002\:5404\:30a8\:30f3\:30c8\:30ea\:306f\n" <>
+  "<|\"AwaitId\", \"TransitionName\", \"StartTime\", \"ElapsedSec\",\n" <>
+  "  \"ConsumedIds\"|> \:3092\:542b\:3080\:3002";
+
+$ClaudeCurrentWid::usage =
+  "$ClaudeCurrentWid \:306f Awaiting handler \:5185\:3067\:53c2\:7167\:3067\:304d\:308b\:73fe\:5728\:306e WorkflowId\:3002\n" <>
+  "iExecutePureFunction \:304c handler \:8a55\:4fa1\:4e2d\:306e\:307f Block \:3067\:52d5\:7684\:675f\:7e1b\:3059\:308b\:3002\n" <>
+  "handler \:5916\:3067\:306f Missing[\"NotInHandler\"] \:3092\:8fd4\:3059\:3002";
+
+$ClaudeCurrentTransition::usage =
+  "$ClaudeCurrentTransition \:306f Awaiting handler \:5185\:3067\:53c2\:7167\:3067\:304d\:308b\:73fe\:5728\:306e\n" <>
+  "transition \:540d\:3002handler \:5916\:3067\:306f Missing[\"NotInHandler\"] \:3092\:8fd4\:3059\:3002";
+
+$ClaudeCurrentAwaitId::usage =
+  "$ClaudeCurrentAwaitId \:306f Awaiting handler \:5185\:3067\:53c2\:7167\:3067\:304d\:308b\:73fe\:5728\:306e await ID\:3002\n" <>
+  "ClaudeCompleteHandlerOutput \:306b\:6e21\:3059\:305f\:3081\:306b\:4f7f\:3046\:3002\n" <>
+  "handler \:5916\:3067\:306f Missing[\"NotInHandler\"] \:3092\:8fd4\:3059\:3002";
+
+$ClaudeCurrentBinding::usage =
+  "$ClaudeCurrentBinding \:306f Awaiting handler \:5185\:3067\:53c2\:7167\:3067\:304d\:308b\:73fe\:5728\:306e\n" <>
+  "binding Association\:3002closure \:304c\:52b9\:304b\:306a\:3044\:72b6\:6cc1\:3067\:306e fallback \:53c2\:7167\:7528\:3002";
+
 (* === Completion hooks (Day 4d / Week 2c-2c) === *)
 
 ClaudeRegisterCompletionHook::usage =
@@ -271,6 +378,19 @@ ClaudeRestoreWorkflow::usage =
   "Day 4b では FormatVersion 2 のみ対応 (v1 -> v2 自動変換は Stage B Week 2)。\n\n" <>
   "Options:\n" <>
   "  \"AsNewWorkflowId\" -> True  (新しい wid を発行、元 wid は OriginalWid に保持)\n\n" <>
+  "D (2026-05-17): 復元時の AwaitingLLM エントリ取り扱い \[Dash]\n" <>
+  "  snapshot 時に AwaitingLLM 状態だった transition は\n" <>
+  "  AwaitingLLMTransitions[awaitId] として復元されるが、\n" <>
+  "  元の callback (Function closure) と SessionSubmit タスクは\n" <>
+  "  カーネル再起動を跨いで復元できない。\n" <>
+  "  Restore は各エントリに engine 側 timer を再仕掛けし、\n" <>
+  "  timeout 経過時に自動的に ClaudeCompleteHandlerOutput を発火する。\n" <>
+  "  fallback Payload には _timeout=True, _handler=tname に加えて\n" <>
+  "  _restored=True を付与し、後段 transition や completion hook が\n" <>
+  "  この起源を識別できるようにする。\n" <>
+  "  Timeout 解決順: trans.RuntimeSpec.AwaitingLLMTimeout >\n" <>
+  "                  wf.DefaultAwaitingLLMTimeout >\n" <>
+  "                  $iRestoreFallbackTimeout (デフォルト 0.1 秒)\n\n" <>
   "戻り値: <|\"WorkflowId\", \"OriginalWid\", \"Restored\" -> True,\n" <>
   "         \"FormatVersion\", \"SnapshotDir\"|>";
 
@@ -293,9 +413,33 @@ ClaudeRuntime`ClaudeRuntimeExecuteTransition (新規 adapter API、ClaudeRuntime
 Begin["`Private`"];
 
 ClaudeOrchestrator`Workflow`$WorkflowVersion =
-  "2026-05-10-retry-policy-enforcement";
+  "2026-05-16-async-handler-z-stage1";
 
 (* バージョン履歴:
+   2026-05-16 (async-handler-z-stage1): handler 内 LLM 呼出の非同期 callback
+     化 (HANDOVER_Z_async_handler.md の Z 案、Phase 1-2 を実装)。
+     - WorkflowNet \:306b "AwaitingLLMTransitions" \:30d5\:30a3\:30fc\:30eb\:30c9\:3092\:8ffd\:52a0\:3002
+     - iExecutePureFunction \:3092 Block \:52d5\:7684\:675f\:7e1b\:3067 wrap:
+       handler \:5185\:3067 $ClaudeCurrentWid / $ClaudeCurrentTransition /
+       $ClaudeCurrentAwaitId / $ClaudeCurrentBinding \:3092\:53c2\:7167\:53ef\:80fd\:306b\:3057\:3001
+       handler \:6238\:308a\:5024\:304c <|"Status" -> "AwaitingLLM", ...|> \:306e\:5834\:5408\:306f
+       Awaiting \:30b9\:30c6\:30fc\:30bf\:30b9\:3092\:8fd4\:3059\:3002
+     - ClaudeFireTransition \:306b Awaiting branch \:3092\:8ffd\:52a0: input \:30c8\:30fc\:30af\:30f3\:306f
+       consume \:3059\:308b\:304c output \:306f produce \:305b\:305a AwaitingLLMTransitions \:306b
+       \:8a18\:9332\:3002Trace \:306b "TransitionAwaiting" event \:3092\:6b8b\:3059\:3002
+     - ClaudeCompleteHandlerOutput[wid, awaitId, output] Public API \:3092\:65b0\:8a2d:
+       callback \:304b\:3089\:547c\:3070\:308c\:3066\:7559\:4fdd\:4e2d\:306e transition \:306e output token \:3092
+       produce \:3059\:308b\:3002\:8a72\:5f53\:306a\:3044 awaitId \:306f silent no-op (Cancel \:5f8c\:306e
+       \:8fc5\:96f7\:9632\:6b62)\:3002
+     - ClaudeAwaitingTransitions[wid] \:3067\:73fe\:5728\:7559\:4fdd\:4e2d\:306e transition \:3092\:53d6\:5f97\:3002
+     - iWorkflowAsyncTick / iRunWorkflowSync: AwaitingLLM \:304c\:6b8b\:3063\:3066\:3044\:308b\:9593\:306f
+       Stuck \:5224\:5b9a\:3092\:6291\:5236\:3057\:3001polling \:7d99\:7d9a\:307e\:305f\:306f Pause \:5f85\:6a5f\:3068\:3059\:308b\:3002
+     - ClaudeCancelWorkflow: AwaitingLLM \:5168\:30a8\:30f3\:30c8\:30ea\:3092\:30af\:30ea\:30a2\:3001Trace \:306b
+       discard event \:3092\:6b8b\:3059\:3002
+     \:5f8c\:65b9\:4e92\:63db\:6027: \:65e2\:5b58\:306e\:540c\:671f handler (\:6238\:308a\:5024 <|"Payload" -> ...|>) \:306f
+     \:305d\:306e\:307e\:307e\:52d5\:4f5c\:3002Awaiting \:6a5f\:69cb\:306f handler \:304c\:660e\:793a\:7684\:306b
+     <|"Status" -> "AwaitingLLM", ...|> \:3092\:8fd4\:3057\:305f\:5834\:5408\:306b\:9650\:5b9a\:3057\:3066
+     \:767a\:52d5\:3059\:308b\:3002
    2026-05-10 (retry-policy-enforcement): handler 失敗の繰り返し暴走を
      抑止する RetryPolicy 適用ロジックを追加 (result8.nb で発見:
      WorkerChatGPT が atomic rollback 後に毎 tick 再 enabled となり、
@@ -428,7 +572,12 @@ Options[WorkflowNet] = {
   "Transitions"    -> <||>,
   "InitialMarking" -> <||>,
   "Description"    -> "",
-  "ParentRuntime"  -> Missing[]};
+  "ParentRuntime"  -> Missing[],
+  (* C (2026-05-17): workflow デフォルトの AwaitingLLM timeout 秒数。
+     transition.RuntimeSpec.AwaitingLLMTimeout > この値 > なし (None) の
+     優先順序で resolve される。値が NumericQ かつ > 0 のときのみ有効。
+     None (default) ならエンジンは timeout を仕込まず、現状の挙動と完全互換。 *)
+  "DefaultAwaitingLLMTimeout" -> None};
 
 WorkflowNet[opts:OptionsPattern[]] :=
   Module[{wid},
@@ -456,6 +605,26 @@ WorkflowNet[opts:OptionsPattern[]] :=
          成功発火時はリセットされる。
          キーが存在しない transition は失敗 0 回として扱う。 *)
       "TransitionFailureCounts" -> <||>,
+      (* AwaitingLLMTransitions (2026-05-16, Z\:6848): handler \:304c
+         \:975e\:540c\:671f LLM \:547c\:51fa\:3057\:3092\:6295\:3052\:3066 <|"Status" -> "AwaitingLLM"|> \:3092
+         \:8fd4\:3057\:305f\:5834\:5408\:306b\:3001input \:30c8\:30fc\:30af\:30f3\:306f consume \:3057\:305f\:307e\:307e output \:3092
+         produce \:3057\:305a\:306b\:7559\:4fdd\:3055\:308c\:308b transition \:306e registry\:3002
+         awaitId -> <|
+           "AwaitId"           -> awaitId,
+           "TransitionName"    -> tname,
+           "Binding"            -> binding,
+           "ConsumedIds"        -> {tid, ...},
+           "PartialPayload"    -> <|...|>,
+           "StartTime"          -> AbsoluteTime
+         |>
+         callback \:304b\:3089 ClaudeCompleteHandlerOutput[wid, awaitId, output] \:304c
+         \:547c\:3070\:308c\:308b\:3068\:3001\:8a72\:5f53\:30a8\:30f3\:30c8\:30ea\:3092\:53d6\:308a\:51fa\:3057\:3066 produce \:3057\:3001
+         \:305d\:306e\:30a8\:30f3\:30c8\:30ea\:3092\:524a\:9664\:3059\:308b\:3002 *)
+      "AwaitingLLMTransitions" -> <||>,
+      (* C (2026-05-17): workflow デフォルトの AwaitingLLM timeout (秒)。
+         transition 個別の AwaitingLLMTimeout が無い場合のみ使う。
+         None または非数値なら timeout を仕込まない (現状互換)。 *)
+      "DefaultAwaitingLLMTimeout" -> OptionValue["DefaultAwaitingLLMTimeout"],
       "Metadata"       -> <|
                             "CreatedAt"     -> iCurrentTime[],
                             "Description"   -> OptionValue["Description"],
@@ -676,6 +845,153 @@ ClaudeSubmitToken[wid_String, token_Association, place_:Automatic] :=
       "Place"      -> target,
       "Marking"    -> iComputeCurrentMarking[wid]|>
   ];
+
+(* ::Subsubsection:: *)
+(* ClaudeSubmitInputs / ClaudeBindAndSubmit (\:5165\:529b\:5909\:6570\:8336\:539a\:30d8\:30eb\:30d1\:30fc) *)
+
+(* \[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]
+   reviewPetriProposal / proposePetriNet \:7b49\:3067 LLM \:306b net \:3092\:63d0\:6848\:3055\:305b\:308b\:5834\:5408\:3001
+   petri-multi-provider-generation skill \:306e\:898f\:7d04\:306b\:3088\:308a\:751f\:6210 net \:306e\:6700\:521d\:306e
+   worker \:306f Lookup[binding[["Source", "Payload"]], "Text", ""] \:3092\:8aad\:3080\:3002
+   \:3057\:305f\:304c\:3063\:3066\:30e6\:30fc\:30b6\:306f Mathematica \:5909\:6570 text \:306e\:5024\:3092
+   "Text" \:30ad\:30fc\:4ed8\:304d\:3067 Source Token Payload \:306b\:6295\:5165\:3057\:306a\:3051\:308c\:3070\:306a\:3089\:306a\:3044\:3002
+
+   ClaudeSubmitToken[wid,
+     WorkflowToken["Kind" -> "Task", "Payload" -> <|"Text" -> text|>]]
+   \:3092\:6bce\:56de\:66f8\:304f\:306e\:306f\:30dc\:30a4\:30e9\:30fc\:30d7\:30ec\:30fc\:30c8\:306a\:306e\:3067\:3001\:6b21\:306e 2 \:7a2e\:985e\:306e\:8336\:539a\:30d8\:30eb\:30d1\:30fc\:3092
+   \:516c\:958b\:3059\:308b\:3002
+
+   ClaudeSubmitInputs[wid, payload]  : Association \:3092\:76f4\:63a5\:6295\:5165
+   ClaudeBindAndSubmit[wid, vars__]   : HoldRest \:3067 Symbol \:540d \:2192 \:30ad\:30fc\:540d\:5909\:63db
+   \[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine] *)
+
+ClaudeSubmitInputs[wid_String, payload_Association, place_:Automatic] :=
+  ClaudeSubmitToken[wid,
+    WorkflowToken["Kind" -> "Task", "Payload" -> payload],
+    place];
+
+(* ClaudeBindAndSubmit \:306f Symbol \:540d\:3092\:305d\:306e\:307e\:307e Payload \:30ad\:30fc\:306b\:3059\:308b\:3002
+   Mathematica \:306f case-sensitive\:3001\:307e\:305f\:6f22\:5b57\:3084 Unicode \:306e\:5909\:6570\:540d\:3082\:8a31\:5bb9\:3055\:308c\:308b\:305f\:3081\:3001
+   \:4f59\:8a08\:306a\:5909\:63db (\:5148\:982d\:5927\:6587\:5b57\:5316\:7b49) \:306f\:884c\:308f\:305a SymbolName \:30ed\:30fc\:30c7\:30fc\:30bf\:3092\:7dad\:6301\:3059\:308b\:3002
+
+   \:4f8b:
+     text   -> "text"
+     title  -> "title"
+     \:672c\:6587   -> "\:672c\:6587"
+     srcCode -> "srcCode"
+   \:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:5074\:306e LLM \:751f\:6210\:30cf\:30f3\:30c9\:30e9\:306f\:540c\:540d\:306e\:30ad\:30fc\:3067 Lookup \:3059\:308c\:3070\:3088\:3044\:3002
+
+   2 \:5f62\:5f0f\:3092\:53d7\:3051\:4ed8\:3051\:308b:
+     ClaudeBindAndSubmit[wid, v1, v2, ...]    (* \:53ef\:5909\:9577 *)
+     ClaudeBindAndSubmit[wid, {v1, v2, ...}]  (* List \:7248: \:5909\:6570\:8d4a\:6e21\:3057\:53ef\:80fd *)
+   \:30d1\:30bf\:30fc\:30f3\:306f vars__Symbol \:3068 varsList_List \:3067\:6392\:4ed6\:7684\:3001\:66d6\:6627\:3055\:7121\:3057\:3002 *)
+SetAttributes[ClaudeBindAndSubmit, HoldRest];
+
+(* List \:7248: ClaudeBindAndSubmit[wid, {var1, var2, ...}]\:3002
+   \:5909\:6570 vars = {a, b, c} \:3092\:7d4c\:7531\:3057\:3066\:6e21\:3059\:5834\:5408\:3082\:3053\:308c\:3092\:7d4c\:7531\:3002
+   Cases \:306e\:30ec\:30d9\:30eb\:306f Infinity (List \:5185\:90e8\:306e Symbol \:307e\:3067\:8d70\:67fb)\:3002 *)
+ClaudeBindAndSubmit[wid_String, varsList_List] :=
+  Module[{bindings},
+    bindings = Association @ Cases[
+      Hold[varsList],
+      HoldPattern[v_Symbol] :>
+        (SymbolName[Unevaluated[v]] -> v),
+      Infinity];
+    If[Length[bindings] === 0,
+      Throw[$Failed,
+        "ClaudeBindAndSubmit: no bindable Symbol in list"]];
+    ClaudeSubmitToken[wid,
+      WorkflowToken["Kind" -> "Task", "Payload" -> bindings]]
+  ];
+
+(* \:53ef\:5909\:9577\:7248: ClaudeBindAndSubmit[wid, var1, var2, ...]\:3002
+   __Symbol \:306b\:3088\:308a\:3001List \:5f15\:6570\:3068\:306f\:5b8c\:5168\:306b\:6392\:4ed6\:3002 *)
+ClaudeBindAndSubmit[wid_String, vars__Symbol] :=
+  Module[{bindings},
+    bindings = Association @ Cases[
+      Hold[vars],
+      HoldPattern[v_Symbol] :>
+        (SymbolName[Unevaluated[v]] -> v),
+      {1}];
+    If[Length[bindings] === 0,
+      Throw[$Failed,
+        "ClaudeBindAndSubmit: no bindable Symbol in arguments"]];
+    ClaudeSubmitToken[wid,
+      WorkflowToken["Kind" -> "Task", "Payload" -> bindings]]
+  ];
+
+(* \[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]
+   ClaudeApplyProposal:
+   reviewPetriProposal / proposePetriNet \:7b49\:304c\:8fd4\:3059 proposal Association \:306e
+   "Code" \:6587\:5b57\:5217\:3092 ToExpression \:3067\:8a55\:4fa1\:3057\:3001"BuilderName" \:304c\:6307\:3059 net builder
+   \:95a2\:6570 (\:4f8b: buildDualReviewNet) \:3092\:30bb\:30c3\:30b7\:30e7\:30f3\:306b\:5b9a\:7fa9\:3059\:308b\:3002
+
+   \:5b9f\:88c5\:30e1\:30e2 (Wolfram trap \:56de\:907f):
+   - ToExpression \:306e\:8a55\:4fa1\:5931\:6557\:6642\:306b\:30e1\:30c3\:30bb\:30fc\:30b8\:3092\:6291\:5236\:3057\:3064\:3064\:7d50\:679c\:3092\:898b\:308b\:305f\:3081
+     Check \:306f\:4f7f\:308f\:305a (trap #16 \:56de\:907f)\:3001Quiet \:306e\:307f\:3092\:4f7f\:7528\:3059\:308b\:3002
+   - Symbol[name] \:306f\:30e6\:30fc\:30b6\:306e current context (\:901a\:5e38 Global`) \:306b\:30b7\:30f3\:30dc\:30eb\:3092
+     \:4f5c\:308b\:304c\:3001ToExpression \:3082\:540c\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:3067\:5b9a\:7fa9\:3059\:308b\:306e\:3067\:6574\:5408\:3059\:308b\:3002
+   \[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine]\[HorizontalLine] *)
+
+ClaudeApplyProposal::badtype =
+  "ClaudeApplyProposal: \:5f15\:6570\:306e Head \:304c `1` \:3060\:304c\:3001Association \:304c\:5fc5\:8981\:3002\n" <>
+  "proposal Association \:3092\:8fd4\:3059\:306e\:306f proposePetriNet[goal]\:3002\n" <>
+  "reviewPetriProposal[goal] \:306f Column \:3092\:8fd4\:3059\:8868\:793a\:7528\:95a2\:6570\:3067 Association \:3092\:8fd4\:3055\:306a\:3044\:3002\n" <>
+  "\:6b63\:3057\:3044\:4f7f\:3044\:65b9:\n" <>
+  "  proposal = proposePetriNet[goal];\n" <>
+  "  builder  = ClaudeApplyProposal[proposal];";
+
+ClaudeApplyProposal::nocode =
+  "ClaudeApplyProposal: proposal[\"Code\"] \:304c\:6587\:5b57\:5217\:3067\:306f\:306a\:3044 (Head: `1`)\:3002\n" <>
+  "proposal \:306e\:751f\:6210\:306b\:5931\:6557\:3057\:3066\:3044\:308b\:53ef\:80fd\:6027\:304c\:3042\:308b\:3002\n" <>
+  "proposal[\"IsErrorResponse\"] \:3068 proposal[\"RawResponse\"] \:3092\:78ba\:8a8d\:3057\:3066\:304f\:3060\:3055\:3044\:3002";
+
+ClaudeApplyProposal::nosym =
+  "ClaudeApplyProposal: Global`proposal \:304c\:5b9a\:7fa9\:3055\:308c\:3066\:3044\:306a\:3044\:3002\n" <>
+  "`proposal = proposePetriNet[goal]` \:3092\:5148\:306b\:5b9f\:884c\:3057\:3066\:304f\:3060\:3055\:3044\:3002";
+
+(* \[HorizontalLine]\[HorizontalLine] \:5f15\:6570\:306a\:3057\:7248: Global`proposal \:3092\:81ea\:52d5\:53c2\:7167 \[HorizontalLine]\[HorizontalLine]
+   \:30e6\:30fc\:30b6\:304c `proposal = proposePetriNet[goal]` \:3068\:4ee3\:5165\:3057\:305f\:5834\:5408\:3001
+   \:5f15\:6570\:306a\:3057\:7248\:3067 Global`proposal \:3092\:81ea\:52d5\:53c2\:7167\:3067\:304d\:308b\:3002
+
+   \:5b9f\:88c5\:30e1\:30e2: ValueQ[sym] (sym \:306f Module \:5c40\:6240\:5909\:6570) \:306f\:5e38\:306b True \:3092\:8fd4\:3059\:305f\:3081\:3001
+   Global`proposal \:3092\:76f4\:63a5\:53c2\:7167\:3059\:308b\:5fc5\:8981\:304c\:3042\:308b\:3002Quiet \:3067 newsym \:30e1\:30c3\:30bb\:30fc\:30b8\:3092\:6291\:5236\:3002 *)
+ClaudeApplyProposal[] :=
+  Module[{p},
+    If[!Quiet[ValueQ[Global`proposal]],
+      Message[ClaudeApplyProposal::nosym];
+      Return[$Failed, Module]];
+    p = Global`proposal;
+    Which[
+      AssociationQ[p],
+        ClaudeApplyProposal[p],
+      True,
+        Message[ClaudeApplyProposal::badtype, Head[p]];
+        $Failed]];
+
+(* \[HorizontalLine]\[HorizontalLine] \:660e\:793a\:7684 Association \:6e21\:3057 \[HorizontalLine]\[HorizontalLine] *)
+ClaudeApplyProposal[proposal_Association] :=
+  Module[{code, builderName},
+    code = Lookup[proposal, "Code", None];
+    If[!StringQ[code],
+      Message[ClaudeApplyProposal::nocode, Head[code]];
+      Return[$Failed, Module]];
+
+    (* \:30b3\:30fc\:30c9\:3092\:8a55\:4fa1\:3057\:3066\:95a2\:6570\:7fa4\:3092\:5b9a\:7fa9 *)
+    Quiet @ ToExpression[code];
+
+    (* BuilderName \:304c\:3042\:308c\:3070 Symbol \:3068\:3057\:3066\:8fd4\:3059 *)
+    builderName = Lookup[proposal, "BuilderName", None];
+    If[StringQ[builderName] && StringLength[builderName] > 0,
+      Symbol[builderName],
+      Null]
+  ];
+
+(* \[HorizontalLine]\[HorizontalLine] \:305d\:308c\:4ee5\:5916 (Grid \:7b49) \[HorizontalLine]\[HorizontalLine] *)
+ClaudeApplyProposal[other_] := (
+  Message[ClaudeApplyProposal::badtype, Head[other]];
+  $Failed
+);
 
 iComputeCurrentMarking[wid_String] :=
   Module[{wf},
@@ -985,8 +1301,14 @@ ClaudeFireTransition[wid_String, transitionName_String,
     (* 3. Input tokens consume (Multiplicity > 1 にも対応) *)
     consumedTokens = iFlattenBinding[binding];
 
-    (* 4. Executor 実行 *)
-    executorResult = iExecuteTransition[trans, binding];
+    (* 4. Executor 実行
+       Z\:6848 (2026-05-16): handler \:5185\:3067 wid \:3092\:53c2\:7167\:53ef\:80fd\:306b\:3059\:308b\:305f\:3081
+       \:3053\:3053\:3067 Block \:3067 $ClaudeCurrentWid \:3092\:675f\:7e1b\:3002\:4ed6\:306e
+       $ClaudeCurrentTransition / $ClaudeCurrentAwaitId / $ClaudeCurrentBinding \:306f
+       iExecutePureFunction \:5185\:3067\:8ffd\:52a0\:675f\:7e1b\:3055\:308c\:308b\:3002 *)
+    executorResult = Block[{$ClaudeCurrentWid = wid},
+      iExecuteTransition[trans, binding]
+    ];
 
     (* 4b. handler 失敗時の Petri net atomic firing 原則 (重要):
        handler が Failed (== iExecutePureFunction が <|"Status" -> "Failed", ...|>
@@ -1044,6 +1366,108 @@ ClaudeFireTransition[wid_String, transitionName_String,
       ]
     ];
 
+    (* === Z\:6848 (2026-05-16): Awaiting branch === 
+       handler \:304c <|"Status" -> "AwaitingLLM", ...|> \:3092\:8fd4\:3057\:305f\:5834\:5408\:3001
+       iExecutePureFunction \:306f <|"Status" -> "Awaiting", "AwaitId" -> aid,
+       "Output" -> handlerOutput, "PartialPayload" -> ...|> \:3092\:8fd4\:3057\:3066\:3044\:308b\:3002
+       \:3053\:306e branch \:3067:
+         - input token \:306f consume \:3059\:308b (\:4ed6 transition \:3092\:30d6\:30ed\:30c3\:30af)
+         - producedTokens \:306f \:4f5c\:3089\:306a\:3044
+         - AwaitingLLMTransitions[awaitId] \:306b\:8a18\:9332
+         - failure counter \:306f\:30ea\:30bb\:30c3\:30c8 (\:4eca\:56de\:306f\:3068\:308a\:3042\:3048\:305a\:300c\:6210\:529f\:30b9\:30bf\:30fc\:30c8\:300d\:6271\:3044)
+         - Trace \:306b TransitionAwaiting \:3092\:6b8b\:3059
+       callback \:304c\:5230\:7740\:3057\:305f\:3089 ClaudeCompleteHandlerOutput \:3067 produce \:3055\:308c\:308b\:3002 *)
+    If[Lookup[executorResult, "Status", "Success"] === "Awaiting",
+      Module[{awaitId, partialPayload, consumedIds, awaitingEntry,
+              existingAwait, failCounts},
+        awaitId        = Lookup[executorResult, "AwaitId",
+                          iGenerateAwaitId[wid]];
+        partialPayload = Lookup[executorResult, "PartialPayload", <||>];
+        consumedIds    = Map[#[["TokenId"]] &, consumedTokens];
+
+        awaitingEntry = <|
+          "AwaitId"        -> awaitId,
+          "TransitionName" -> transitionName,
+          "Binding"        -> binding,
+          "ConsumedIds"    -> consumedIds,
+          "PartialPayload" -> partialPayload,
+          "StartTime"      -> iCurrentTime[]
+        |>;
+
+        (* AwaitingLLMTransitions \:30d5\:30a3\:30fc\:30eb\:30c9\:3092 backward compat \:3068\:3057\:3066\:624b\:52d5\:4fdd\:8a3c\:3002 *)
+        newWf = iEnsureAwaitingLLMField[wf];
+        existingAwait = Lookup[newWf, "AwaitingLLMTransitions", <||>];
+
+        (* 1. Input tokens \:3092 input places \:304b\:3089\:524a\:9664 (consume) *)
+        newWf = iConsumeTokensForAwaiting[newWf, trans, consumedTokens];
+
+        (* 2. AwaitingLLMTransitions \:306b\:8ffd\:52a0 *)
+        newWf = ReplacePart[newWf,
+          "AwaitingLLMTransitions" ->
+            Append[existingAwait, awaitId -> awaitingEntry]];
+
+        (* 3. Trace event *)
+        newWf = ReplacePart[newWf,
+          "Trace" -> Append[newWf[["Trace"]],
+            <|"Event"           -> "TransitionAwaiting",
+              "TransitionName"  -> transitionName,
+              "AwaitId"         -> awaitId,
+              "ConsumedIds"     -> consumedIds,
+              "Timestamp"       -> iCurrentTime[]|>]];
+
+        (* 4. \:5931\:6557\:30ab\:30a6\:30f3\:30bf\:306f\:30ea\:30bb\:30c3\:30c8 (\:542c\:304f\:6210\:529f\:624b\:524d\:306b retry \:3092\:9632\:3050) *)
+        failCounts = Lookup[newWf, "TransitionFailureCounts", <||>];
+        newWf = ReplacePart[newWf,
+          "TransitionFailureCounts" ->
+            KeyDrop[failCounts, transitionName]];
+
+        AssociateTo[$iWorkflowNets, wid -> newWf];
+
+        (* === C (2026-05-17): AwaitingLLMTimeout の発火タイマー ===
+           解決優先順序:
+             1. trans.RuntimeSpec.AwaitingLLMTimeout (transition 個別)
+             2. wf.DefaultAwaitingLLMTimeout         (workflow 全体)
+             3. なし (timeout を仕込まない)
+           値は秒数。NumericQ かつ > 0 のときのみ有効。
+           timeout 経過後にまだ AwaitingLLMTransitions[awaitId] が存在する
+           なら、ClaudeCompleteHandlerOutput で fallback Payload を発火。
+           fallback Payload は元の partialPayload に
+             "_timeout"  -> True
+             "_handler"  -> transitionName
+           を追加するだけで、その他のキーは保持する。
+           ClaudeCompleteHandlerOutput は二重発火に対し silent discard
+           (TransitionCallbackDiscarded を Trace に残す) するので、
+           LLM 応答が後から到着しても安全。 *)
+        With[{tmoTrans = Lookup[trans[["RuntimeSpec"]], "AwaitingLLMTimeout", Automatic],
+              tmoWf    = Lookup[newWf, "DefaultAwaitingLLMTimeout", None]},
+          Module[{effectiveTmo},
+            effectiveTmo = Which[
+              NumericQ[tmoTrans] && tmoTrans > 0, N[tmoTrans],
+              NumericQ[tmoWf]    && tmoWf    > 0, N[tmoWf],
+              True, None];
+            If[NumericQ[effectiveTmo],
+              With[{wid1 = wid, aid1 = awaitId, tname = transitionName,
+                    dur = effectiveTmo,
+                    pp = If[AssociationQ[partialPayload], partialPayload, <||>]},
+                SessionSubmit[ScheduledTask[
+                  Quiet @ Check[
+                    ClaudeCompleteHandlerOutput[wid1, aid1,
+                      <|"Payload" ->
+                          Append[pp,
+                            <|"_timeout" -> True, "_handler" -> tname|>]|>],
+                    Null],
+                  {dur, 1}]]]]]];
+
+        Return[<|"Status"         -> "Awaiting",
+                 "TransitionName" -> transitionName,
+                 "AwaitId"        -> awaitId,
+                 "ConsumedTokens" -> consumedIds,
+                 "ProducedTokens" -> {},
+                 "ExecutorResult" -> executorResult,
+                 "Marking"        -> iComputeCurrentMarking[wid]|>]
+      ]
+    ];
+
     (* 5. Output tokens produce *)
     producedTokens = iProduceOutputTokens[trans, binding, executorResult];
 
@@ -1093,8 +1517,46 @@ iExecuteTransition[trans_Association, binding_Association] :=
     ]
   ];
 
+(* === Z\:6848 (async-handler) \:7528 \:52d5\:7684\:30b9\:30b3\:30fc\:30d7\:30b7\:30f3\:30dc\:30eb\:521d\:671f\:5024 (2026-05-16) ===
+   handler \:5916\:3067\:53c2\:7167\:3055\:308c\:305f\:3068\:304d\:3001Missing[] \:3067\:6e08\:307e\:305b\:308b\:305f\:3081
+   \:30c8\:30c3\:30d7\:30ec\:30d9\:30eb (Global / package context) \:3067\:521d\:671f\:5024\:3092\:4e0e\:3048\:3066\:304a\:304f\:3002
+   iExecutePureFunction \:5185\:3067 Block \:3067\:4e0a\:66f8\:304d\:3057\:3066 handler \:8a55\:4fa1\:3059\:308b\:3002 *)
+If[!ValueQ[$ClaudeCurrentWid],
+  $ClaudeCurrentWid = Missing["NotInHandler"]];
+If[!ValueQ[$ClaudeCurrentTransition],
+  $ClaudeCurrentTransition = Missing["NotInHandler"]];
+If[!ValueQ[$ClaudeCurrentAwaitId],
+  $ClaudeCurrentAwaitId = Missing["NotInHandler"]];
+If[!ValueQ[$ClaudeCurrentBinding],
+  $ClaudeCurrentBinding = Missing["NotInHandler"]];
+
+(* === Z\:6848 helper: AwaitingLLM \:30bb\:30f3\:30c1\:30cd\:30eb\:691c\:51fa === *)
+
+(* handler \:6238\:308a\:5024\:304c "AwaitingLLM" \:30b9\:30c6\:30fc\:30bf\:30b9\:3092\:8fd4\:3057\:3066\:3044\:308b\:304b\:3092\:5224\:5b9a\:3002
+   \:5bfe\:8c61: Association \:3067 "Status" \:30ad\:30fc \:304c "AwaitingLLM" (\:7570\:5165\:6587\:5b57\:3082\:8a31\:5bb9)\:3002
+   \:6238\:308a\:5024: True | False *)
+iIsAwaitingHandlerOutput[output_] :=
+  AssociationQ[output] &&
+  KeyExistsQ[output, "Status"] &&
+  StringQ[output[["Status"]]] &&
+  ToLowerCase[output[["Status"]]] === "awaitingllm";
+
+(* await ID generator. wid \:3068\:7d44\:307f\:5408\:308f\:305b\:3066\:30b0\:30ed\:30fc\:30d0\:30eb\:306b\:30e6\:30cb\:30fc\:30af\:3002 *)
+iGenerateAwaitId[wid_String] :=
+  "await-" <> wid <> "-" <> ToString[UnixTime[]] <> "-" <>
+    IntegerString[RandomInteger[{16^^1000, 16^^FFFF}], 16];
+
+(* AwaitingLLMTransitions \:30d5\:30a3\:30fc\:30eb\:30c9\:304c\:65e7 WorkflowNet \:306b\:7121\:3044\:5834\:5408\:306e
+   backward-compat helper\:3002\:8aad\:307f\:8fbc\:307f\:6e08\:307f net \:3092\:4e0a\:66f8\:304d\:3057\:3066\:8fd4\:3059\:3002 *)
+iEnsureAwaitingLLMField[wf_Association] :=
+  If[KeyExistsQ[wf, "AwaitingLLMTransitions"],
+    wf,
+    Append[wf, "AwaitingLLMTransitions" -> <||>]
+  ];
+
 iExecutePureFunction[trans_Association, binding_Association] :=
-  Module[{handler, output, succeeded, prevML, isCallable},
+  Module[{handler, output, succeeded, prevML, isCallable,
+          widForBlock, tnameForBlock, awaitIdForBlock},
     handler = Lookup[trans[["RuntimeSpec"]], "Handler", Identity];
 
     (* handler が呼び出し可能か判定。
@@ -1108,12 +1570,33 @@ iExecutePureFunction[trans_Association, binding_Association] :=
       True,                                            False
     ];
 
+    (* Z\:6848 (2026-05-16): \:52d5\:7684\:30b9\:30b3\:30fc\:30d7\:7528\:306e\:5024\:3092\:6e96\:5099\:3002
+       wid \:3068 transition \:540d\:306f trans \:304b\:3089\:53d6\:308a\:3001\:73fe\:72b6\:3067\:306f registry \:898b\:308a\:51fa\:3057\:3067\n       \:300c\:3069\:306e wid \:306b\:5c5e\:3059\:308b trans \:304b\:300d\:3092\:540c\:5b9a\:3059\:308b\:624b\:6bb5\:304c\:306a\:3044\:305f\:3081\:3001\:30b3\:30fc\:30eb\:5143\:3067 wid \:3092\n       \:4f1d\:3048\:308b\:9802\:3050\:306e\:4ed5\:7d44\:307f\:3092\:4f7f\:3046\:3002\:73fe\:4ed8 (Day 4d): $ClaudeCurrentWid \:306f\n       ClaudeFireTransition \:304c iExecuteTransition \:3092\:547c\:3076\:524d\:306b Block \:3067\:52d5\:7684\:675f\:7e1b\:3059\:308b\:3068\:3044\:3046\n       \:8a2d\:8a08\:306b\:5909\:66f4\:3057\:305f (\:4e0b\:8a18\:4e0b\:898f)\:3002\:3088\:3063\:3066\:3053\:3053\:3067\:306f Block \:3057\:306a\:3044\:3002
+       transition \:540d\:3060\:3051 Block \:3059\:308b\:3002 *)
+    tnameForBlock   = Lookup[trans, "Name", "?"];
+    (* wid \:306f ClaudeFireTransition \:304c Block[{$ClaudeCurrentWid = wid}, ...] \:3057\:305f
+       \:4e0a\:3067 iExecuteTransition \:3092\:547c\:3076\:3088\:3046\:306b\:3057\:3066\:3044\:308b\:305f\:3081\:3001\:3053\:3053\:3067\:306f
+       \:898b\:3048\:308b\:3082\:306e\:3092\:305d\:306e\:307e\:307e\:4f7f\:3046\:3002awaitId \:306f\:4e88\:5099\:767a\:884c\:3057\:3066\:304a\:304d
+       handler \:5185\:3067\:5229\:7528\:3067\:304d\:308b\:3088\:3046\:306b\:3059\:308b\:3002 *)
+    widForBlock     = $ClaudeCurrentWid;
+    awaitIdForBlock = If[
+      StringQ[widForBlock],
+      iGenerateAwaitId[widForBlock],
+      Missing["NotInHandler"]];
+
     Which[
       isCallable,
         (* 罠 #16 回避: Quiet@Check は使わず、フラグ変数で成否を取る。
-           Block で $MessageList を局所化し、メッセージが出たかも検知する。 *)
+           Block で $MessageList を局所化し、メッセージが出たかも検知する。
+           Z \:6848: \:52d5\:7684\:30b9\:30b3\:30fc\:30d7\:3082 Block \:3067\:4e00\:7dd2\:306b\:675f\:7e1b\:3002 *)
         succeeded = True;
-        Block[{$MessageList = {}, prevML$ = $MessageList},
+        Block[{
+          $MessageList = {},
+          prevML$ = $MessageList,
+          $ClaudeCurrentTransition = tnameForBlock,
+          $ClaudeCurrentAwaitId    = awaitIdForBlock,
+          $ClaudeCurrentBinding    = binding
+        },
           output = Quiet[
             Check[
               handler[binding],
@@ -1121,8 +1604,11 @@ iExecutePureFunction[trans_Association, binding_Association] :=
             ]
           ];
           (* メッセージが出ていれば失敗扱いとする (handler が握り潰しても
-             ここで検知できる)。 *)
-          If[Length[$MessageList] > 0, succeeded = False];
+             ここで検知できる)。
+             Z \:6848: \:305f\:3060\:3057 handler \:5185\:3067 ClaudeQueryAsync \:3092\:8d77\:52d5\:3057\:3066\:3044\:308b\:9014\:4e2d\:3067
+             \:30e1\:30c3\:30bb\:30fc\:30b8\:304c\:51fa\:308b\:30b1\:30fc\:30b9\:304c\:3042\:308b\:305f\:3081\:3001AwaitingLLM \:30b9\:30c6\:30fc\:30bf\:30b9\:3092\:8fd4\:3057\:305f\n             \:5834\:5408\:306f\:30e1\:30c3\:30bb\:30fc\:30b8\:691c\:51fa\:306f\:30b9\:30ad\:30c3\:30d7\:3059\:308b\:3002 *)
+          If[!iIsAwaitingHandlerOutput[output] &&
+             Length[$MessageList] > 0, succeeded = False];
         ],
       handler === Identity,
         output = binding; succeeded = True,
@@ -1133,9 +1619,20 @@ iExecutePureFunction[trans_Association, binding_Association] :=
     (* output 自身が $Failed の場合も明示的に失敗 *)
     If[output === $Failed, succeeded = False];
 
-    If[!succeeded,
-      <|"Status" -> "Failed", "Reason" -> "HandlerError"|>,
-      <|"Status" -> "Success", "Output" -> output|>
+    (* === Z \:6848 (2026-05-16): AwaitingLLM \:30bb\:30f3\:30c1\:30cd\:30eb\:5224\:5b9a ===
+       handler \:304c <|"Status" -> "AwaitingLLM"|> \:3092\:8fd4\:3057\:305f\:3089\:3001\:4e0a\:4f4d\:306b
+       Awaiting \:30b9\:30c6\:30fc\:30bf\:30b9\:3092\:8fd4\:3059\:3002awaitIdForBlock \:3092\:4f7f\:3063\:305f\:306e\:306f
+       handler \:3060\:304b\:3089\:3001\:305d\:306e await ID \:3092\:4e0a\:4f4d\:3082\:540c\:3058\:3082\:306e\:3068\:3057\:3066\:4f7f\:3046\:3002 *)
+    Which[
+      iIsAwaitingHandlerOutput[output],
+        <|"Status"         -> "Awaiting",
+          "Output"         -> output,
+          "AwaitId"        -> awaitIdForBlock,
+          "PartialPayload" -> Lookup[output, "Payload", <||>]|>,
+      !succeeded,
+        <|"Status" -> "Failed", "Reason" -> "HandlerError"|>,
+      True,
+        <|"Status" -> "Success", "Output" -> output|>
     ]
   ];
 
@@ -1310,6 +1807,264 @@ iApplyFireToWorkflow[wf_Association, trans_Association,
   ];
 
 (* ::Subsubsection:: *)
+(* Z\:6848 (2026-05-16) Awaiting-LLM helper \:7fa4 *)
+
+(* iConsumeTokensForAwaiting: input \:30c8\:30fc\:30af\:30f3\:306e\:307f consume \:3057\:3001
+   output \:306f produce \:3057\:306a\:3044\:3002Trace \:8ffd\:52a0\:3082\:3053\:3053\:3067\:306f\:3057\:306a\:3044
+   (\:547c\:3076\:5074\:304c TransitionAwaiting \:3092\:8ffd\:8a18\:3059\:308b)\:3002 *)
+iConsumeTokensForAwaiting[wf_Association, trans_Association,
+                          consumedTokens_List] :=
+  Module[{newWf, consumedIds},
+    newWf       = wf;
+    consumedIds = Map[#[["TokenId"]] &, consumedTokens];
+
+    (* 1. Consumed tokens を input places から削除 *)
+    Scan[
+      Function[arc,
+        With[{p = arc[["Place"]]},
+          newWf = ReplacePart[newWf,
+            {"Places", p, "TokenIds"} ->
+              DeleteCases[
+                newWf[["Places", p, "TokenIds"]],
+                Alternatives @@ consumedIds]
+          ]
+        ]
+      ],
+      trans[["InputArcs"]]
+    ];
+
+    (* 2. Token registry から consumed を削除 *)
+    newWf = ReplacePart[newWf,
+      "Tokens" -> KeyDrop[newWf[["Tokens"]], consumedIds]
+    ];
+
+    newWf
+  ];
+
+(* iApplyCompletedHandlerOutput: AwaitingLLMTransitions \:30a8\:30f3\:30c8\:30ea\:304b\:3089
+   produce \:30d5\:30a7\:30fc\:30ba\:3092\:5b8c\:4e86\:3055\:305b\:308b helper\:3002
+   wf \:306b\:5bfe\:3057 (place TokenIds \:306b\:8ffd\:52a0, Tokens registry \:306b\:8ffd\:52a0,
+   AwaitingLLMTransitions \:304b\:3089\:8a72\:5f53 entry \:3092\:524a\:9664, Trace \:306b
+   TransitionCompleted \:3092\:8ffd\:8a18, Final places \:5230\:9054\:30c1\:30a7\:30c3\:30af) \:3092\:9069\:7528\:3057\:305f
+   \:65b0\:3057\:3044 wf \:3092\:8fd4\:3059\:3002\:4f75\:305b\:3066 producedTokens \:3092\:8fd4\:3059\:3002 *)
+iApplyCompletedHandlerOutput[wf_Association, trans_Association,
+                             awaitId_String, finalOutput_Association] :=
+  Module[{newWf, awaiting, binding, producedTokens, parentIds, finalReached,
+          synthetic, outputArcs, basePayload, payloadFromOutput},
+    newWf    = iEnsureAwaitingLLMField[wf];
+    awaiting = Lookup[newWf[["AwaitingLLMTransitions"]], awaitId,
+                       Missing["NoSuchAwaiting"]];
+
+    If[MissingQ[awaiting],
+      Return[<|"Status" -> "NotFound", "AwaitId" -> awaitId|>]
+    ];
+
+    binding    = Lookup[awaiting, "Binding", <||>];
+    parentIds  = Lookup[awaiting, "ConsumedIds", {}];
+    outputArcs = Lookup[trans, "OutputArcs", {}];
+
+    (* finalOutput \:306f Association\:3002 "Payload" \:30ad\:30fc\:304c\:3042\:308c\:3070\:305d\:308c\:3092
+       Payload \:3068\:3057\:3066\:4f7f\:3046\:3002\:306a\:3051\:308c\:3070 finalOutput \:81ea\:4f53\:3092 Payload \:6271\:3044\:3002 *)
+    basePayload = Which[
+      KeyExistsQ[finalOutput, "Payload"] &&
+        AssociationQ[finalOutput[["Payload"]]],
+        finalOutput[["Payload"]],
+      AssociationQ[finalOutput],
+        finalOutput,
+      True,
+        <||>
+    ];
+
+    (* synthetic executorResult \:3092 iProduceOutputTokens \:7d4c\:7531\:3067\:6e21\:3057
+       \:30d1\:30b9\:3092\:63c3\:3048\:308b\:3002 *)
+    synthetic = <|"Status" -> "Completed", "Output" ->
+      <|"Payload" -> basePayload|>|>;
+
+    producedTokens = iProduceOutputTokens[trans, binding, synthetic];
+
+    (* Produced tokens \:3092 output places + Tokens registry \:306b\:8ffd\:52a0\:3002
+       iApplyFireToWorkflow \:3068\:540c\:3058\:30d1\:30bf\:30fc\:30f3\:3060\:304c input consume \:306f
+       \:3057\:306a\:3044 (\:3059\:3067\:306b Awaiting branch \:3067\:6e08)\:3002 *)
+    MapIndexed[
+      Function[{arc, idx},
+        With[{p = arc[["Place"]], tok = producedTokens[[idx[[1]]]]},
+          newWf = ReplacePart[newWf,
+            {"Places", p, "TokenIds"} ->
+              Append[newWf[["Places", p, "TokenIds"]], tok[["TokenId"]]]];
+          newWf = ReplacePart[newWf,
+            "Tokens" ->
+              Append[newWf[["Tokens"]], tok[["TokenId"]] -> tok]]
+        ]
+      ],
+      outputArcs
+    ];
+
+    (* AwaitingLLMTransitions \:304b\:3089\:8a72\:5f53 entry \:3092\:524a\:9664 *)
+    newWf = ReplacePart[newWf,
+      "AwaitingLLMTransitions" ->
+        KeyDrop[newWf[["AwaitingLLMTransitions"]], awaitId]];
+
+    (* Trace event TransitionCompleted *)
+    newWf = ReplacePart[newWf,
+      "Trace" -> Append[newWf[["Trace"]],
+        <|"Event"           -> "TransitionCompleted",
+          "TransitionName"  -> trans[["Name"]],
+          "AwaitId"         -> awaitId,
+          "ConsumedIds"     -> parentIds,
+          "ProducedIds"     -> Map[#[["TokenId"]] &, producedTokens],
+          "DurationSec"     ->
+            iCurrentTime[] - Lookup[awaiting, "StartTime", iCurrentTime[]],
+          "Timestamp"       -> iCurrentTime[]|>]];
+
+    (* Final places 到達チェック *)
+    finalReached = AnyTrue[wf[["FinalPlaces"]],
+      Length[newWf[["Places", #, "TokenIds"]]] > 0 &];
+    If[finalReached,
+      newWf = ReplacePart[newWf, "Status" -> "Done"]];
+
+    <|"NewWf"           -> newWf,
+      "ProducedTokens"  -> producedTokens,
+      "TransitionName"  -> trans[["Name"]],
+      "FinalReached"    -> finalReached|>
+  ];
+
+(* ::Subsubsection:: *)
+(* ClaudeCompleteHandlerOutput (Public) *)
+
+ClaudeCompleteHandlerOutput[wid_String, awaitId_String,
+                            output_Association] :=
+  Module[{wf, awaiting, trans, transName, applied, newWf, marking,
+          asyncInfo, asyncCompleted = False},
+
+    If[!KeyExistsQ[$iWorkflowNets, wid],
+      Return[<|"Status"     -> "NotFound",
+               "WorkflowId" -> wid,
+               "Reason"     -> "WorkflowNotFound"|>]
+    ];
+
+    wf       = iEnsureAwaitingLLMField[$iWorkflowNets[wid]];
+    awaiting = Lookup[wf[["AwaitingLLMTransitions"]], awaitId,
+                       Missing["NoSuchAwaiting"]];
+
+    (* \:8a72\:5f53\:30a8\:30f3\:30c8\:30ea\:304c\:7121\:3044 (Cancel \:6e08\:307f\:307e\:305f\:306f\:5b8c\:4e86\:6e08\:307f) \:306a\:3089
+       silent discard\:3002Trace \:306b\:306f\:4e00\:5fdc\:8a18\:9332\:3057\:3066\:304a\:304f\:3002 *)
+    If[MissingQ[awaiting],
+      newWf = ReplacePart[wf,
+        "Trace" -> Append[wf[["Trace"]],
+          <|"Event"      -> "TransitionCallbackDiscarded",
+            "AwaitId"    -> awaitId,
+            "Reason"     -> "NoSuchAwaiting",
+            "Timestamp"  -> iCurrentTime[]|>]];
+      AssociateTo[$iWorkflowNets, wid -> newWf];
+      Return[<|"Status"     -> "Discarded",
+               "WorkflowId" -> wid,
+               "AwaitId"    -> awaitId,
+               "Reason"     -> "NoSuchAwaiting"|>]
+    ];
+
+    transName = Lookup[awaiting, "TransitionName", "?"];
+    trans     = Lookup[wf[["Transitions"]], transName, None];
+
+    If[trans === None,
+      newWf = ReplacePart[wf,
+        "AwaitingLLMTransitions" ->
+          KeyDrop[wf[["AwaitingLLMTransitions"]], awaitId]];
+      newWf = ReplacePart[newWf,
+        "Trace" -> Append[newWf[["Trace"]],
+          <|"Event"     -> "TransitionCallbackDiscarded",
+            "AwaitId"   -> awaitId,
+            "TransitionName" -> transName,
+            "Reason"    -> "TransitionDisappeared",
+            "Timestamp" -> iCurrentTime[]|>]];
+      AssociateTo[$iWorkflowNets, wid -> newWf];
+      Return[<|"Status"     -> "Discarded",
+               "WorkflowId" -> wid,
+               "AwaitId"    -> awaitId,
+               "Reason"     -> "TransitionDisappeared"|>]
+    ];
+
+    (* Workflow Status \:30c1\:30a7\:30c3\:30af: Cancelled / Done \:306e\:5834\:5408\:306f
+       silent discard\:3001\:4f46\:3057 entry \:3092\:30af\:30ea\:30a2 *)
+    If[MemberQ[{"Cancelled"}, wf[["Status"]]],
+      newWf = ReplacePart[wf,
+        "AwaitingLLMTransitions" ->
+          KeyDrop[wf[["AwaitingLLMTransitions"]], awaitId]];
+      newWf = ReplacePart[newWf,
+        "Trace" -> Append[newWf[["Trace"]],
+          <|"Event"     -> "TransitionCallbackDiscarded",
+            "AwaitId"   -> awaitId,
+            "TransitionName" -> transName,
+            "Reason"    -> "WorkflowCancelled",
+            "Timestamp" -> iCurrentTime[]|>]];
+      AssociateTo[$iWorkflowNets, wid -> newWf];
+      Return[<|"Status"     -> "Discarded",
+               "WorkflowId" -> wid,
+               "AwaitId"    -> awaitId,
+               "Reason"     -> "WorkflowCancelled"|>]
+    ];
+
+    (* \:6700\:5f8c\:306e\:4ef6: \:5e38\:8ecc\:306e produce \:3092\:9069\:7528 *)
+    applied = iApplyCompletedHandlerOutput[wf, trans, awaitId, output];
+
+    If[!AssociationQ[applied] || !KeyExistsQ[applied, "NewWf"],
+      Return[<|"Status"     -> "Discarded",
+               "WorkflowId" -> wid,
+               "AwaitId"    -> awaitId,
+               "Reason"     -> "ApplyFailed"|>]
+    ];
+
+    newWf = applied[["NewWf"]];
+    AssociateTo[$iWorkflowNets, wid -> newWf];
+
+    marking = iComputeCurrentMarking[wid];
+
+    (* Async \:30b8\:30e7\:30d6\:304c\:8d70\:3063\:3066\:3044\:3066 final place \:306b\:5230\:9054\:3057\:305f\:306a\:3089\:3001
+       \:3053\:3053\:3067\:5b8c\:4e86\:30de\:30fc\:30af\:3092\:4ed8\:3051\:308b (\:6b21\:306e tick \:3092\:5f85\:305f\:305a\:306b)\:3002
+       Stuck \:3060\:3063\:305f\:5834\:5408\:306e\:51e6\:7406\:306f tick \:5074\:306b\:4efb\:305b\:308b\:3002 *)
+    If[applied[["FinalReached"]] &&
+       KeyExistsQ[$iWorkflowAsyncJobs, wid] &&
+       Lookup[$iWorkflowAsyncJobs[wid], "Status", "Completed"] =!= "Completed",
+      iMarkAsyncCompleted[wid, "ReachedFinalPlace"];
+      asyncCompleted = True
+    ];
+
+    <|"Status"          -> "Completed",
+      "WorkflowId"      -> wid,
+      "AwaitId"         -> awaitId,
+      "TransitionName"  -> transName,
+      "ProducedTokens"  -> Map[#[["TokenId"]] &, applied[["ProducedTokens"]]],
+      "FinalReached"    -> applied[["FinalReached"]],
+      "AsyncCompleted"  -> asyncCompleted,
+      "Marking"         -> marking|>
+  ];
+
+(* ::Subsubsection:: *)
+(* ClaudeAwaitingTransitions (Public) *)
+
+ClaudeAwaitingTransitions[wid_String] :=
+  Module[{wf, awaiting, rows, now},
+    If[!KeyExistsQ[$iWorkflowNets, wid],
+      Return[Dataset[{}]]
+    ];
+    wf = iEnsureAwaitingLLMField[$iWorkflowNets[wid]];
+    awaiting = Lookup[wf, "AwaitingLLMTransitions", <||>];
+    now      = iCurrentTime[];
+
+    rows = KeyValueMap[
+      Function[{aid, entry},
+        <|"AwaitId"         -> aid,
+          "TransitionName"  -> Lookup[entry, "TransitionName", "?"],
+          "StartTime"       -> Lookup[entry, "StartTime", Missing[]],
+          "ElapsedSec"      -> now - Lookup[entry, "StartTime", now],
+          "ConsumedIds"     -> Lookup[entry, "ConsumedIds", {}]|>
+      ],
+      awaiting
+    ];
+
+    Dataset[rows]
+  ];
+
+(* ::Subsubsection:: *)
 (* ClaudeStepWorkflow *)
 
 Options[ClaudeStepWorkflow] = Options[ClaudeFireTransition];
@@ -1400,11 +2155,23 @@ iRunWorkflowSync[wid_String, opts:OptionsPattern[ClaudeRunWorkflow]] :=
            "HandlerFailed" は終了判定にしない (= continue)。理由は
            iWorkflowAsyncTick と同じ: 失敗カウンタは ClaudeFireTransition で
            ++ 済みで、上限到達済みなら ClaudeEnabledTransitions が次 step で
-           除外し、他に enabled が無ければ次 step が "Stuck" になる。 *)
+           除外し、他に enabled が無ければ次 step が "Stuck" になる。
+           Z\:6848 (2026-05-16): "Stuck" \:5224\:5b9a\:6642\:306b AwaitingLLMTransitions \:304c
+           \:6b8b\:3063\:3066\:3044\:308b\:306a\:3089 callback \:3092\:5f85\:3064\:3002Pause[0.2] \:3057\:3066\:30eb\:30fc\:30d7\:3092\:7d99\:7d9a\:3002 *)
         Switch[stepResult[["Status"]],
           "Stuck",
-            terminationReason = "Stuck";
-            Throw["StuckBreak"],
+            Module[{wfNow, hasAw},
+              wfNow = If[KeyExistsQ[$iWorkflowNets, wid],
+                iEnsureAwaitingLLMField[$iWorkflowNets[wid]], <||>];
+              hasAw = AssociationQ[wfNow] &&
+                Length[Lookup[wfNow, "AwaitingLLMTransitions", <||>]] > 0;
+              If[hasAw,
+                (* callback \:5230\:7740\:3092\:5f85\:3064 idle wait *)
+                Pause[0.2],
+                terminationReason = "Stuck";
+                Throw["StuckBreak"]
+              ]
+            ],
           "Failed",
             terminationReason = "Failed";
             Throw["FailedBreak"],
@@ -1416,7 +2183,10 @@ iRunWorkflowSync[wid_String, opts:OptionsPattern[ClaudeRunWorkflow]] :=
             Throw["BlockedBreak"],
           "Skipped",
             terminationReason = "Skipped";
-            Throw["SkippedBreak"]
+            Throw["SkippedBreak"],
+          "Awaiting",
+            (* fire \:6210\:529f\:3060\:304c\:5b8c\:4e86\:5f85\:3061\:3002\:30eb\:30fc\:30d7\:3092\:7d99\:7d9a\:3057\:3066\:4ed6\:306e enabled \:3092\n               \:53d6\:308a\:306b\:884c\:304f\:3002\:4ed6\:304c\:7121\:304f Stuck \:306b\:306a\:308c\:3070\:4e0a\:8a18 hasAw \:3067\:5f85\:6a5f\:3002 *)
+            Null
         ];
         
         (* Done になっていればループ抜ける *)
@@ -1736,12 +2506,28 @@ iWorkflowAsyncTick[wid_String] :=
        attempts は ClaudeFireTransition 内で ++ 済みで、上限到達済みなら
        ClaudeEnabledTransitions が次 tick で除外し、他に enabled が無ければ
        次 tick が "Stuck" になる。retry 余力があるか、別の transition が
-       enabled なら次 tick で継続する。 *)
-    Switch[Lookup[stepResult, "Status", "?"],
-      "Stuck",         iMarkAsyncCompleted[wid, "Stuck"]; Return[],
-      "Failed",        iMarkAsyncCompleted[wid, "Failed"]; Return[],
-      "NeedsApproval", iMarkAsyncCompleted[wid, "NeedsApproval"]; Return[],
-      "Blocked",       iMarkAsyncCompleted[wid, "Blocked"]; Return[]
+       enabled なら次 tick で継続する。
+       Z\:6848 (2026-05-16): "Stuck" \:3060\:3063\:305f\:5834\:5408\:3001AwaitingLLMTransitions \:304c
+       \:6b8b\:3063\:3066\:3044\:308c\:3070\:300c\:672c\:5f53\:306b\:8a70\:307e\:3063\:305f\:300d\:3068\:306f\:8a00\:3048\:305a\:3001callback \:5230\:7740\:3092\:5f85\:3064 idle \:3068\n       \:305b\:3088\:3002\:3088\:3063\:3066 Stuck \:3092 Complete \:306b\:5909\:3048\:305a\:3001\:6b21 tick \:3092\:5f85\:3064 (Return)\:3002 *)
+    Module[{stepStatus, wfAfter, hasAwaiting},
+      stepStatus  = Lookup[stepResult, "Status", "?"];
+      wfAfter     = If[KeyExistsQ[$iWorkflowNets, wid],
+        iEnsureAwaitingLLMField[$iWorkflowNets[wid]], <||>];
+      hasAwaiting = AssociationQ[wfAfter] &&
+        Length[Lookup[wfAfter, "AwaitingLLMTransitions", <||>]] > 0;
+
+      Switch[stepStatus,
+        "Stuck",
+          If[hasAwaiting,
+            (* idle wait: callback \:5230\:7740\:307e\:3067\:6b21 tick \:3082 skip *)
+            Return[],
+            iMarkAsyncCompleted[wid, "Stuck"]; Return[]
+          ],
+        "Failed",        iMarkAsyncCompleted[wid, "Failed"]; Return[],
+        "NeedsApproval", iMarkAsyncCompleted[wid, "NeedsApproval"]; Return[],
+        "Blocked",       iMarkAsyncCompleted[wid, "Blocked"]; Return[],
+        "Awaiting",      Null   (* \:6b21 tick \:3082 fire \:53ef\:80fd\:3001\:305d\:306e\:307e\:307e\:9032\:3080 *)
+      ];
     ];
     
     (* fire 後に Done になったか *)
@@ -1762,7 +2548,7 @@ Options[ClaudeWaitWorkflow] = {
 
 ClaudeWaitWorkflow[wid_String, opts:OptionsPattern[]] :=
   Module[{intervalSec, maxWaitSec, startTime, completed, finalInfo,
-          finalStatus, finalMarking},
+          finalStatus, finalMarking, fineGrainStep, microStepCount},
     
     intervalSec = QuantityMagnitude @
                   UnitConvert[OptionValue["PollInterval"], "Seconds"];
@@ -1771,15 +2557,31 @@ ClaudeWaitWorkflow[wid_String, opts:OptionsPattern[]] :=
     startTime   = iCurrentTime[];
     completed   = False;
     
+    (* Stage 1.7 (2026-05-17): \:7d30\:5208\:307f Pause + SessionSubmit slot \:5316\:3002
+       rule 95-D \:6e96\:62e0: Wolfram \:306e Pause \:306f\:30ab\:30fc\:30cd\:30eb\:8a55\:4fa1\:3092\:30b9\:30ea\:30fc\:30d7\:3055\:305b\:308b\:3060\:3051\:3067\:3001
+       \:30d5\:30ed\:30f3\:30c8\:30a8\:30f3\:30c9\:30e1\:30c3\:30bb\:30fc\:30b8\:30eb\:30fc\:30d7\:3068 SessionSubmit \:30ad\:30e5\:30fc\:306f Pause \:5883\:754c\:3067
+       \:6700\:5927 1 \:30b9\:30ed\:30c3\:30c8\:3057\:304b\:6d88\:5316\:3055\:308c\:306a\:3044\:3002\:5f93\:3063\:3066 Pause[3] \:30921\:56de\:547c\:3076\:3088\:308a\:3001
+       Pause[0.05] \:309260\:56de\:7e70\:308a\:8fd4\:3057\:305f\:65b9\:304c\:3001handler \:306e\:975e\:540c\:671f LLM \:547c\:3073\:51fa\:3057\:304c
+       \:751f\:6210\:3059\:308b SessionSubmit \:30b9\:30bf\:30c3\:30af\:3092\:6d88\:5316\:3067\:304d\:308b\:3002 *)
+    fineGrainStep  = 0.05;
+    microStepCount = Max[Round[intervalSec / fineGrainStep], 1];
+    
     While[!completed && (iCurrentTime[] - startTime) < maxWaitSec,
-      Pause[intervalSec];
-      
-      Which[
-        !KeyExistsQ[$iWorkflowAsyncJobs, wid],
-          completed = True,
-        Lookup[$iWorkflowAsyncJobs[wid], "Status", "Running"] === "Completed",
-          completed = True
+      (* \:7d30\:5208\:307f Pause \:30eb\:30fc\:30d7\:3002\:5404 Pause \:5883\:754c\:3067 SessionSubmit \:3092 1 \:30b9\:30ed\:30c3\:30c8\:3060\:3051\:6d88\:5316\:3067\:304d\:308b\:3002 *)
+      Do[
+        Pause[fineGrainStep];
+        (* \:5404 microstep \:3067\:5b8c\:4e86\:30c1\:30a7\:30c3\:30af *)
+        Which[
+          !KeyExistsQ[$iWorkflowAsyncJobs, wid],
+            completed = True; Break[],
+          Lookup[$iWorkflowAsyncJobs[wid], "Status", "Running"] === "Completed",
+            completed = True; Break[]
+        ],
+        {microStepCount}
       ];
+      
+      (* MaxWait \:30c1\:30a7\:30c3\:30af\:306f\:5916\:5074\:30eb\:30fc\:30d7\:3067 *)
+      If[(iCurrentTime[] - startTime) >= maxWaitSec, Break[]];
     ];
     
     finalInfo    = Lookup[$iWorkflowAsyncJobs, wid, Missing["JobNotFound"]];
@@ -1813,6 +2615,14 @@ If[!ValueQ[$ClaudeWorkflowSnapshotDir],
       FileNameJoin[{Directory[], "workflow_snapshots"}]
     ]
 ];
+
+(* D (2026-05-17): ClaudeRestoreWorkflow が AwaitingLLM entry に timer を
+   再仕掛けする際、transition / workflow どちらにも AwaitingLLMTimeout が
+   指定されていなかった場合に使う最終手段の timeout 秒数。
+   既定値 0.1 秒 (即座に _restored=True / _timeout=True で fallback 発火)。
+   ユーザは Restore 前にこの変数を上書きして調整できる (例: 60.0 秒に伸ばす)。 *)
+If[!NumericQ[$iRestoreFallbackTimeout],
+  $iRestoreFallbackTimeout = 0.1];
 
 iEnsureSnapshotRoot[snapRoot_String] :=
   If[!DirectoryQ[snapRoot],
@@ -1920,7 +2730,56 @@ ClaudeRestoreWorkflow[snapDir_String, opts:OptionsPattern[]] :=
        明示する (debug 用途、衝突時は上書きされる) *)
     restoredWf = ReplacePart[wf, "WorkflowId" -> newWid];
     AssociateTo[$iWorkflowNets, newWid -> restoredWf];
-    
+
+    (* === D (2026-05-17): AwaitingLLMTransitions の timer 再仕掛け ===
+       Snapshot 時に存在した AwaitingLLM 状態の transition は、
+       AwaitingLLMTransitions[awaitId] エントリとしてデータは保存されているが、
+       元の callback (Function closure) と timeout ScheduledTask は
+       カーネル再起動を跨いで復元できない。
+       Restore 時に各エントリへ「engine 側の timer」を再仕掛けし、
+       Q1 ご指示の通り「原の timeout 設定を復元、callback は復元不能だので
+       _timeout=True で Payload 補完」する。
+       Resolution:
+         1. trans.RuntimeSpec.AwaitingLLMTimeout (transition 個別)
+         2. wf.DefaultAwaitingLLMTimeout         (workflow 全体)
+         3. $iRestoreFallbackTimeout (default 0.1s, 即座 fallback)
+       fallback Payload には _timeout=True, _handler=tname に加えて
+       _restored=True を入れ「Restore 経由の自動 completion」を示す。
+       これにより、後段の transition / completion hook は
+       「LLM 応答が届かなかった」を Payload から検出できる。 *)
+    Module[{restoredAwaiting},
+      restoredAwaiting = Lookup[restoredWf, "AwaitingLLMTransitions", <||>];
+      If[AssociationQ[restoredAwaiting] && Length[restoredAwaiting] > 0,
+        Scan[
+          Function[entry,
+            Module[{aid, tname, pp, trans, tmoTrans, tmoWf, effectiveTmo},
+              aid    = Lookup[entry, "AwaitId", ""];
+              tname  = Lookup[entry, "TransitionName", "?"];
+              pp     = Lookup[entry, "PartialPayload", <||>];
+              trans  = Lookup[restoredWf[["Transitions"]], tname, <||>];
+              tmoTrans = Lookup[Lookup[trans, "RuntimeSpec", <||>],
+                                 "AwaitingLLMTimeout", Automatic];
+              tmoWf    = Lookup[restoredWf, "DefaultAwaitingLLMTimeout", None];
+              effectiveTmo = Which[
+                NumericQ[tmoTrans] && tmoTrans > 0, N[tmoTrans],
+                NumericQ[tmoWf]    && tmoWf    > 0, N[tmoWf],
+                True, $iRestoreFallbackTimeout];
+              If[StringQ[aid] && aid =!= "",
+                With[{wid1 = newWid, aid1 = aid, tname1 = tname,
+                      dur = effectiveTmo,
+                      pp1 = If[AssociationQ[pp], pp, <||>]},
+                  SessionSubmit[ScheduledTask[
+                    Quiet @ Check[
+                      ClaudeCompleteHandlerOutput[wid1, aid1,
+                        <|"Payload" ->
+                            Append[pp1,
+                              <|"_timeout"  -> True,
+                                "_handler"  -> tname1,
+                                "_restored" -> True|>]|>],
+                      Null],
+                    {dur, 1}]]]]]],
+          Values[restoredAwaiting]]]];
+
     <|"WorkflowId"    -> newWid,
       "OriginalWid"   -> originalWid,
       "Restored"      -> True,
@@ -2052,22 +2911,36 @@ ClaudeResumeWorkflow[wid_String] :=
   ];
 
 ClaudeCancelWorkflow[wid_String] :=
-  Module[{wf, prevStatus},
+  Module[{wf, prevStatus, awaitingIds, discardEvents},
     If[!KeyExistsQ[$iWorkflowNets, wid],
       Throw[$Failed, "WorkflowNotFound: " <> wid]
     ];
-    wf         = $iWorkflowNets[wid];
+    wf         = iEnsureAwaitingLLMField[$iWorkflowNets[wid]];
     prevStatus = wf[["Status"]];
-    
+
+    (* Z\:6848 (2026-05-16): AwaitingLLMTransitions \:30af\:30ea\:30a2 + discard \:30c8\:30ec\:30fc\:30b9 *)
+    awaitingIds   = Keys[Lookup[wf, "AwaitingLLMTransitions", <||>]];
+    discardEvents = Map[
+      <|"Event"           -> "TransitionCallbackDiscarded",
+        "AwaitId"         -> #,
+        "TransitionName"  -> Lookup[wf[["AwaitingLLMTransitions", #]],
+                              "TransitionName", "?"],
+        "Reason"          -> "WorkflowCancelled",
+        "Timestamp"       -> iCurrentTime[]|> &,
+      awaitingIds
+    ];
+
     AssociateTo[$iWorkflowNets,
       wid -> ReplacePart[wf,
-        {"Status" -> "Cancelled",
-         "Trace"  -> Append[wf[["Trace"]],
-           <|"Event"          -> "WorkflowCancelled",
-             "PreviousStatus" -> prevStatus,
-             "Timestamp"      -> iCurrentTime[]|>]}]
+        {"Status"                  -> "Cancelled",
+         "AwaitingLLMTransitions"  -> <||>,
+         "Trace"                   -> Join[wf[["Trace"]], discardEvents,
+           {<|"Event"          -> "WorkflowCancelled",
+              "PreviousStatus" -> prevStatus,
+              "DiscardedAwait" -> Length[awaitingIds],
+              "Timestamp"      -> iCurrentTime[]|>}]}]
     ];
-    
+
     (* async ジョブが走っていたら即時に完了状態へ。
        次の SharedPollingTask tick を待たずに ClaudeWaitWorkflow が
        Completed を見られるようにする。 *)
@@ -2075,8 +2948,9 @@ ClaudeCancelWorkflow[wid_String] :=
        Lookup[$iWorkflowAsyncJobs[wid], "Status", "Completed"] =!= "Completed",
       iMarkAsyncCompleted[wid, "Cancelled"]
     ];
-    
-    <|"Status" -> "Cancelled", "WorkflowId" -> wid|>
+
+    <|"Status" -> "Cancelled", "WorkflowId" -> wid,
+      "DiscardedAwaitingCount" -> Length[awaitingIds]|>
   ];
 
 (* ::Subsubsection:: *)

@@ -66,7 +66,8 @@
      --- transition 追跡 Dataset ---
      traceTransitions[wid, opts]
        Status は観測ログ優先で判定 (本体 ExecutorStatus を盲信しない)。
-         OK / Failed ($Failed) / Errored (N msg) / BadOutput / NoPayload
+         OK / Failed ($Failed) / Errored (N msg) / BadOutput /
+         AwaitingLLM / Skip / NoPayload / LLMError (M/N)
        "Detail" -> True で LLM 呼び出し詳細 + 本体 ExecStatus を併記。
 
    依存関係:
@@ -138,6 +139,17 @@
        内部 API / 公開シンボル / 動作は完全互換。
        コメント中の Get["petri_from_prompt_chatgpt.wl"] 言及を削除し、
        proposePetriNetWithProvider への参照を proposePetriNet に統一。
+     v0.2.1 (2026-05-17): Z 案 (handler 内非同期 LLM) との連携対応。
+       handler が <|Status -> "AwaitingLLM"|> を同期 return するパターンを
+       Status カラムで正式に区別できるようにした。
+       - iObsMakeHandlerWrapper の log entry に OutputStatus フィールド追加
+         (output が Association + Status キーを持つときに値を記録)
+       - iObsDeriveStatus の Which に AwaitingLLM / Skip 分岐を追加
+         (PayloadKeyMissing 判定より前で優先評価)
+       - これにより Z 案 handler の正常な AwaitingLLM 戻り値が "NoPayload"
+         に誤分類されるのを防ぐ。
+       - completion 側 (ClaudeCompleteHandlerOutput 経由の finalize) の
+         観測は本 patch の対象外。Stage 2-B / C で別途扱う。
 *)
 
 Needs["ClaudeOrchestrator`Workflow`"];
@@ -179,7 +191,7 @@ ClearAll[
   iObsDeriveStatus
 ];
 
-$petriObservabilityVersion = "0.2.0 (2026-05-11)";
+$petriObservabilityVersion = "0.2.1 (2026-05-17)";
 
 (* 既存ログを温存するため、未定義のときだけ初期化 *)
 If[!ListQ[$LLMCallLog],         $LLMCallLog = {}];
@@ -388,6 +400,13 @@ iObsMakeHandlerWrapper[handler_, tname_String] :=
         "PayloadKeys"       -> payloadKeys,
         "PayloadKeyMissing" -> payloadKeyMissing,
         "OutputPayload"     -> outputPayload,
+        (* v0.2.1 (2026-05-17): Z 案で handler が <|Status -> "AwaitingLLM"|>
+           を返す場合や、ワークフロー固有の <|Status -> "Skip"|> を返す場合に、
+           Status 文字列を一級フィールドとして記録する。Missing[] = Status キー無し。
+           iObsDeriveStatus が PayloadKeyMissing より優先で AwaitingLLM 等を
+           区別できるようにする。 *)
+        "OutputStatus"      -> If[AssociationQ[output] && KeyExistsQ[output, "Status"],
+          output[["Status"]], Missing[]],
         "Messages"          -> msgs,
         "FailedHead"        -> output === $Failed,
         "HandlerType"       -> ToString[handlerHead]
@@ -856,11 +875,19 @@ iObsLLMCallsForFiring[transName_String, refTime_, tol_:60.0] :=
    API がエラーを返している場合 ("Error: model: gpt-4.5-preview" 等を
    handler が graceful に Payload に詰めるケース) を検出する。
 
+   v0.2.1 (2026-05-17): Z 案 (handler 内非同期 LLM) で handler が
+   <|Status -> "AwaitingLLM"|> を同期 return するパターンを正式 Status と
+   して識別する。これは「Payload キーが無い」が、異常ではなく「LLM 応答を
+   待っている」状態。PayloadKeyMissing 判定より前に置く必要がある。
+   同様に <|Status -> "Skip"|> も今後の使い道に備えて区別する。
+
    返値の例:
      "OK"                                  正常完了
      "Failed ($Failed)"                    handler が $Failed を返した
      "Errored (3 msg)"                     $MessageList に 3 件メッセージ
      "BadOutput (String)"                  Association 以外が返った
+     "AwaitingLLM"                         Z 案: handler が非同期 LLM 待ち
+     "Skip"                                handler が transition skip を要求
      "NoPayload"                           Association だが "Payload" キーなし
      "LLMError (1/1)"                      LLM 呼び出しが API エラーを返した
                                             (handler は graceful に通したが)
@@ -868,7 +895,7 @@ iObsLLMCallsForFiring[transName_String, refTime_, tol_:60.0] :=
      "<ExecutorStatus>"                    観測ログがない場合のフォールバック
    ============================================================ *)
 iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] :=
-  Module[{nMsg, hasObs, llmTotal, llmErr},
+  Module[{nMsg, hasObs, llmTotal, llmErr, outStatus},
     hasObs = AssociationQ[obs] && KeyExistsQ[obs, "Index"];
     llmTotal = If[ListQ[llmCalls], Length[llmCalls], 0];
     llmErr = If[llmTotal > 0,
@@ -882,6 +909,7 @@ iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] :=
           ToString[execStatus]]
       ]];
     nMsg = Length[Lookup[obs, "Messages", {}]];
+    outStatus = Lookup[obs, "OutputStatus", Missing[]];
     Which[
       TrueQ[Lookup[obs, "FailedHead", False]],
         "Failed ($Failed)",
@@ -889,6 +917,11 @@ iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] :=
         "Errored (" <> ToString[nMsg] <> " msg)",
       !TrueQ[Lookup[obs, "OutputAssocQ", False]],
         "BadOutput (" <> ToString[Lookup[obs, "OutputHead", "?"]] <> ")",
+      (* v0.2.1: Status 一級フィールドで識別 (PayloadKeyMissing より前) *)
+      outStatus === "AwaitingLLM",
+        "AwaitingLLM",
+      outStatus === "Skip",
+        "Skip",
       TrueQ[Lookup[obs, "PayloadKeyMissing", False]],
         "NoPayload",
       llmErr > 0,
@@ -910,6 +943,11 @@ traceTransitions::usage =
   "デフォルトでは Step / Transition / Status / OutputAssoc? / OutputHead / RawKeys /\n" <>
   "PayloadKeys / PayloadKeyMissing / FailedHead / Messages / ConsumedIds / ProducedIds\n" <>
   "を表示する。\n" <>
+  "Status カラムが取りうる値:\n" <>
+  "  OK / Failed ($Failed) / Errored (N msg) / BadOutput / AwaitingLLM / Skip /\n" <>
+  "  NoPayload / LLMError (M/N) / <ExecutorStatus>\n" <>
+  "  - AwaitingLLM: handler が <|Status -> \"AwaitingLLM\"|> を返した状態 (Z 案)\n" <>
+  "  - Skip:        handler が <|Status -> \"Skip\"|> を返した状態\n" <>
   "オプション \"Detail\" -> True で各 firing に対応する LLM 呼び出し (Model / Prompt /\n" <>
   "Response の抜粋 / Duration) を統合した拡張 Dataset を返す。";
 

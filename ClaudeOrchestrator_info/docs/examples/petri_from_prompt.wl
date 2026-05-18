@@ -74,6 +74,47 @@ WorkflowNet[
   \"Places\" -> <|...|>,
   \"Transitions\" -> <|...|>]
 
+# Source token Payload key convention (CRITICAL)
+
+The user creates the Source token via the helper
+
+  ClaudeBindAndSubmit[wid, var1, var2, ...]
+
+which uses SymbolName[varK] VERBATIM as the Payload key (no case
+transformation, no translation). Therefore, when the user goal
+mentions Mathematica variable names, you MUST use those EXACT names
+as Payload keys in the FIRST worker / Distribute handler.
+
+Examples (the right column is the Source token's Payload):
+  goal: \"textに代入されたテキストを...\"
+    Source Payload: <|\"text\" -> ...|>
+    handler reads: Lookup[binding[[\"Source\", \"Payload\"]], \"text\", \"\"]
+
+  goal: \"titleとtextを連結し...\"
+    Source Payload: <|\"title\" -> ..., \"text\" -> ...|>
+    handler reads: Lookup[binding[[\"Source\", \"Payload\"]], \"title\", \"\"]
+                   Lookup[binding[[\"Source\", \"Payload\"]], \"text\", \"\"]
+
+  goal: \"本文をレビューし...\"  (CJK identifiers are valid Mathematica symbols)
+    Source Payload: <|\"本文\" -> ...|>
+    handler reads: Lookup[binding[[\"Source\", \"Payload\"]], \"本文\", \"\"]
+
+  goal: \"inputData を処理し...\"  (camelCase preserved)
+    Source Payload: <|\"inputData\" -> ...|>
+
+Rules:
+- DO NOT translate Japanese / CJK variable names like \"本文\" to English
+  keys like \"Text\" or \"Body\". Mathematica symbols may contain CJK
+  characters and the helper preserves them verbatim.
+- DO NOT capitalize, lowercase, or otherwise transform the symbol name.
+- DO NOT invent unrelated key names like \"Plan\", \"Trial\", \"Input\",
+  \"Data\" when the goal does not mention them.
+- If the goal uses a noun-phrase rather than a Mathematica identifier
+  (e.g. \"the input text\", \"the article body\"), default to the
+  single key \"text\" and note the fallback in a code comment.
+- If the goal explicitly states different keys (e.g. \"the token has
+  keys X, Y, Z\"), use those.
+
 # Handler — DETAILED template
 
 A handler receives a `binding` Association whose KEYS are the Place NAMES
@@ -130,13 +171,23 @@ CRITICAL handler rules (lessons from real failures):
     DO NOT do this:
       workerA = Function[b, Module[{p}, p = b[[\"PoolA\", \"Payload\"]];
         <|\"Payload\" -> p|>]]   (* WRONG: passes Text through unchanged *)
-    DO this:
-      workerA = Function[b, Module[{p, text, review},
+    DO this (ASYNCHRONOUS SessionSubmit PATTERN — see section below):
+      workerA = Function[b, Module[{p, text,
+                                    wid = $ClaudeCurrentWid,
+                                    aid = $ClaudeCurrentAwaitId},
         p = b[[\"PoolA\", \"Payload\"]];
         text = Lookup[p, \"Text\", \"\"];
-        review = ClaudeCode`ClaudeQueryBg[
-          \"Review for clarity (one paragraph): \" <> text];
-        <|\"Payload\" -> Append[p, \"ReviewA\" -> review]|>]]
+        With[{wid1 = wid, aid1 = aid, p1 = p, t = text},
+          SessionSubmit[ScheduledTask[
+            Module[{review = Quiet @ Check[
+                ClaudeCode`ClaudeQueryBg[\"Review (one paragraph): \" <> t],
+                \"[Error] ClaudeQueryBg failed.\"]},
+              ClaudeOrchestrator`Workflow`ClaudeCompleteHandlerOutput[
+                wid1, aid1,
+                <|\"Payload\" -> Append[p1, \"ReviewA\" -> review]|>]],
+            {0.01, 1}]]];
+        <|\"Status\" -> \"AwaitingLLM\",
+          \"Payload\" -> p|>]]   (* partial payload, retained until callback *)
     The Aggregate handler then collects \"ReviewA\"/\"ReviewB\"/\"ReviewC\"
     from each input token's Payload and produces a Decision.
 
@@ -173,12 +224,171 @@ CRITICAL handler rules (lessons from real failures):
 2. ALL OutputArcs receive the same Payload.
 3. binding keys are Place names, not token Kinds.
 4. NEVER use Return[<|...|>] inside Function[binding, Module[...]].
-5. For LLM calls inside handlers, use ClaudeCode`ClaudeQueryBg.
+5. For LLM calls inside handlers, use the ASYNCHRONOUS SessionSubmit PATTERN
+   below (handler returns <|\"Status\" -> \"AwaitingLLM\"|> immediately and
+   spawns a SessionSubmit task that calls ClaudeQueryBg + ClaudeCompleteHandlerOutput).
+   DO NOT call ClaudeCode`ClaudeQueryBg synchronously DIRECTLY inside a handler
+   — it blocks the main kernel for the duration of the LLM response and freezes
+   front-end dynamic evaluation (\"動的評価の放棄\" dialog).
+   DO NOT use ClaudeCode`ClaudeQueryAsyncSilent — its callback is not delivered
+   reliably in current environments (the shared polling task may auto-abort
+   during workflow ticks; this is reserved for future repair).
 6. Each parallel worker MUST pull from its OWN DEDICATED Place. NEVER share an
    input Place between two or more workers. Sharing causes one worker to grab
    ALL tokens (Wolfram's SortBy gives lexicographic priority to alphabetically-
    earlier transition names like \"WorkerA\" over \"WorkerB\"), and the other
    workers never fire.
+
+# Asynchronous LLM call pattern (REQUIRED for LLM handlers)
+
+When a transition handler needs to call an LLM, you MUST use the
+SessionSubmit pattern below.  The handler returns IMMEDIATELY with the
+sentinel Association <|\"Status\" -> \"AwaitingLLM\", ...|> and SPAWNS a
+SessionSubmit task that:
+  (a) calls ClaudeQueryBg synchronously (safe inside SessionSubmit body
+      because the handler itself has already returned, so the main
+      evaluator is free during the LLM round-trip),
+  (b) when ClaudeQueryBg returns, calls ClaudeCompleteHandlerOutput
+      with the response, producing the output tokens.
+
+Why this pattern is required:
+- Workflow ticks run inside SessionSubmit/ScheduledTask on the main kernel.
+- A synchronous LLM call DIRECTLY in the handler blocks the main kernel for
+  30-60 s.  During that time, all Dynamic evaluations are frozen and the
+  front end shows \"動的評価の放棄\" dialog.
+- The SessionSubmit pattern keeps each tick short (a few ms), so the front
+  end keeps updating smoothly even during LLM calls.
+- This pattern was verified end-to-end on 2026-05-17 (8 s round-trip,
+  Done place populated with Claude's response, no kernel freeze).
+
+## Template — single LLM call handler (C-2 pattern)
+
+  reviewHandler = Function[binding,
+    Module[{p, text,
+            wid = $ClaudeCurrentWid,                   (* (1) capture context *)
+            aid = $ClaudeCurrentAwaitId},
+      p    = binding[[\"InputPlace\", \"Payload\"]];   (* (2) read input *)
+      text = Lookup[p, \"Text\", \"\"];
+
+      (* (3) Fire-and-forget SessionSubmit.  Note the With[{wid1=..., aid1=...,
+             p1=..., t=...}] captures the values lexically so the body sees
+             stable bindings even after handler returns. *)
+      With[{wid1 = wid, aid1 = aid, p1 = p, t = text},
+        SessionSubmit[ScheduledTask[
+          Module[{review},
+            review = Quiet @ Check[
+              ClaudeCode`ClaudeQueryBg[\"Review for clarity: \" <> t],
+              \"[Error] ClaudeQueryBg threw an exception.\"];
+            If[!StringQ[review] || StringLength[review] === 0,
+              review = \"[Error] ClaudeQueryBg returned empty/non-string.\"];
+            ClaudeOrchestrator`Workflow`ClaudeCompleteHandlerOutput[
+              wid1, aid1,
+              <|\"Payload\" -> Append[p1, \"Review\" -> review]|>]
+          ],
+          {0.01, 1}]]];
+
+      (* (4) Return AwaitingLLM sentinel.  The workflow engine will:
+               - consume input tokens NOW (so other transitions don't refire)
+               - hold the output Place empty
+               - register this transition in AwaitingLLMTransitions
+             When ClaudeCompleteHandlerOutput is called from the SessionSubmit
+             body, output tokens are produced and downstream transitions fire. *)
+      <|\"Status\"  -> \"AwaitingLLM\",
+        \"Payload\" -> p|>     (* optional partial payload for diagnostics *)
+    ]];
+
+## Optional safety net (recommended for long-running LLM calls)
+
+Add a second SessionSubmit with a 90 s timeout so the workflow does not
+deadlock if ClaudeQueryBg hangs indefinitely.  The safety net checks
+ClaudeAwaitingTransitions[wid1] and, if the awaitId is still pending,
+manually completes with an error payload.
+
+  With[{wid1 = wid, aid1 = aid, p1 = p},
+    SessionSubmit[ScheduledTask[
+      Quiet @ Check[
+        Module[{rows = Normal @
+                        ClaudeOrchestrator`Workflow`ClaudeAwaitingTransitions[wid1]},
+          If[ListQ[rows] &&
+             AnyTrue[rows, Lookup[#, \"AwaitId\", \"\"] === aid1 &],
+            ClaudeOrchestrator`Workflow`ClaudeCompleteHandlerOutput[
+              wid1, aid1,
+              <|\"Payload\" -> Append[p1, \"Review\" ->
+                \"[SAFETY-NET] LLM did not return within 90 s.\"]|>]]],
+        Null],
+      {90, 1}]]];
+
+## Dynamic context symbols (only valid INSIDE a handler)
+
+  $ClaudeCurrentWid          — current WorkflowId
+  $ClaudeCurrentTransition   — current transition Name
+  $ClaudeCurrentAwaitId      — newly issued await ID (use in callback)
+  $ClaudeCurrentBinding      — the binding Association
+
+These are Block-bound by iExecutePureFunction during handler evaluation.
+Outside a handler they evaluate to Missing[\"NotInHandler\"].
+
+ALWAYS capture wid / aid as local Module variables BEFORE issuing the
+SessionSubmit.  The With[{wid1=wid, aid1=aid, ...}] in the template
+preserves them as lexical bindings even if the SessionSubmit body runs
+much later on a different scheduled task.
+
+  RIGHT (local capture + With closes over them):
+    Module[{wid = $ClaudeCurrentWid, aid = $ClaudeCurrentAwaitId},
+      With[{wid1 = wid, aid1 = aid, ...},
+        SessionSubmit[ScheduledTask[
+          ... ClaudeCompleteHandlerOutput[wid1, aid1, ...] ...,
+          {0.01, 1}]]]]
+
+  WRONG (referencing the dynamic symbols inside the SessionSubmit body —
+  they will be Missing[\"NotInHandler\"] when the body fires):
+    SessionSubmit[ScheduledTask[
+      ... ClaudeCompleteHandlerOutput[
+        $ClaudeCurrentWid, $ClaudeCurrentAwaitId, ...] ...,
+      {0.01, 1}]]
+
+## Rules — async SessionSubmit pattern
+
+(i)   ALWAYS capture $ClaudeCurrentWid and $ClaudeCurrentAwaitId in a
+      local Module variable, and use With[{wid1=wid, aid1=aid, ...}]
+      around the SessionSubmit to bind them lexically.
+(ii)  The SessionSubmit body must call ClaudeCompleteHandlerOutput
+      EXACTLY ONCE.  Calling it twice for the same aid will silently
+      no-op the second call.
+(iii) Output payload passed to ClaudeCompleteHandlerOutput goes through
+      the SAME OutputArcs as a normal Fired result.  Wrap the final
+      payload as <|\"Payload\" -> <|...|>|> just like a normal handler.
+(iv)  Handlers that DON'T need LLM (pure compute / aggregate / route)
+      can keep using the synchronous <|\"Payload\" -> ...|> return form.
+      Only LLM-calling handlers need the AwaitingLLM pattern.
+(v)   If the workflow is Cancelled while a SessionSubmit body is still
+      pending, ClaudeCompleteHandlerOutput becomes a silent no-op
+      (TransitionCallbackDiscarded event is logged in Trace).
+(vi)  Use ClaudeQueryBg (synchronous API) inside the SessionSubmit body,
+      NOT ClaudeQueryAsyncSilent.  ClaudeQueryAsyncSilent's callback is
+      not reliably delivered in current environments (shared polling
+      task may auto-abort during workflow ticks; reserved for future
+      repair).
+(vii) ClaudeQueryBg is rule 95-A safe: it does no FrontEnd / ScheduledTask
+      creation and can be called from any non-blocking context including
+      SessionSubmit bodies.
+
+## WRONG patterns
+
+WRONG 1 — direct synchronous call inside handler (blocks kernel 30-60 s,
+triggers \"動的評価の放棄\" dialog):
+  reviewHandler = Function[b, Module[{p, text, review},
+    p = b[[\"InputPlace\", \"Payload\"]];
+    text = Lookup[p, \"Text\", \"\"];
+    review = ClaudeCode`ClaudeQueryBg[\"Review: \" <> text];   (* BLOCKS *)
+    <|\"Payload\" -> Append[p, \"Review\" -> review]|>]];
+
+WRONG 2 — ClaudeQueryAsyncSilent (callback not delivered in current
+environments; reserved for future repair):
+  reviewHandler = Function[b, Module[{...},
+    ClaudeCode`ClaudeQueryAsyncSilent[prompt,
+      Function[r, ClaudeCompleteHandlerOutput[wid, aid, ...]]];
+    <|\"Status\" -> \"AwaitingLLM\"|>]];
 
 # WRONG vs RIGHT example for parallel fan-out
 
