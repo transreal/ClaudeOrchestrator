@@ -1744,6 +1744,28 @@ iIsShortFactualQuery[s_String] :=
 
 iIsShortFactualQuery[_] := False;
 
+(* iApplyA6Hook: \:5168\:30c6 ParseProposal Function \:5171\:901a\:306e post-processing\:3002
+   ClaudeOrchestrator`A6PostProcessParseProposal \:304c\:5b9a\:7fa9\:3055\:308c\:3066\:3044\:308c\:3070\:547c\:3073\:3001
+   result Association \:3092\:52a0\:5de5\:3057\:305f\:3082\:306e\:3092\:8fd4\:3059\:3002
+   \:672a\:5b9a\:7fa9\:306a\:3089 result \:3092\:305d\:306e\:307e\:307e\:8fd4\:3059 (no-op)\:3002
+   
+   P4 \:7d71\:5408 (2026-05-18): SourceVault references \:306e\:62bd\:51fa\:306a\:3069\:30fb\:30b1\:30fc\:30b9\:3067
+   \:4f7f\:308f\:308c\:308b\:3002\:3055\:3089\:306a\:308b post-processing \:306e\:8ffd\:52a0\:3082\:53ef\:80fd\:3002 *)
+iApplyA6Hook[result_, raw_] :=
+  Module[{rawStr},
+    If[!AssociationQ[result], Return[result, Module]];
+    rawStr = Which[
+      StringQ[raw], raw,
+      AssociationQ[raw], Module[{r = Lookup[raw, "response", ""]},
+        If[StringQ[r], r, ToString[raw]]],
+      True, ToString[raw]];
+    If[Length[Names["ClaudeOrchestrator`A6PostProcessParseProposal"]] > 0,
+      Quiet @ Check[
+        ClaudeOrchestrator`A6PostProcessParseProposal[result, rawStr],
+        result],
+      result]
+  ];
+
 (* iValidateWorkerProposal: worker 用 proposal 検証。
    deny head を含んでいたら Deny を返す。 *)
 iValidateWorkerProposal[proposal_Association, contextPacket_,
@@ -1919,13 +1941,15 @@ iMakeMinimalAdapter[role_String, queryFn_, task_Association] := <|
        \:3053\:308c\:304c\:306a\:3044\:3068 ClaudeSpawnWorkers \:306e runtime-\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:7d4c\:8def\:304c
        Lookup[parsed, "ArtifactPayload", None] \:3067 None \:3092\:5f97\:3066 \:3059\:3079\:3066\:306e worker \:304c
        "Failed" \:306b\:306a\:308b\:3002 *)
-    Module[{text},
+    Module[{text, result},
       text = If[StringQ[raw], raw,
                 If[AssociationQ[raw], Lookup[raw, "response", ""], ""]];
-      <|"HeldExpr"        -> HoldComplete[True],
+      result = <|"HeldExpr"        -> HoldComplete[True],
         "TextResponse"    -> text,
         "HasProposal"     -> True,
-        "ArtifactPayload" -> <|"Summary" -> text|>|>]],
+        "ArtifactPayload" -> <|"Summary" -> text|>|>;
+      iApplyA6Hook[result, raw]
+    ]],
   
   "ValidateProposal" -> Function[{prop, ctx},
     iValidateWorkerProposal[prop, ctx, role]],
@@ -2110,6 +2134,13 @@ iWorkerBuildSystemPrompt[role_String, task_Association,
           ToString[Lookup[task, "Goal", ""]]],
         prompt]];
     (* === /A4 hook === *)
+    
+    (* === A5 hook: SourceVault context 注入 (P3, 2026-05-18) === *)
+    If[Length[Names["ClaudeOrchestrator`A5InjectSourceVaultContext"]] > 0,
+      prompt = Quiet @ Check[
+        ClaudeOrchestrator`A5InjectSourceVaultContext[prompt, role, task],
+        prompt]];
+    (* === /A5 hook === *)
     
 If[slideHint =!= "",
       prompt = prompt <> "\n\n" <> slideHint];
@@ -2530,7 +2561,7 @@ outputSchema = Lookup[task, "OutputSchema", <||>];
         ]],
       
       "ParseProposal" -> Function[{raw},
-        Module[{responseText, jsonStr, parsed, payload},
+        Module[{responseText, jsonStr, parsed, payload, result},
           responseText = If[StringQ[raw], raw,
             If[AssociationQ[raw], Lookup[raw, "response", ""], ""]];
           
@@ -2538,7 +2569,7 @@ outputSchema = Lookup[task, "OutputSchema", <||>];
           jsonStr = iExtractJSONFromResponse[responseText];
           parsed  = iParseJSON[jsonStr];
           
-          If[AssociationQ[parsed],
+          result = If[AssociationQ[parsed],
             (* JSON \:304c\:53d6\:308c\:305f: artifact payload \:3068\:3057\:3066\:4fdd\:6301 *)
             payload = parsed;
             <|"HeldExpr"     -> HoldComplete[True],
@@ -2550,7 +2581,8 @@ outputSchema = Lookup[task, "OutputSchema", <||>];
               "TextResponse" -> responseText,
               "HasProposal"  -> True,
               "ArtifactPayload" -> <|"Summary" -> responseText|>|>
-          ]
+          ];
+          iApplyA6Hook[result, raw]
         ]],
       
       "ValidateProposal" -> Function[{prop, ctx},
@@ -5683,7 +5715,7 @@ iDefaultCommitterAdapterBuilder[targetNb_, reducedArtifact_Association,
         (* \:8a3a\:65ad\:7528\:30d5\:30e9\:30b0\:3092\:4ed8\:52a0 (T12 \:3067 enhance \:3057\:305f\:304b\:3069\:3046\:304b) *)
         If[AssociationQ[retval] && enhanced,
           retval["ParseEnhanced"] = True];
-        retval
+        iApplyA6Hook[retval, raw]
       ]
     ];
     
@@ -9442,4 +9474,22 @@ If[!ValueQ[Global`$petriObservabilityVersion],
       Get["ClaudeOrchestrator_observability.wl"]],
     Print[Style[
       "ClaudeOrchestrator: ClaudeOrchestrator_observability.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
+      Italic, RGBColor[0.6, 0.4, 0.2]]]]];
+
+(* ClaudeOrchestrator_promptworkflow.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9 (2026-05-25 \:8ffd\:52a0)\:3002
+   PromptWorkflow \:62e1\:5f35 (safe workflow parser / proposal / WorkflowRouteDraft)\:3002
+   \:3053\:306e\:30d5\:30a1\:30a4\:30eb\:306f BeginPackage["ClaudeOrchestrator`"] \:3067\:540c\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:3092
+   \:62e1\:5f35\:3059\:308b\:305f\:3081\:3001context \:5b58\:5728\:5224\:5b9a\:3067\:306f\:91cd\:8907\:3092\:691c\:51fa\:3067\:304d\:306a\:3044\:3002
+   observability \:3068\:540c\:69d8\:3001\:56fa\:6709\:30b7\:30f3\:30dc\:30eb $ClaudePromptWorkflowVersion \:306e
+   \:6709\:7121\:3067\:91cd\:8907\:30ed\:30fc\:30c9\:3092\:56de\:907f\:3059\:308b\:3002\:30ed\:30fc\:30c9\:5931\:6557\:3057\:3066\:3082
+   ClaudeOrchestrator \:672c\:4f53\:306e\:30ed\:30fc\:30c9\:306f\:58ca\:308c\:306a\:3044\:3002
+   \:81ea\:52d5\:30ed\:30fc\:30c9\:3092\:6b62\:3081\:308b\:306b\:306f ClaudeOrchestrator.wl \:30ed\:30fc\:30c9\:524d\:306b
+   Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True \:3092\:8a2d\:5b9a\:3059\:308b\:3002 *)
+If[!ValueQ[ClaudeOrchestrator`$ClaudePromptWorkflowVersion] &&
+   !TrueQ[Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad],
+  Quiet @ Check[
+    Block[{$CharacterEncoding = "UTF-8"},
+      Get["ClaudeOrchestrator_promptworkflow.wl"]],
+    Print[Style[
+      "ClaudeOrchestrator: ClaudeOrchestrator_promptworkflow.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
       Italic, RGBColor[0.6, 0.4, 0.2]]]]];

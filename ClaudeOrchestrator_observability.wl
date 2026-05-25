@@ -3,159 +3,169 @@
 (* ::Title:: *)
 (* ClaudeOrchestrator_observability.wl *)
 
+
 (* ::Text:: *)
-(* 旧名: petri_observability.wl (v0.1.9 まで)。
-   v0.2.0 (2026-05-11) で ClaudeOrchestrator_observability.wl に改名。
-   petri_from_prompt.wl と petri_from_prompt_chatgpt.wl のマージ
-   (proposePetriNetWithProvider → proposePetriNet 統一) に合わせ、
-   名称の整合性を取った。
-   内部 API / 公開シンボル / 動作は完全互換。 *)
+(**)
+
+
+(* \:65e7\:540d: petri_observability.wl (v0.1.9 \:307e\:3067)\:3002
+   v0.2.0 (2026-05-11) \:3067 ClaudeOrchestrator_observability.wl \:306b\:6539\:540d\:3002
+   petri_from_prompt.wl \:3068 petri_from_prompt_chatgpt.wl \:306e\:30de\:30fc\:30b8
+   (proposePetriNetWithProvider \[RightArrow] proposePetriNet \:7d71\:4e00) \:306b\:5408\:308f\:305b\:3001
+   \:540d\:79f0\:306e\:6574\:5408\:6027\:3092\:53d6\:3063\:305f\:3002
+   \:5185\:90e8 API / \:516c\:958b\:30b7\:30f3\:30dc\:30eb / \:52d5\:4f5c\:306f\:5b8c\:5168\:4e92\:63db\:3002 *)
+
+
 
 (* ::Subsection:: *)
-(* 概要 *)
+(* \:6982\:8981 *)
+
 
 (* ============================================================
-   petri_from_prompt.wl (v0.10.0+ 統合版、旧 petri_from_prompt_chatgpt.wl の
-   機能を吸収済み) への観測 (observability) 補完モジュール。
+   petri_from_prompt.wl (v0.10.0+ \:7d71\:5408\:7248\:3001\:65e7 petri_from_prompt_chatgpt.wl \:306e
+   \:6a5f\:80fd\:3092\:5438\:53ce\:6e08\:307f) \:3078\:306e\:89b3\:6e2c (observability) \:88dc\:5b8c\:30e2\:30b8\:30e5\:30fc\:30eb\:3002
 
-   目的:
-     「no review が出ない」ような不可解な現象に対して、
-       1. そもそもモデル選択ができていない
-       2. LLM に渡るプロンプトがおかしい
-       3. LLM の出力がおかしい
-       4. LLM の出力は OK だが、その後の抽出に失敗
-     のどこに起因するか *瞬時に* 判別できる観測手段を提供する。
+   \:76ee\:7684:
+     \:300cno review \:304c\:51fa\:306a\:3044\:300d\:3088\:3046\:306a\:4e0d\:53ef\:89e3\:306a\:73fe\:8c61\:306b\:5bfe\:3057\:3066\:3001
+       1. \:305d\:3082\:305d\:3082\:30e2\:30c7\:30eb\:9078\:629e\:304c\:3067\:304d\:3066\:3044\:306a\:3044
+       2. LLM \:306b\:6e21\:308b\:30d7\:30ed\:30f3\:30d7\:30c8\:304c\:304a\:304b\:3057\:3044
+       3. LLM \:306e\:51fa\:529b\:304c\:304a\:304b\:3057\:3044
+       4. LLM \:306e\:51fa\:529b\:306f OK \:3060\:304c\:3001\:305d\:306e\:5f8c\:306e\:62bd\:51fa\:306b\:5931\:6557
+     \:306e\:3069\:3053\:306b\:8d77\:56e0\:3059\:308b\:304b *\:77ac\:6642\:306b* \:5224\:5225\:3067\:304d\:308b\:89b3\:6e2c\:624b\:6bb5\:3092\:63d0\:4f9b\:3059\:308b\:3002
 
-   設計原則 (Session_Pitfalls_Summary.md の教訓を反映):
-     - ClaudeQueryBg 本体を wrap しない。新関数 ClaudeQueryBgLogged を作る。
-       (Pitfall C: Options/Context/Protect 整合の崩壊回避)
-     - parsePetriCode に手を入れない。net Association 取得 *後* に instrument。
-       (Pitfall D: Return 経路に副作用を挟む危険を回避)
-     - 静的検査は追加しない。false positive で LLM をミスリードしない。
-       (Pitfall A の回避)
-     - 文字列置換は「関数名 -> 関数名」のみ。Function/Module スコープに触れない。
-       (Pitfall E: 文字列レベルでの Function ラップによる scope 破壊と区別)
-     - 観測 API を 1 件入れた瞬間に真因が見える設計を優先。
-       (Pitfall F: 観測なしで仮説を膨らませない)
+   \:8a2d\:8a08\:539f\:5247 (Session_Pitfalls_Summary.md \:306e\:6559\:8a13\:3092\:53cd\:6620):
+     - ClaudeQueryBg \:672c\:4f53\:3092 wrap \:3057\:306a\:3044\:3002\:65b0\:95a2\:6570 ClaudeQueryBgLogged \:3092\:4f5c\:308b\:3002
+       (Pitfall C: Options/Context/Protect \:6574\:5408\:306e\:5d29\:58ca\:56de\:907f)
+     - parsePetriCode \:306b\:624b\:3092\:5165\:308c\:306a\:3044\:3002net Association \:53d6\:5f97 *\:5f8c* \:306b instrument\:3002
+       (Pitfall D: Return \:7d4c\:8def\:306b\:526f\:4f5c\:7528\:3092\:631f\:3080\:5371\:967a\:3092\:56de\:907f)
+     - \:9759\:7684\:691c\:67fb\:306f\:8ffd\:52a0\:3057\:306a\:3044\:3002false positive \:3067 LLM \:3092\:30df\:30b9\:30ea\:30fc\:30c9\:3057\:306a\:3044\:3002
+       (Pitfall A \:306e\:56de\:907f)
+     - \:6587\:5b57\:5217\:7f6e\:63db\:306f\:300c\:95a2\:6570\:540d -> \:95a2\:6570\:540d\:300d\:306e\:307f\:3002Function/Module \:30b9\:30b3\:30fc\:30d7\:306b\:89e6\:308c\:306a\:3044\:3002
+       (Pitfall E: \:6587\:5b57\:5217\:30ec\:30d9\:30eb\:3067\:306e Function \:30e9\:30c3\:30d7\:306b\:3088\:308b scope \:7834\:58ca\:3068\:533a\:5225)
+     - \:89b3\:6e2c API \:3092 1 \:4ef6\:5165\:308c\:305f\:77ac\:9593\:306b\:771f\:56e0\:304c\:898b\:3048\:308b\:8a2d\:8a08\:3092\:512a\:5148\:3002
+       (Pitfall F: \:89b3\:6e2c\:306a\:3057\:3067\:4eee\:8aac\:3092\:81a8\:3089\:307e\:305b\:306a\:3044)
 
-   提供する公開シンボル:
+   \:63d0\:4f9b\:3059\:308b\:516c\:958b\:30b7\:30f3\:30dc\:30eb:
 
-     --- LLM 呼び出しログ ---
+     --- LLM \:547c\:3073\:51fa\:3057\:30ed\:30b0 ---
      ClaudeQueryBgLogged[prompt, opts]
      $LLMCallLog
-     showLLMCallLog[]                Dataset 一覧
-     showLLMCallLog[idx]             1 件 Pretty Print
+     showLLMCallLog[]                Dataset \:4e00\:89a7
+     showLLMCallLog[idx]             1 \:4ef6 Pretty Print
      clearLLMCallLog[]
 
-     --- Handler 観測 (本体パッチ非依存) ---
+     --- Handler \:89b3\:6e2c (\:672c\:4f53\:30d1\:30c3\:30c1\:975e\:4f9d\:5b58) ---
      instrumentNetForObservation[net]
      $ObservedHandlerLog
      clearObservedHandlerLog[]
 
-     --- 生成コードへの logger 注入 ---
+     --- \:751f\:6210\:30b3\:30fc\:30c9\:3078\:306e logger \:6ce8\:5165 ---
      withLLMLogging[code_String]
 
-     --- 可視化 (本体 plotPetriNet とは独立の別関数) ---
+     --- \:53ef\:8996\:5316 (\:672c\:4f53 plotPetriNet \:3068\:306f\:72ec\:7acb\:306e\:5225\:95a2\:6570) ---
      plotPetriNetDetail[netOrWid, opts]
-       Tooltip 付き詳細表示。本体 plotPetriNet は上書きせず温存する。
-       オプション "TraceWid" -> wid を渡すと Tooltip でノード/辺の情報を表示。
-       wid を直接渡した場合は自動的に Tooltip モードになる。
-       Graph のオプション (VertexLayout 等) もそのまま渡せる
-       (Options[plotPetriNetDetail] = Join[..., Options[Graph]] のため)。
+       Tooltip \:4ed8\:304d\:8a73\:7d30\:8868\:793a\:3002\:672c\:4f53 plotPetriNet \:306f\:4e0a\:66f8\:304d\:305b\:305a\:6e29\:5b58\:3059\:308b\:3002
+       \:30aa\:30d7\:30b7\:30e7\:30f3 "TraceWid" -> wid \:3092\:6e21\:3059\:3068 Tooltip \:3067\:30ce\:30fc\:30c9/\:8fba\:306e\:60c5\:5831\:3092\:8868\:793a\:3002
+       wid \:3092\:76f4\:63a5\:6e21\:3057\:305f\:5834\:5408\:306f\:81ea\:52d5\:7684\:306b Tooltip \:30e2\:30fc\:30c9\:306b\:306a\:308b\:3002
+       Graph \:306e\:30aa\:30d7\:30b7\:30e7\:30f3 (VertexLayout \:7b49) \:3082\:305d\:306e\:307e\:307e\:6e21\:305b\:308b
+       (Options[plotPetriNetDetail] = Join[..., Options[Graph]] \:306e\:305f\:3081)\:3002
 
-     --- transition 追跡 Dataset ---
+     --- transition \:8ffd\:8de1 Dataset ---
      traceTransitions[wid, opts]
-       Status は観測ログ優先で判定 (本体 ExecutorStatus を盲信しない)。
+       Status \:306f\:89b3\:6e2c\:30ed\:30b0\:512a\:5148\:3067\:5224\:5b9a (\:672c\:4f53 ExecutorStatus \:3092\:76f2\:4fe1\:3057\:306a\:3044)\:3002
          OK / Failed ($Failed) / Errored (N msg) / BadOutput /
          AwaitingLLM / Skip / NoPayload / LLMError (M/N)
-       "Detail" -> True で LLM 呼び出し詳細 + 本体 ExecStatus を併記。
+       "Detail" -> True \:3067 LLM \:547c\:3073\:51fa\:3057\:8a73\:7d30 + \:672c\:4f53 ExecStatus \:3092\:4f75\:8a18\:3002
 
-   依存関係:
+   \:4f9d\:5b58\:95a2\:4fc2:
      - petri_from_prompt.wl  (plotPetriNet, getTokensInPlace, iExtractEdges)
      - ClaudeOrchestrator`Workflow`
-       (ClaudeWorkflowTrace, ClaudeWorkflowState 公開 API のみ使用)
+       (ClaudeWorkflowTrace, ClaudeWorkflowState \:516c\:958b API \:306e\:307f\:4f7f\:7528)
      - ClaudeCode`ClaudeQueryBg
 
-   バージョン:
-     v0.1.0 (2026-05-10): 初版。
-     v0.1.1 (2026-05-10): Status 判定を観測ログ優先に変更。
-       本体 iExecutePureFunction の罠 #16 で握り潰された $Failed や
-       抑制メッセージを Status カラムに反映する。Detail モードに
-       本体由来の ExecStatus カラムを追加して両者の食い違いを可視化。
-     v0.1.2 (2026-05-10): LLM 応答エラーパターン検出を追加。
-       handler が API エラー文字列 ("Error: model: gpt-4.5-preview" 等)
-       を Payload に graceful 格納するケースを Status に反映:
-       LLMError (1/1) のように LLM レイヤー失敗を表示。
-     v0.1.3 (2026-05-10): traceTransitions / plotPetriNet Tooltip が
-       TransitionFailed event (atomic firing rollback) も取り込むよう拡張。
-     v0.1.4 (2026-05-10): traceTransitions Dataset に Attempt カラム追加
-       (RetryPolicy で複数回試行された transition の attempts 数を可視化)。
-     v0.1.5 (2026-05-10): plotPetriNet 末尾の FilterRules[...] を
-       Sequence @@ で展開する修正 (review2.nb で Graph[] が `{}` を末尾
-       引数として受け取り未評価で残る問題への対応)。
-     v0.1.6 (2026-05-10, 撤回済): Graph 2 引数形式 (頂点リスト, edge リスト)
-       への切替を試みたが review3/4.nb で改善せず、Imai 先生から本体
-       plotPetriNet 上書き方針自体への異議を受領。
-     v0.1.7 (2026-05-10): 設計方針を転換。本体 petri_from_prompt.wl の
-       plotPetriNet は上書きせず温存。Tooltip 拡張は別関数
-       plotPetriNetDetail として提供 (Imai 先生の指示)。
-       - 本体 plotPetriNet は標準のグラフ描画を担う (動作実績あり)
+   \:30d0\:30fc\:30b8\:30e7\:30f3:
+     v0.1.0 (2026-05-10): \:521d\:7248\:3002
+     v0.1.1 (2026-05-10): Status \:5224\:5b9a\:3092\:89b3\:6e2c\:30ed\:30b0\:512a\:5148\:306b\:5909\:66f4\:3002
+       \:672c\:4f53 iExecutePureFunction \:306e\:7f60 #16 \:3067\:63e1\:308a\:6f70\:3055\:308c\:305f $Failed \:3084
+       \:6291\:5236\:30e1\:30c3\:30bb\:30fc\:30b8\:3092 Status \:30ab\:30e9\:30e0\:306b\:53cd\:6620\:3059\:308b\:3002Detail \:30e2\:30fc\:30c9\:306b
+       \:672c\:4f53\:7531\:6765\:306e ExecStatus \:30ab\:30e9\:30e0\:3092\:8ffd\:52a0\:3057\:3066\:4e21\:8005\:306e\:98df\:3044\:9055\:3044\:3092\:53ef\:8996\:5316\:3002
+     v0.1.2 (2026-05-10): LLM \:5fdc\:7b54\:30a8\:30e9\:30fc\:30d1\:30bf\:30fc\:30f3\:691c\:51fa\:3092\:8ffd\:52a0\:3002
+       handler \:304c API \:30a8\:30e9\:30fc\:6587\:5b57\:5217 ("Error: model: gpt-4.5-preview" \:7b49)
+       \:3092 Payload \:306b graceful \:683c\:7d0d\:3059\:308b\:30b1\:30fc\:30b9\:3092 Status \:306b\:53cd\:6620:
+       LLMError (1/1) \:306e\:3088\:3046\:306b LLM \:30ec\:30a4\:30e4\:30fc\:5931\:6557\:3092\:8868\:793a\:3002
+     v0.1.3 (2026-05-10): traceTransitions / plotPetriNet Tooltip \:304c
+       TransitionFailed event (atomic firing rollback) \:3082\:53d6\:308a\:8fbc\:3080\:3088\:3046\:62e1\:5f35\:3002
+     v0.1.4 (2026-05-10): traceTransitions Dataset \:306b Attempt \:30ab\:30e9\:30e0\:8ffd\:52a0
+       (RetryPolicy \:3067\:8907\:6570\:56de\:8a66\:884c\:3055\:308c\:305f transition \:306e attempts \:6570\:3092\:53ef\:8996\:5316)\:3002
+     v0.1.5 (2026-05-10): plotPetriNet \:672b\:5c3e\:306e FilterRules[...] \:3092
+       Sequence @@ \:3067\:5c55\:958b\:3059\:308b\:4fee\:6b63 (review2.nb \:3067 Graph[] \:304c `{}` \:3092\:672b\:5c3e
+       \:5f15\:6570\:3068\:3057\:3066\:53d7\:3051\:53d6\:308a\:672a\:8a55\:4fa1\:3067\:6b8b\:308b\:554f\:984c\:3078\:306e\:5bfe\:5fdc)\:3002
+     v0.1.6 (2026-05-10, \:64a4\:56de\:6e08): Graph 2 \:5f15\:6570\:5f62\:5f0f (\:9802\:70b9\:30ea\:30b9\:30c8, edge \:30ea\:30b9\:30c8)
+       \:3078\:306e\:5207\:66ff\:3092\:8a66\:307f\:305f\:304c review3/4.nb \:3067\:6539\:5584\:305b\:305a\:3001Imai \:5148\:751f\:304b\:3089\:672c\:4f53
+       plotPetriNet \:4e0a\:66f8\:304d\:65b9\:91dd\:81ea\:4f53\:3078\:306e\:7570\:8b70\:3092\:53d7\:9818\:3002
+     v0.1.7 (2026-05-10): \:8a2d\:8a08\:65b9\:91dd\:3092\:8ee2\:63db\:3002\:672c\:4f53 petri_from_prompt.wl \:306e
+       plotPetriNet \:306f\:4e0a\:66f8\:304d\:305b\:305a\:6e29\:5b58\:3002Tooltip \:62e1\:5f35\:306f\:5225\:95a2\:6570
+       plotPetriNetDetail \:3068\:3057\:3066\:63d0\:4f9b (Imai \:5148\:751f\:306e\:6307\:793a)\:3002
+       - \:672c\:4f53 plotPetriNet \:306f\:6a19\:6e96\:306e\:30b0\:30e9\:30d5\:63cf\:753b\:3092\:62c5\:3046 (\:52d5\:4f5c\:5b9f\:7e3e\:3042\:308a)
        - plotPetriNetDetail[wid] / plotPetriNetDetail[net, "TraceWid"->wid]
-         を Tooltip 付き観測用に使う
+         \:3092 Tooltip \:4ed8\:304d\:89b3\:6e2c\:7528\:306b\:4f7f\:3046
        - Options[plotPetriNetDetail] = Join[{"TraceWid"->None}, Options[Graph]]
-         として、Graph オプション (VertexLayout 等) もそのまま受け取れる
-     v0.1.8 (2026-05-11): "Rectangle" vertex shape バグ修正。
-       VertexShapeFunction -> {..., transition -> "Rectangle", ...} の
-       "Rectangle" は Mathematica の名前付き vertex shape として未定義
-       (公式ドキュメント: "Square", "Diamond", "ConcaveHexagon" 等は
-       あるが "Rectangle" は無し)。"Square" に置換した。
-     v0.1.9 (2026-05-11): plotPetriNet 描画失敗の真因にようやく到達。
-       Imai 先生の review6.nb 分析レポートに従い、Graph に明示的な頂点
-       リストを渡す 2 引数形式 Graph[vertices, edges, ...] に変更
-       (vertices = Join[places, transitions])。
-       これは v0.1.6 で一度実施した修正と同じだが、当時 Imai 先生の
-       「以前の plotPetriNet 定義に戻ってほしい」を「2 引数形式の撤回まで
-       含む」と過剰解釈して v0.1.7 で誤って撤回していた。実際のご指示の
-       趣旨は「本体上書きをやめてドキュメントを読み直せ」であり、
-       2 引数形式そのものは否定されていなかった。
+         \:3068\:3057\:3066\:3001Graph \:30aa\:30d7\:30b7\:30e7\:30f3 (VertexLayout \:7b49) \:3082\:305d\:306e\:307e\:307e\:53d7\:3051\:53d6\:308c\:308b
+     v0.1.8 (2026-05-11): "Rectangle" vertex shape \:30d0\:30b0\:4fee\:6b63\:3002
+       VertexShapeFunction -> {..., transition -> "Rectangle", ...} \:306e
+       "Rectangle" \:306f Mathematica \:306e\:540d\:524d\:4ed8\:304d vertex shape \:3068\:3057\:3066\:672a\:5b9a\:7fa9
+       (\:516c\:5f0f\:30c9\:30ad\:30e5\:30e1\:30f3\:30c8: "Square", "Diamond", "ConcaveHexagon" \:7b49\:306f
+       \:3042\:308b\:304c "Rectangle" \:306f\:7121\:3057)\:3002"Square" \:306b\:7f6e\:63db\:3057\:305f\:3002
+     v0.1.9 (2026-05-11): plotPetriNet \:63cf\:753b\:5931\:6557\:306e\:771f\:56e0\:306b\:3088\:3046\:3084\:304f\:5230\:9054\:3002
+       Imai \:5148\:751f\:306e review6.nb \:5206\:6790\:30ec\:30dd\:30fc\:30c8\:306b\:5f93\:3044\:3001Graph \:306b\:660e\:793a\:7684\:306a\:9802\:70b9
+       \:30ea\:30b9\:30c8\:3092\:6e21\:3059 2 \:5f15\:6570\:5f62\:5f0f Graph[vertices, edges, ...] \:306b\:5909\:66f4
+       (vertices = Join[places, transitions])\:3002
+       \:3053\:308c\:306f v0.1.6 \:3067\:4e00\:5ea6\:5b9f\:65bd\:3057\:305f\:4fee\:6b63\:3068\:540c\:3058\:3060\:304c\:3001\:5f53\:6642 Imai \:5148\:751f\:306e
+       \:300c\:4ee5\:524d\:306e plotPetriNet \:5b9a\:7fa9\:306b\:623b\:3063\:3066\:307b\:3057\:3044\:300d\:3092\:300c2 \:5f15\:6570\:5f62\:5f0f\:306e\:64a4\:56de\:307e\:3067
+       \:542b\:3080\:300d\:3068\:904e\:5270\:89e3\:91c8\:3057\:3066 v0.1.7 \:3067\:8aa4\:3063\:3066\:64a4\:56de\:3057\:3066\:3044\:305f\:3002\:5b9f\:969b\:306e\:3054\:6307\:793a\:306e
+       \:8da3\:65e8\:306f\:300c\:672c\:4f53\:4e0a\:66f8\:304d\:3092\:3084\:3081\:3066\:30c9\:30ad\:30e5\:30e1\:30f3\:30c8\:3092\:8aad\:307f\:76f4\:305b\:300d\:3067\:3042\:308a\:3001
+       2 \:5f15\:6570\:5f62\:5f0f\:305d\:306e\:3082\:306e\:306f\:5426\:5b9a\:3055\:308c\:3066\:3044\:306a\:304b\:3063\:305f\:3002
 
-       真因の整理 (review.nb 〜 review6.nb の一連):
-         - "Failed" のような孤立 Place (FinalPlaces にあるが辺を持たない)
-           が含まれる net で、Graph[edges, ...] の 1 引数形式は辺端点しか
-           頂点採用しない -> VertexShapeFunction / VertexStyle / VertexLabels
-           の指定と不整合 -> Graph[] が未評価のまま残る (review2-6.nb)
-         - 本体 petri_from_prompt.wl の plotPetriNet も同じバグを持つ
-           ので本ファイルと同梱で本体側も修正する
+       \:771f\:56e0\:306e\:6574\:7406 (review.nb \:301c review6.nb \:306e\:4e00\:9023):
+         - "Failed" \:306e\:3088\:3046\:306a\:5b64\:7acb Place (FinalPlaces \:306b\:3042\:308b\:304c\:8fba\:3092\:6301\:305f\:306a\:3044)
+           \:304c\:542b\:307e\:308c\:308b net \:3067\:3001Graph[edges, ...] \:306e 1 \:5f15\:6570\:5f62\:5f0f\:306f\:8fba\:7aef\:70b9\:3057\:304b
+           \:9802\:70b9\:63a1\:7528\:3057\:306a\:3044 -> VertexShapeFunction / VertexStyle / VertexLabels
+           \:306e\:6307\:5b9a\:3068\:4e0d\:6574\:5408 -> Graph[] \:304c\:672a\:8a55\:4fa1\:306e\:307e\:307e\:6b8b\:308b (review2-6.nb)
+         - \:672c\:4f53 petri_from_prompt.wl \:306e plotPetriNet \:3082\:540c\:3058\:30d0\:30b0\:3092\:6301\:3064
+           \:306e\:3067\:672c\:30d5\:30a1\:30a4\:30eb\:3068\:540c\:68b1\:3067\:672c\:4f53\:5074\:3082\:4fee\:6b63\:3059\:308b
          - v0.1.5 (Sequence @@ FilterRules), v0.1.8 ("Rectangle" -> "Square")
-           は別の小バグ修正で、本質的修正は本 v0.1.9 のみ
+           \:306f\:5225\:306e\:5c0f\:30d0\:30b0\:4fee\:6b63\:3067\:3001\:672c\:8cea\:7684\:4fee\:6b63\:306f\:672c v0.1.9 \:306e\:307f
 
-       同時に Imai 先生提示の検査ユーティリティ checkPetriNetVertices を
-       追加。net の頂点整合性 (IsolatedDeclaredVertices /
-       UnknownVerticesInEdges) を診断できる。
+       \:540c\:6642\:306b Imai \:5148\:751f\:63d0\:793a\:306e\:691c\:67fb\:30e6\:30fc\:30c6\:30a3\:30ea\:30c6\:30a3 checkPetriNetVertices \:3092
+       \:8ffd\:52a0\:3002net \:306e\:9802\:70b9\:6574\:5408\:6027 (IsolatedDeclaredVertices /
+       UnknownVerticesInEdges) \:3092\:8a3a\:65ad\:3067\:304d\:308b\:3002
 
-     v0.2.0 (2026-05-11): ファイル名を ClaudeOrchestrator_observability.wl
-       に改名。petri_from_prompt.wl と petri_from_prompt_chatgpt.wl の
-       マージ (proposePetriNet 統一) と並行した命名整合化。
-       内部 API / 公開シンボル / 動作は完全互換。
-       コメント中の Get["petri_from_prompt_chatgpt.wl"] 言及を削除し、
-       proposePetriNetWithProvider への参照を proposePetriNet に統一。
-     v0.2.1 (2026-05-17): Z 案 (handler 内非同期 LLM) との連携対応。
-       handler が <|Status -> "AwaitingLLM"|> を同期 return するパターンを
-       Status カラムで正式に区別できるようにした。
-       - iObsMakeHandlerWrapper の log entry に OutputStatus フィールド追加
-         (output が Association + Status キーを持つときに値を記録)
-       - iObsDeriveStatus の Which に AwaitingLLM / Skip 分岐を追加
-         (PayloadKeyMissing 判定より前で優先評価)
-       - これにより Z 案 handler の正常な AwaitingLLM 戻り値が "NoPayload"
-         に誤分類されるのを防ぐ。
-       - completion 側 (ClaudeCompleteHandlerOutput 経由の finalize) の
-         観測は本 patch の対象外。Stage 2-B / C で別途扱う。
+     v0.2.0 (2026-05-11): \:30d5\:30a1\:30a4\:30eb\:540d\:3092 ClaudeOrchestrator_observability.wl
+       \:306b\:6539\:540d\:3002petri_from_prompt.wl \:3068 petri_from_prompt_chatgpt.wl \:306e
+       \:30de\:30fc\:30b8 (proposePetriNet \:7d71\:4e00) \:3068\:4e26\:884c\:3057\:305f\:547d\:540d\:6574\:5408\:5316\:3002
+       \:5185\:90e8 API / \:516c\:958b\:30b7\:30f3\:30dc\:30eb / \:52d5\:4f5c\:306f\:5b8c\:5168\:4e92\:63db\:3002
+       \:30b3\:30e1\:30f3\:30c8\:4e2d\:306e Get["petri_from_prompt_chatgpt.wl"] \:8a00\:53ca\:3092\:524a\:9664\:3057\:3001
+       proposePetriNetWithProvider \:3078\:306e\:53c2\:7167\:3092 proposePetriNet \:306b\:7d71\:4e00\:3002
+     v0.2.1 (2026-05-17): Z \:6848 (handler \:5185\:975e\:540c\:671f LLM) \:3068\:306e\:9023\:643a\:5bfe\:5fdc\:3002
+       handler \:304c <|Status -> "AwaitingLLM"|> \:3092\:540c\:671f return \:3059\:308b\:30d1\:30bf\:30fc\:30f3\:3092
+       Status \:30ab\:30e9\:30e0\:3067\:6b63\:5f0f\:306b\:533a\:5225\:3067\:304d\:308b\:3088\:3046\:306b\:3057\:305f\:3002
+       - iObsMakeHandlerWrapper \:306e log entry \:306b OutputStatus \:30d5\:30a3\:30fc\:30eb\:30c9\:8ffd\:52a0
+         (output \:304c Association + Status \:30ad\:30fc\:3092\:6301\:3064\:3068\:304d\:306b\:5024\:3092\:8a18\:9332)
+       - iObsDeriveStatus \:306e Which \:306b AwaitingLLM / Skip \:5206\:5c90\:3092\:8ffd\:52a0
+         (PayloadKeyMissing \:5224\:5b9a\:3088\:308a\:524d\:3067\:512a\:5148\:8a55\:4fa1)
+       - \:3053\:308c\:306b\:3088\:308a Z \:6848 handler \:306e\:6b63\:5e38\:306a AwaitingLLM \:623b\:308a\:5024\:304c "NoPayload"
+         \:306b\:8aa4\:5206\:985e\:3055\:308c\:308b\:306e\:3092\:9632\:3050\:3002
+       - completion \:5074 (ClaudeCompleteHandlerOutput \:7d4c\:7531\:306e finalize) \:306e
+         \:89b3\:6e2c\:306f\:672c patch \:306e\:5bfe\:8c61\:5916\:3002Stage 2-B / C \:3067\:5225\:9014\:6271\:3046\:3002
 *)
 
 Needs["ClaudeOrchestrator`Workflow`"];
 
+
+
 (* ::Subsection:: *)
-(* 公開シンボル宣言 *)
+(* \:516c\:958b\:30b7\:30f3\:30dc\:30eb\:5ba3\:8a00 *)
+
 
 ClearAll[
   $petriObservabilityVersion,
@@ -171,7 +181,7 @@ ClearAll[
   instrumentNetForObservation,
   (* Code logger injection *)
   withLLMLogging,
-  (* Plot extension - 本体 plotPetriNet は上書きせず、別関数として提供 *)
+  (* Plot extension - \:672c\:4f53 plotPetriNet \:306f\:4e0a\:66f8\:304d\:305b\:305a\:3001\:5225\:95a2\:6570\:3068\:3057\:3066\:63d0\:4f9b *)
   plotPetriNetDetail,
   checkPetriNetVertices,
   (* Transition tracking *)
@@ -193,27 +203,30 @@ ClearAll[
 
 $petriObservabilityVersion = "0.2.1 (2026-05-17)";
 
-(* 既存ログを温存するため、未定義のときだけ初期化 *)
+(* \:65e2\:5b58\:30ed\:30b0\:3092\:6e29\:5b58\:3059\:308b\:305f\:3081\:3001\:672a\:5b9a\:7fa9\:306e\:3068\:304d\:3060\:3051\:521d\:671f\:5316 *)
 If[!ListQ[$LLMCallLog],         $LLMCallLog = {}];
 If[!ListQ[$ObservedHandlerLog], $ObservedHandlerLog = {}];
 If[!StringQ[$CurrentObservedTransition], $CurrentObservedTransition = "?"];
 
+
+
 (* ::Subsection:: *)
 (* 1. ClaudeQueryBgLogged *)
 
+
 (* ============================================================
-   ClaudeQueryBgLogged は ClaudeQueryBg を *呼び出す側* の関数として
-   実装し、ClaudeQueryBg 本体 / Options / DownValues は一切変更しない。
-   handler ラッパが Block[{$CurrentObservedTransition = tname}, ...] で
-   囲むので、ここで $CurrentObservedTransition を読めば transition 名が
-   取れる。
+   ClaudeQueryBgLogged \:306f ClaudeQueryBg \:3092 *\:547c\:3073\:51fa\:3059\:5074* \:306e\:95a2\:6570\:3068\:3057\:3066
+   \:5b9f\:88c5\:3057\:3001ClaudeQueryBg \:672c\:4f53 / Options / DownValues \:306f\:4e00\:5207\:5909\:66f4\:3057\:306a\:3044\:3002
+   handler \:30e9\:30c3\:30d1\:304c Block[{$CurrentObservedTransition = tname}, ...] \:3067
+   \:56f2\:3080\:306e\:3067\:3001\:3053\:3053\:3067 $CurrentObservedTransition \:3092\:8aad\:3081\:3070 transition \:540d\:304c
+   \:53d6\:308c\:308b\:3002
    ============================================================ *)
 
 ClaudeQueryBgLogged::usage =
-  "ClaudeQueryBgLogged[prompt, opts] は ClaudeCode`ClaudeQueryBg と同じ呼び出しを行い、" <>
-  " 開始時刻 / 所要時間 / Model / Fallback / プロンプト / 応答を $LLMCallLog に追記する。" <>
-  " 呼び出し中に $CurrentObservedTransition が束縛されていれば、その transition 名も記録する。" <>
-  " ClaudeQueryBg 本体は変更しないので、Options / Protect / Context の整合は壊れない。";
+  "ClaudeQueryBgLogged[prompt, opts] \:306f ClaudeCode`ClaudeQueryBg \:3068\:540c\:3058\:547c\:3073\:51fa\:3057\:3092\:884c\:3044\:3001" <>
+  " \:958b\:59cb\:6642\:523b / \:6240\:8981\:6642\:9593 / Model / Fallback / \:30d7\:30ed\:30f3\:30d7\:30c8 / \:5fdc\:7b54\:3092 $LLMCallLog \:306b\:8ffd\:8a18\:3059\:308b\:3002" <>
+  " \:547c\:3073\:51fa\:3057\:4e2d\:306b $CurrentObservedTransition \:304c\:675f\:7e1b\:3055\:308c\:3066\:3044\:308c\:3070\:3001\:305d\:306e transition \:540d\:3082\:8a18\:9332\:3059\:308b\:3002" <>
+  " ClaudeQueryBg \:672c\:4f53\:306f\:5909\:66f4\:3057\:306a\:3044\:306e\:3067\:3001Options / Protect / Context \:306e\:6574\:5408\:306f\:58ca\:308c\:306a\:3044\:3002";
 
 ClaudeQueryBgLogged[prompt_, opts:OptionsPattern[]] :=
   Module[{t0, t1, response, transName, optAssoc, model, fallback, entry},
@@ -295,26 +308,29 @@ showLLMCallLog[idx_Integer] :=
     }, Frame -> All, FrameMargins -> 6]
   ];
 
+
+
 (* ::Subsection:: *)
 (* 2. instrumentNetForObservation *)
 
+
 (* ============================================================
-   net 内の全 transition の Handler を観測ラッパで包んだ新しい net を返す。
-   副次効果:
-     - Symbol handler でも明示的に handler[binding] を呼ぶラッパで包むので、
-       本体 iExecutePureFunction の Symbol/Function 判定差バグ (Bug 2) を回避。
-     - Block で $CurrentObservedTransition を局所束縛するので、handler 内で
-       ClaudeQueryBgLogged が transition 名を知ることができる。
+   net \:5185\:306e\:5168 transition \:306e Handler \:3092\:89b3\:6e2c\:30e9\:30c3\:30d1\:3067\:5305\:3093\:3060\:65b0\:3057\:3044 net \:3092\:8fd4\:3059\:3002
+   \:526f\:6b21\:52b9\:679c:
+     - Symbol handler \:3067\:3082\:660e\:793a\:7684\:306b handler[binding] \:3092\:547c\:3076\:30e9\:30c3\:30d1\:3067\:5305\:3080\:306e\:3067\:3001
+       \:672c\:4f53 iExecutePureFunction \:306e Symbol/Function \:5224\:5b9a\:5dee\:30d0\:30b0 (Bug 2) \:3092\:56de\:907f\:3002
+     - Block \:3067 $CurrentObservedTransition \:3092\:5c40\:6240\:675f\:7e1b\:3059\:308b\:306e\:3067\:3001handler \:5185\:3067
+       ClaudeQueryBgLogged \:304c transition \:540d\:3092\:77e5\:308b\:3053\:3068\:304c\:3067\:304d\:308b\:3002
    ============================================================ *)
 
 clearObservedHandlerLog[] := ($ObservedHandlerLog = {}; "$ObservedHandlerLog cleared");
 
 instrumentNetForObservation::usage =
-  "instrumentNetForObservation[net] は net の各 transition の Handler を" <>
-  " 観測ラッパで包んだ新しい net を返す。$ObservedHandlerLog に handler 呼び出しの" <>
-  " binding / output / messages が記録されるようになる。" <>
-  " Symbol handler も Function ラッパでくるまれるので、本体側 iExecutePureFunction の" <>
-  " Symbol/Function 判定差バグも同時に回避する。";
+  "instrumentNetForObservation[net] \:306f net \:306e\:5404 transition \:306e Handler \:3092" <>
+  " \:89b3\:6e2c\:30e9\:30c3\:30d1\:3067\:5305\:3093\:3060\:65b0\:3057\:3044 net \:3092\:8fd4\:3059\:3002$ObservedHandlerLog \:306b handler \:547c\:3073\:51fa\:3057\:306e" <>
+  " binding / output / messages \:304c\:8a18\:9332\:3055\:308c\:308b\:3088\:3046\:306b\:306a\:308b\:3002" <>
+  " Symbol handler \:3082 Function \:30e9\:30c3\:30d1\:3067\:304f\:308b\:307e\:308c\:308b\:306e\:3067\:3001\:672c\:4f53\:5074 iExecutePureFunction \:306e" <>
+  " Symbol/Function \:5224\:5b9a\:5dee\:30d0\:30b0\:3082\:540c\:6642\:306b\:56de\:907f\:3059\:308b\:3002";
 
 instrumentNetForObservation[net_Association] :=
   Module[{transitions, newTransitions},
@@ -335,9 +351,9 @@ instrumentNetForObservation[trans_Association, tname_String] :=
     Append[trans, "RuntimeSpec" -> newRs]
   ];
 
-(* 観測ラッパ生成。クロージャとして handler / tname を保持する。
-   罠 #15 回避: Map 内の Function に Return/Throw を入れない、
-   罠 #16 回避: Quiet@Check は使わず Quiet[expr] のみ + フラグ別取得。 *)
+(* \:89b3\:6e2c\:30e9\:30c3\:30d1\:751f\:6210\:3002\:30af\:30ed\:30fc\:30b8\:30e3\:3068\:3057\:3066 handler / tname \:3092\:4fdd\:6301\:3059\:308b\:3002
+   \:7f60 #15 \:56de\:907f: Map \:5185\:306e Function \:306b Return/Throw \:3092\:5165\:308c\:306a\:3044\:3001
+   \:7f60 #16 \:56de\:907f: Quiet@Check \:306f\:4f7f\:308f\:305a Quiet[expr] \:306e\:307f + \:30d5\:30e9\:30b0\:5225\:53d6\:5f97\:3002 *)
 iObsMakeHandlerWrapper[handler_, tname_String] :=
   Function[binding,
     Module[{t0, t1, output, msgs, bindingPayloads, outputPayload,
@@ -400,11 +416,11 @@ iObsMakeHandlerWrapper[handler_, tname_String] :=
         "PayloadKeys"       -> payloadKeys,
         "PayloadKeyMissing" -> payloadKeyMissing,
         "OutputPayload"     -> outputPayload,
-        (* v0.2.1 (2026-05-17): Z 案で handler が <|Status -> "AwaitingLLM"|>
-           を返す場合や、ワークフロー固有の <|Status -> "Skip"|> を返す場合に、
-           Status 文字列を一級フィールドとして記録する。Missing[] = Status キー無し。
-           iObsDeriveStatus が PayloadKeyMissing より優先で AwaitingLLM 等を
-           区別できるようにする。 *)
+        (* v0.2.1 (2026-05-17): Z \:6848\:3067 handler \:304c <|Status -> "AwaitingLLM"|>
+           \:3092\:8fd4\:3059\:5834\:5408\:3084\:3001\:30ef\:30fc\:30af\:30d5\:30ed\:30fc\:56fa\:6709\:306e <|Status -> "Skip"|> \:3092\:8fd4\:3059\:5834\:5408\:306b\:3001
+           Status \:6587\:5b57\:5217\:3092\:4e00\:7d1a\:30d5\:30a3\:30fc\:30eb\:30c9\:3068\:3057\:3066\:8a18\:9332\:3059\:308b\:3002Missing[] = Status \:30ad\:30fc\:7121\:3057\:3002
+           iObsDeriveStatus \:304c PayloadKeyMissing \:3088\:308a\:512a\:5148\:3067 AwaitingLLM \:7b49\:3092
+           \:533a\:5225\:3067\:304d\:308b\:3088\:3046\:306b\:3059\:308b\:3002 *)
         "OutputStatus"      -> If[AssociationQ[output] && KeyExistsQ[output, "Status"],
           output[["Status"]], Missing[]],
         "Messages"          -> msgs,
@@ -416,43 +432,49 @@ iObsMakeHandlerWrapper[handler_, tname_String] :=
     ]
   ];
 
+
+
 (* ::Subsection:: *)
 (* 3. withLLMLogging  *)
 
+
 (* ============================================================
-   生成コード中の ClaudeQueryBg 呼び出しを ClaudeQueryBgLogged に
-   置換する。関数名 -> 関数名 の置換のみ。Function や Module スコープ、
-   binding には触れない。Pitfall E (文字列レベルの Function ラップで
-   評価コンテキストが壊れた問題) とは性格が違う。
+   \:751f\:6210\:30b3\:30fc\:30c9\:4e2d\:306e ClaudeQueryBg \:547c\:3073\:51fa\:3057\:3092 ClaudeQueryBgLogged \:306b
+   \:7f6e\:63db\:3059\:308b\:3002\:95a2\:6570\:540d -> \:95a2\:6570\:540d \:306e\:7f6e\:63db\:306e\:307f\:3002Function \:3084 Module \:30b9\:30b3\:30fc\:30d7\:3001
+   binding \:306b\:306f\:89e6\:308c\:306a\:3044\:3002Pitfall E (\:6587\:5b57\:5217\:30ec\:30d9\:30eb\:306e Function \:30e9\:30c3\:30d7\:3067
+   \:8a55\:4fa1\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:304c\:58ca\:308c\:305f\:554f\:984c) \:3068\:306f\:6027\:683c\:304c\:9055\:3046\:3002
    ============================================================ *)
 
 withLLMLogging::usage =
-  "withLLMLogging[code_String] は code 内の `ClaudeQueryBg` 呼び出しを" <>
-  " `Global`ClaudeQueryBgLogged` に置換した新しい文字列を返す。" <>
-  " ClaudeCode`ClaudeQueryBg と無修飾 ClaudeQueryBg の両方を扱う。" <>
-  " 関数名のみを書き換えるので、Function スコープ / 局所変数 / HoldAll などには影響しない。";
+  "withLLMLogging[code_String] \:306f code \:5185\:306e `ClaudeQueryBg` \:547c\:3073\:51fa\:3057\:3092" <>
+  " `Global`ClaudeQueryBgLogged` \:306b\:7f6e\:63db\:3057\:305f\:65b0\:3057\:3044\:6587\:5b57\:5217\:3092\:8fd4\:3059\:3002" <>
+  " ClaudeCode`ClaudeQueryBg \:3068\:7121\:4fee\:98fe ClaudeQueryBg \:306e\:4e21\:65b9\:3092\:6271\:3046\:3002" <>
+  " \:95a2\:6570\:540d\:306e\:307f\:3092\:66f8\:304d\:63db\:3048\:308b\:306e\:3067\:3001Function \:30b9\:30b3\:30fc\:30d7 / \:5c40\:6240\:5909\:6570 / HoldAll \:306a\:3069\:306b\:306f\:5f71\:97ff\:3057\:306a\:3044\:3002";
 
 withLLMLogging[code_String] :=
   StringReplace[code, {
-    (* 1. context 完全修飾を先に処理 (これ以降のルールで再処理されない) *)
+    (* 1. context \:5b8c\:5168\:4fee\:98fe\:3092\:5148\:306b\:51e6\:7406 (\:3053\:308c\:4ee5\:964d\:306e\:30eb\:30fc\:30eb\:3067\:518d\:51e6\:7406\:3055\:308c\:306a\:3044) *)
     "ClaudeCode`ClaudeQueryBg" -> "Global`ClaudeQueryBgLogged",
-    (* 2. 無修飾 ClaudeQueryBg。前後を識別子文字でない位置に限定 *)
+    (* 2. \:7121\:4fee\:98fe ClaudeQueryBg\:3002\:524d\:5f8c\:3092\:8b58\:5225\:5b50\:6587\:5b57\:3067\:306a\:3044\:4f4d\:7f6e\:306b\:9650\:5b9a *)
     RegularExpression[
       "(?<![A-Za-z0-9`$])ClaudeQueryBg(?![A-Za-z0-9])"] :>
       "Global`ClaudeQueryBgLogged"
   }];
 
+
+
 (* ::Subsection:: *)
-(* 4. plotPetriNetDetail (Tooltip 拡張版、本体 plotPetriNet と共存) *)
+(* 4. plotPetriNetDetail (Tooltip \:62e1\:5f35\:7248\:3001\:672c\:4f53 plotPetriNet \:3068\:5171\:5b58) *)
+
 
 (* ============================================================
-   plotPetriNetDetail は本体 petri_from_prompt.wl の plotPetriNet とは
-   独立の別関数。"TraceWid" -> wid を渡すと、Place / Transition / Edge
-   にホバーで token / handler trace / firing event の詳細を表示する。
+   plotPetriNetDetail \:306f\:672c\:4f53 petri_from_prompt.wl \:306e plotPetriNet \:3068\:306f
+   \:72ec\:7acb\:306e\:5225\:95a2\:6570\:3002"TraceWid" -> wid \:3092\:6e21\:3059\:3068\:3001Place / Transition / Edge
+   \:306b\:30db\:30d0\:30fc\:3067 token / handler trace / firing event \:306e\:8a73\:7d30\:3092\:8868\:793a\:3059\:308b\:3002
 
-   本体 plotPetriNet は上書きせず温存する (Imai 先生の指示, 2026-05-10)。
-   通常のグラフ表示には本体 plotPetriNet を使い、Tooltip ありの詳細表示が
-   必要なときだけ plotPetriNetDetail を呼び出す運用とする。
+   \:672c\:4f53 plotPetriNet \:306f\:4e0a\:66f8\:304d\:305b\:305a\:6e29\:5b58\:3059\:308b (Imai \:5148\:751f\:306e\:6307\:793a, 2026-05-10)\:3002
+   \:901a\:5e38\:306e\:30b0\:30e9\:30d5\:8868\:793a\:306b\:306f\:672c\:4f53 plotPetriNet \:3092\:4f7f\:3044\:3001Tooltip \:3042\:308a\:306e\:8a73\:7d30\:8868\:793a\:304c
+   \:5fc5\:8981\:306a\:3068\:304d\:3060\:3051 plotPetriNetDetail \:3092\:547c\:3073\:51fa\:3059\:904b\:7528\:3068\:3059\:308b\:3002
    ============================================================ *)
 
 iObsExtractEdges[net_Association] :=
@@ -476,13 +498,13 @@ iObsResolveNet[netOrWid_] :=
       netOrWid,
     StringQ[netOrWid],
       Module[{state},
-        (* 罠 #16 回避: Quiet@Check は使わない。Association 戻り値を握り潰すため。
-           Quiet[expr] のみで取得し、AssociationQ で判定する。 *)
+        (* \:7f60 #16 \:56de\:907f: Quiet@Check \:306f\:4f7f\:308f\:306a\:3044\:3002Association \:623b\:308a\:5024\:3092\:63e1\:308a\:6f70\:3059\:305f\:3081\:3002
+           Quiet[expr] \:306e\:307f\:3067\:53d6\:5f97\:3057\:3001AssociationQ \:3067\:5224\:5b9a\:3059\:308b\:3002 *)
         state = Quiet[ClaudeOrchestrator`Workflow`Private`$iWorkflowNets[netOrWid]];
         If[AssociationQ[state] && KeyExistsQ[state, "Places"],
           state,
-          (* fallback: ClaudeWorkflowState は Marking しか返さないので
-             net 構造が無い。$iWorkflowNets が無い環境では plot 不可。 *)
+          (* fallback: ClaudeWorkflowState \:306f Marking \:3057\:304b\:8fd4\:3055\:306a\:3044\:306e\:3067
+             net \:69cb\:9020\:304c\:7121\:3044\:3002$iWorkflowNets \:304c\:7121\:3044\:74b0\:5883\:3067\:306f plot \:4e0d\:53ef\:3002 *)
           $Failed]],
     True, $Failed];
 
@@ -504,7 +526,7 @@ iObsLLMCallsFor[transName_String] :=
 
 iObsMkPlaceTooltip[wid_String, place_String] :=
   Module[{tokens, mkRow},
-    (* 罠 #16 回避: Quiet@Check は使わない。Quiet で評価し ListQ で判定。 *)
+    (* \:7f60 #16 \:56de\:907f: Quiet@Check \:306f\:4f7f\:308f\:306a\:3044\:3002Quiet \:3067\:8a55\:4fa1\:3057 ListQ \:3067\:5224\:5b9a\:3002 *)
     tokens = Quiet[getTokensInPlace[wid, place]];
     If[!ListQ[tokens], tokens = {}];
     mkRow[t_] := If[AssociationQ[t],
@@ -598,7 +620,7 @@ iObsMkTransitionTooltip[wid_String, trans_String] :=
 iObsMkEdgeTooltip[wid_String, src_String, dst_String, kind_String,
                   placesList_, transitionsList_] :=
   Module[{trace, related, mkRow, transName},
-    (* 罠 #16 回避: Quiet@Check は使わない。Quiet で評価し ListQ で判定。 *)
+    (* \:7f60 #16 \:56de\:907f: Quiet@Check \:306f\:4f7f\:308f\:306a\:3044\:3002Quiet \:3067\:8a55\:4fa1\:3057 ListQ \:3067\:5224\:5b9a\:3002 *)
     trace = Quiet[ClaudeWorkflowTrace[wid]];
     If[!ListQ[trace], trace = {}];
     transName = If[kind === "InputArc", dst, src];
@@ -628,23 +650,23 @@ iObsMkEdgeTooltip[wid_String, src_String, dst_String, kind_String,
     }, Frame -> True, FrameMargins -> 6]
   ];
 
-(* plotPetriNetDetail は本体 plotPetriNet と OptionsPattern を揃え、
-   かつ追加で "TraceWid" オプションを受け付ける形にする。
-   こうすることで本体と同じ Graph オプション (VertexLabels の追加等) も
-   呼び出し側から渡せ、Graph[] 評価が確実に成立する。 *)
+(* plotPetriNetDetail \:306f\:672c\:4f53 plotPetriNet \:3068 OptionsPattern \:3092\:63c3\:3048\:3001
+   \:304b\:3064\:8ffd\:52a0\:3067 "TraceWid" \:30aa\:30d7\:30b7\:30e7\:30f3\:3092\:53d7\:3051\:4ed8\:3051\:308b\:5f62\:306b\:3059\:308b\:3002
+   \:3053\:3046\:3059\:308b\:3053\:3068\:3067\:672c\:4f53\:3068\:540c\:3058 Graph \:30aa\:30d7\:30b7\:30e7\:30f3 (VertexLabels \:306e\:8ffd\:52a0\:7b49) \:3082
+   \:547c\:3073\:51fa\:3057\:5074\:304b\:3089\:6e21\:305b\:3001Graph[] \:8a55\:4fa1\:304c\:78ba\:5b9f\:306b\:6210\:7acb\:3059\:308b\:3002 *)
 Options[plotPetriNetDetail] = Join[
   {"TraceWid" -> None},
   Options[Graph]
 ];
 
 plotPetriNetDetail::usage =
-  "plotPetriNetDetail[netOrWid] は WorkflowNet をペトリネットグラフとして\n" <>
-  "描画する (本体 plotPetriNet の Tooltip 拡張版)。\n" <>
-  "オプション \"TraceWid\" -> wid を渡すと、Place / Transition / Edge に\n" <>
-  "ホバー Tooltip でトークン内容と handler 呼び出し詳細 (binding /\n" <>
-  "OutputPayload / LLM Prompt / Response) を表示する。\n" <>
-  "wid 文字列を直接渡した場合は自動的に \"TraceWid\" -> wid モードになる。\n" <>
-  "通常のグラフ表示は本体 plotPetriNet を直接使うこと (こちらは上書きしない)。";
+  "plotPetriNetDetail[netOrWid] \:306f WorkflowNet \:3092\:30da\:30c8\:30ea\:30cd\:30c3\:30c8\:30b0\:30e9\:30d5\:3068\:3057\:3066\n" <>
+  "\:63cf\:753b\:3059\:308b (\:672c\:4f53 plotPetriNet \:306e Tooltip \:62e1\:5f35\:7248)\:3002\n" <>
+  "\:30aa\:30d7\:30b7\:30e7\:30f3 \"TraceWid\" -> wid \:3092\:6e21\:3059\:3068\:3001Place / Transition / Edge \:306b\n" <>
+  "\:30db\:30d0\:30fc Tooltip \:3067\:30c8\:30fc\:30af\:30f3\:5185\:5bb9\:3068 handler \:547c\:3073\:51fa\:3057\:8a73\:7d30 (binding /\n" <>
+  "OutputPayload / LLM Prompt / Response) \:3092\:8868\:793a\:3059\:308b\:3002\n" <>
+  "wid \:6587\:5b57\:5217\:3092\:76f4\:63a5\:6e21\:3057\:305f\:5834\:5408\:306f\:81ea\:52d5\:7684\:306b \"TraceWid\" -> wid \:30e2\:30fc\:30c9\:306b\:306a\:308b\:3002\n" <>
+  "\:901a\:5e38\:306e\:30b0\:30e9\:30d5\:8868\:793a\:306f\:672c\:4f53 plotPetriNet \:3092\:76f4\:63a5\:4f7f\:3046\:3053\:3068 (\:3053\:3061\:3089\:306f\:4e0a\:66f8\:304d\:3057\:306a\:3044)\:3002";
 
 plotPetriNetDetail[netOrWid_,
     opts:OptionsPattern[{plotPetriNetDetail, Graph}]] :=
@@ -665,17 +687,17 @@ plotPetriNetDetail[netOrWid_,
 
     places      = Keys @ Lookup[net, "Places",      <||>];
     transitions = Keys @ Lookup[net, "Transitions", <||>];
-    (* 重要: 孤立頂点 (FinalPlaces の "Failed" 等) も含めるため、明示的に
-       頂点リストを構築する。Graph[edges, ...] 1 引数形式は辺端点だけしか
-       採用せず、VertexShapeFunction / VertexStyle / VertexLabels の指定と
-       不整合 → Graph[] が未評価で残るバグ (review6.nb で Imai 先生が
-       特定)。 *)
+    (* \:91cd\:8981: \:5b64\:7acb\:9802\:70b9 (FinalPlaces \:306e "Failed" \:7b49) \:3082\:542b\:3081\:308b\:305f\:3081\:3001\:660e\:793a\:7684\:306b
+       \:9802\:70b9\:30ea\:30b9\:30c8\:3092\:69cb\:7bc9\:3059\:308b\:3002Graph[edges, ...] 1 \:5f15\:6570\:5f62\:5f0f\:306f\:8fba\:7aef\:70b9\:3060\:3051\:3057\:304b
+       \:63a1\:7528\:305b\:305a\:3001VertexShapeFunction / VertexStyle / VertexLabels \:306e\:6307\:5b9a\:3068
+       \:4e0d\:6574\:5408 \[RightArrow] Graph[] \:304c\:672a\:8a55\:4fa1\:3067\:6b8b\:308b\:30d0\:30b0 (review6.nb \:3067 Imai \:5148\:751f\:304c
+       \:7279\:5b9a)\:3002 *)
     vertices    = Join[places, transitions];
     sourcePlace = Lookup[net, "SourcePlace", ""];
     finalPlaces = Lookup[net, "FinalPlaces", {}];
     edges       = iObsExtractEdges[net];
 
-    (* === VertexLabels: Tooltip ありなし === *)
+    (* === VertexLabels: Tooltip \:3042\:308a\:306a\:3057 === *)
     vertexLabels = If[StringQ[traceWid],
       Join[
         Map[
@@ -731,12 +753,12 @@ plotPetriNetDetail[netOrWid_,
         edges],
       {}];
 
-    (* Imai 先生のレポート (review6.nb 分析) に従い、Graph には明示的な
-       頂点リストを渡す。辺を持たない孤立 Place ("Failed" 等) が
-       FinalPlaces / Places に宣言されているケースで Graph[edges, ...]
-       1 引数形式だと VertexShapeFunction 等の指定と不整合になり Graph[]
-       が未評価で残る (v0.1.6 で同じ修正を一度入れたが v0.1.7 で誤って
-       撤回していた。本修正で v0.1.6 の方向に戻す)。 *)
+    (* Imai \:5148\:751f\:306e\:30ec\:30dd\:30fc\:30c8 (review6.nb \:5206\:6790) \:306b\:5f93\:3044\:3001Graph \:306b\:306f\:660e\:793a\:7684\:306a
+       \:9802\:70b9\:30ea\:30b9\:30c8\:3092\:6e21\:3059\:3002\:8fba\:3092\:6301\:305f\:306a\:3044\:5b64\:7acb Place ("Failed" \:7b49) \:304c
+       FinalPlaces / Places \:306b\:5ba3\:8a00\:3055\:308c\:3066\:3044\:308b\:30b1\:30fc\:30b9\:3067 Graph[edges, ...]
+       1 \:5f15\:6570\:5f62\:5f0f\:3060\:3068 VertexShapeFunction \:7b49\:306e\:6307\:5b9a\:3068\:4e0d\:6574\:5408\:306b\:306a\:308a Graph[]
+       \:304c\:672a\:8a55\:4fa1\:3067\:6b8b\:308b (v0.1.6 \:3067\:540c\:3058\:4fee\:6b63\:3092\:4e00\:5ea6\:5165\:308c\:305f\:304c v0.1.7 \:3067\:8aa4\:3063\:3066
+       \:64a4\:56de\:3057\:3066\:3044\:305f\:3002\:672c\:4fee\:6b63\:3067 v0.1.6 \:306e\:65b9\:5411\:306b\:623b\:3059)\:3002 *)
     Graph[vertices, edges,
       VertexLabels        -> vertexLabels,
       VertexStyle         -> vertexStyle,
@@ -756,29 +778,29 @@ plotPetriNetDetail[netOrWid_,
   ];
 
 (* ============================================================
-   checkPetriNetVertices: net の頂点整合性を検査する診断ユーティリティ。
-   Imai 先生のレポート (review6.nb) に基づく実装。
+   checkPetriNetVertices: net \:306e\:9802\:70b9\:6574\:5408\:6027\:3092\:691c\:67fb\:3059\:308b\:8a3a\:65ad\:30e6\:30fc\:30c6\:30a3\:30ea\:30c6\:30a3\:3002
+   Imai \:5148\:751f\:306e\:30ec\:30dd\:30fc\:30c8 (review6.nb) \:306b\:57fa\:3065\:304f\:5b9f\:88c5\:3002
 
-   返値: <|
-     "DeclaredVertices"         -> Places ∪ Transitions (宣言済み頂点),
-     "VerticesFromEdges"        -> 辺集合から導出される頂点,
-     "IsolatedDeclaredVertices" -> 宣言だけで辺を持たない頂点,
-     "UnknownVerticesInEdges"   -> 辺に現れるが宣言が無い頂点
+   \:8fd4\:5024: <|
+     "DeclaredVertices"         -> Places \:222a Transitions (\:5ba3\:8a00\:6e08\:307f\:9802\:70b9),
+     "VerticesFromEdges"        -> \:8fba\:96c6\:5408\:304b\:3089\:5c0e\:51fa\:3055\:308c\:308b\:9802\:70b9,
+     "IsolatedDeclaredVertices" -> \:5ba3\:8a00\:3060\:3051\:3067\:8fba\:3092\:6301\:305f\:306a\:3044\:9802\:70b9,
+     "UnknownVerticesInEdges"   -> \:8fba\:306b\:73fe\:308c\:308b\:304c\:5ba3\:8a00\:304c\:7121\:3044\:9802\:70b9
    |>
 
-   - IsolatedDeclaredVertices が非空 -> Graph[edges,...] (1引数) では描画落ち。
-     Graph[vertices, edges, ...] の 2 引数形式で渡すか、edges に擬似辺を
-     足して可視化する必要がある (plotPetriNet / plotPetriNetDetail は
-     既に 2 引数形式に対応済み)。
-   - UnknownVerticesInEdges が非空 -> handler / iExtractEdges のバグの可能性。
-     Places / Transitions に登録漏れの頂点がある。
+   - IsolatedDeclaredVertices \:304c\:975e\:7a7a -> Graph[edges,...] (1\:5f15\:6570) \:3067\:306f\:63cf\:753b\:843d\:3061\:3002
+     Graph[vertices, edges, ...] \:306e 2 \:5f15\:6570\:5f62\:5f0f\:3067\:6e21\:3059\:304b\:3001edges \:306b\:64ec\:4f3c\:8fba\:3092
+     \:8db3\:3057\:3066\:53ef\:8996\:5316\:3059\:308b\:5fc5\:8981\:304c\:3042\:308b (plotPetriNet / plotPetriNetDetail \:306f
+     \:65e2\:306b 2 \:5f15\:6570\:5f62\:5f0f\:306b\:5bfe\:5fdc\:6e08\:307f)\:3002
+   - UnknownVerticesInEdges \:304c\:975e\:7a7a -> handler / iExtractEdges \:306e\:30d0\:30b0\:306e\:53ef\:80fd\:6027\:3002
+     Places / Transitions \:306b\:767b\:9332\:6f0f\:308c\:306e\:9802\:70b9\:304c\:3042\:308b\:3002
    ============================================================ *)
 
 checkPetriNetVertices::usage =
-  "checkPetriNetVertices[net] は net の Places/Transitions 宣言と" <>
-  " iObsExtractEdges[net] が返す辺集合の整合性を検査し、" <>
-  " IsolatedDeclaredVertices (宣言だけで辺なし) と" <>
-  " UnknownVerticesInEdges (辺だけで宣言なし) を含む Association を返す。";
+  "checkPetriNetVertices[net] \:306f net \:306e Places/Transitions \:5ba3\:8a00\:3068" <>
+  " iObsExtractEdges[net] \:304c\:8fd4\:3059\:8fba\:96c6\:5408\:306e\:6574\:5408\:6027\:3092\:691c\:67fb\:3057\:3001" <>
+  " IsolatedDeclaredVertices (\:5ba3\:8a00\:3060\:3051\:3067\:8fba\:306a\:3057) \:3068" <>
+  " UnknownVerticesInEdges (\:8fba\:3060\:3051\:3067\:5ba3\:8a00\:306a\:3057) \:3092\:542b\:3080 Association \:3092\:8fd4\:3059\:3002";
 
 checkPetriNetVertices[net_Association] :=
   Module[{places, transitions, edges, declared, fromEdges},
@@ -795,7 +817,7 @@ checkPetriNetVertices[net_Association] :=
     |>
   ];
 
-(* wid 文字列を受け付ける形 *)
+(* wid \:6587\:5b57\:5217\:3092\:53d7\:3051\:4ed8\:3051\:308b\:5f62 *)
 checkPetriNetVertices[wid_String] :=
   Module[{net},
     net = iObsResolveNet[wid];
@@ -809,49 +831,52 @@ checkPetriNetVertices[wid_String] :=
 
 checkPetriNetVertices[_] := $Failed;
 
+
+
 (* ::Subsection:: *)
 (* 5. traceTransitions: transition firing -> Dataset *)
 
-(* ============================================================
-   ClaudeWorkflowTrace[wid] の TransitionFired event を基底に、
-   $ObservedHandlerLog からハンドラ詳細を、$LLMCallLog から LLM
-   呼び出し詳細を結合した Dataset を返す。
 
-   "Detail" -> True で LLM 呼び出しの Model / Prompt 抜粋 / Response
-   抜粋 / Duration を統合した拡張 Dataset を返す。
+(* ============================================================
+   ClaudeWorkflowTrace[wid] \:306e TransitionFired event \:3092\:57fa\:5e95\:306b\:3001
+   $ObservedHandlerLog \:304b\:3089\:30cf\:30f3\:30c9\:30e9\:8a73\:7d30\:3092\:3001$LLMCallLog \:304b\:3089 LLM
+   \:547c\:3073\:51fa\:3057\:8a73\:7d30\:3092\:7d50\:5408\:3057\:305f Dataset \:3092\:8fd4\:3059\:3002
+
+   "Detail" -> True \:3067 LLM \:547c\:3073\:51fa\:3057\:306e Model / Prompt \:629c\:7c8b / Response
+   \:629c\:7c8b / Duration \:3092\:7d71\:5408\:3057\:305f\:62e1\:5f35 Dataset \:3092\:8fd4\:3059\:3002
    ============================================================ *)
 
 (* ============================================================
-   LLM 応答がエラーパターンか判定する。
-   handler が API エラー文字列を Payload に詰めて graceful 完了するケース
-   (例: ChatGPT 5.5 / gpt-4.5-preview 等の存在しないモデル指定で API が
-   "Error: model: gpt-4.5-preview" を返したのを handler がそのまま
-   ReviewChatGPT フィールドに格納して通常終了するケース) を観測する。
+   LLM \:5fdc\:7b54\:304c\:30a8\:30e9\:30fc\:30d1\:30bf\:30fc\:30f3\:304b\:5224\:5b9a\:3059\:308b\:3002
+   handler \:304c API \:30a8\:30e9\:30fc\:6587\:5b57\:5217\:3092 Payload \:306b\:8a70\:3081\:3066 graceful \:5b8c\:4e86\:3059\:308b\:30b1\:30fc\:30b9
+   (\:4f8b: ChatGPT 5.5 / gpt-4.5-preview \:7b49\:306e\:5b58\:5728\:3057\:306a\:3044\:30e2\:30c7\:30eb\:6307\:5b9a\:3067 API \:304c
+   "Error: model: gpt-4.5-preview" \:3092\:8fd4\:3057\:305f\:306e\:3092 handler \:304c\:305d\:306e\:307e\:307e
+   ReviewChatGPT \:30d5\:30a3\:30fc\:30eb\:30c9\:306b\:683c\:7d0d\:3057\:3066\:901a\:5e38\:7d42\:4e86\:3059\:308b\:30b1\:30fc\:30b9) \:3092\:89b3\:6e2c\:3059\:308b\:3002
    ============================================================ *)
 iObsLLMErrorPatternQ[response_] :=
   Module[{s},
     s = ToString[response];
     Which[
       !StringQ[s] || StringLength[s] === 0, False,
-      (* claudecode の標準エラー応答パターン *)
+      (* claudecode \:306e\:6a19\:6e96\:30a8\:30e9\:30fc\:5fdc\:7b54\:30d1\:30bf\:30fc\:30f3 *)
       StringStartsQ[s, "Error:"],                      True,
       StringStartsQ[s, "[ClaudeQuery error"],          True,
       StringStartsQ[s, "[Error]"],                     True,
       StringStartsQ[s, "[ClaudeQueryBg error"],        True,
       StringStartsQ[s, "$Failed"],                     True,
-      (* JSON エラー応答: { "error": ... } *)
+      (* JSON \:30a8\:30e9\:30fc\:5fdc\:7b54: { "error": ... } *)
       StringMatchQ[s,
         RegularExpression["(?is)^\\s*\\{[^}]*\"error\"[^}]*\\}.*"]],
                                                        True,
-      (* 短い応答に "error" 単語: API ステータス文字列の可能性が高い *)
+      (* \:77ed\:3044\:5fdc\:7b54\:306b "error" \:5358\:8a9e: API \:30b9\:30c6\:30fc\:30bf\:30b9\:6587\:5b57\:5217\:306e\:53ef\:80fd\:6027\:304c\:9ad8\:3044 *)
       StringLength[s] < 120 &&
         StringContainsQ[s, "error", IgnoreCase -> True], True,
       True,                                            False
     ]
   ];
 
-(* transition 名 + 観測時刻で $LLMCallLog から該当呼び出しを抽出。
-   refTime が Missing なら transition 名のみで照合。 *)
+(* transition \:540d + \:89b3\:6e2c\:6642\:523b\:3067 $LLMCallLog \:304b\:3089\:8a72\:5f53\:547c\:3073\:51fa\:3057\:3092\:62bd\:51fa\:3002
+   refTime \:304c Missing \:306a\:3089 transition \:540d\:306e\:307f\:3067\:7167\:5408\:3002 *)
 iObsLLMCallsForFiring[transName_String, refTime_, tol_:60.0] :=
   Module[{cands},
     cands = Select[$LLMCallLog,
@@ -864,35 +889,35 @@ iObsLLMCallsForFiring[transName_String, refTime_, tol_:60.0] :=
   ];
 
 (* ============================================================
-   Status 判定 (本体 ExecutorStatus を盲信せず、観測ログを優先)。
+   Status \:5224\:5b9a (\:672c\:4f53 ExecutorStatus \:3092\:76f2\:4fe1\:305b\:305a\:3001\:89b3\:6e2c\:30ed\:30b0\:3092\:512a\:5148)\:3002
 
-   背景: 本体 iExecutePureFunction の罠 #16 (Quiet@Check) により、
-        handler 内で $Failed を返してもメッセージが出ても、
-        ExecutorStatus は "Success" になる場合がある。
-        観測ラッパ ($ObservedHandlerLog) が捕まえた実態を優先する。
+   \:80cc\:666f: \:672c\:4f53 iExecutePureFunction \:306e\:7f60 #16 (Quiet@Check) \:306b\:3088\:308a\:3001
+        handler \:5185\:3067 $Failed \:3092\:8fd4\:3057\:3066\:3082\:30e1\:30c3\:30bb\:30fc\:30b8\:304c\:51fa\:3066\:3082\:3001
+        ExecutorStatus \:306f "Success" \:306b\:306a\:308b\:5834\:5408\:304c\:3042\:308b\:3002
+        \:89b3\:6e2c\:30e9\:30c3\:30d1 ($ObservedHandlerLog) \:304c\:6355\:307e\:3048\:305f\:5b9f\:614b\:3092\:512a\:5148\:3059\:308b\:3002
 
-   さらに v0.1.2 では handler レベルが OK でも LLM レベルで
-   API がエラーを返している場合 ("Error: model: gpt-4.5-preview" 等を
-   handler が graceful に Payload に詰めるケース) を検出する。
+   \:3055\:3089\:306b v0.1.2 \:3067\:306f handler \:30ec\:30d9\:30eb\:304c OK \:3067\:3082 LLM \:30ec\:30d9\:30eb\:3067
+   API \:304c\:30a8\:30e9\:30fc\:3092\:8fd4\:3057\:3066\:3044\:308b\:5834\:5408 ("Error: model: gpt-4.5-preview" \:7b49\:3092
+   handler \:304c graceful \:306b Payload \:306b\:8a70\:3081\:308b\:30b1\:30fc\:30b9) \:3092\:691c\:51fa\:3059\:308b\:3002
 
-   v0.2.1 (2026-05-17): Z 案 (handler 内非同期 LLM) で handler が
-   <|Status -> "AwaitingLLM"|> を同期 return するパターンを正式 Status と
-   して識別する。これは「Payload キーが無い」が、異常ではなく「LLM 応答を
-   待っている」状態。PayloadKeyMissing 判定より前に置く必要がある。
-   同様に <|Status -> "Skip"|> も今後の使い道に備えて区別する。
+   v0.2.1 (2026-05-17): Z \:6848 (handler \:5185\:975e\:540c\:671f LLM) \:3067 handler \:304c
+   <|Status -> "AwaitingLLM"|> \:3092\:540c\:671f return \:3059\:308b\:30d1\:30bf\:30fc\:30f3\:3092\:6b63\:5f0f Status \:3068
+   \:3057\:3066\:8b58\:5225\:3059\:308b\:3002\:3053\:308c\:306f\:300cPayload \:30ad\:30fc\:304c\:7121\:3044\:300d\:304c\:3001\:7570\:5e38\:3067\:306f\:306a\:304f\:300cLLM \:5fdc\:7b54\:3092
+   \:5f85\:3063\:3066\:3044\:308b\:300d\:72b6\:614b\:3002PayloadKeyMissing \:5224\:5b9a\:3088\:308a\:524d\:306b\:7f6e\:304f\:5fc5\:8981\:304c\:3042\:308b\:3002
+   \:540c\:69d8\:306b <|Status -> "Skip"|> \:3082\:4eca\:5f8c\:306e\:4f7f\:3044\:9053\:306b\:5099\:3048\:3066\:533a\:5225\:3059\:308b\:3002
 
-   返値の例:
-     "OK"                                  正常完了
-     "Failed ($Failed)"                    handler が $Failed を返した
-     "Errored (3 msg)"                     $MessageList に 3 件メッセージ
-     "BadOutput (String)"                  Association 以外が返った
-     "AwaitingLLM"                         Z 案: handler が非同期 LLM 待ち
-     "Skip"                                handler が transition skip を要求
-     "NoPayload"                           Association だが "Payload" キーなし
-     "LLMError (1/1)"                      LLM 呼び出しが API エラーを返した
-                                            (handler は graceful に通したが)
-     "LLMError (1/2)"                      LLM 呼び出しの一部がエラー
-     "<ExecutorStatus>"                    観測ログがない場合のフォールバック
+   \:8fd4\:5024\:306e\:4f8b:
+     "OK"                                  \:6b63\:5e38\:5b8c\:4e86
+     "Failed ($Failed)"                    handler \:304c $Failed \:3092\:8fd4\:3057\:305f
+     "Errored (3 msg)"                     $MessageList \:306b 3 \:4ef6\:30e1\:30c3\:30bb\:30fc\:30b8
+     "BadOutput (String)"                  Association \:4ee5\:5916\:304c\:8fd4\:3063\:305f
+     "AwaitingLLM"                         Z \:6848: handler \:304c\:975e\:540c\:671f LLM \:5f85\:3061
+     "Skip"                                handler \:304c transition skip \:3092\:8981\:6c42
+     "NoPayload"                           Association \:3060\:304c "Payload" \:30ad\:30fc\:306a\:3057
+     "LLMError (1/1)"                      LLM \:547c\:3073\:51fa\:3057\:304c API \:30a8\:30e9\:30fc\:3092\:8fd4\:3057\:305f
+                                            (handler \:306f graceful \:306b\:901a\:3057\:305f\:304c)
+     "LLMError (1/2)"                      LLM \:547c\:3073\:51fa\:3057\:306e\:4e00\:90e8\:304c\:30a8\:30e9\:30fc
+     "<ExecutorStatus>"                    \:89b3\:6e2c\:30ed\:30b0\:304c\:306a\:3044\:5834\:5408\:306e\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af
    ============================================================ *)
 iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] :=
   Module[{nMsg, hasObs, llmTotal, llmErr, outStatus},
@@ -917,7 +942,7 @@ iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] :=
         "Errored (" <> ToString[nMsg] <> " msg)",
       !TrueQ[Lookup[obs, "OutputAssocQ", False]],
         "BadOutput (" <> ToString[Lookup[obs, "OutputHead", "?"]] <> ")",
-      (* v0.2.1: Status 一級フィールドで識別 (PayloadKeyMissing より前) *)
+      (* v0.2.1: Status \:4e00\:7d1a\:30d5\:30a3\:30fc\:30eb\:30c9\:3067\:8b58\:5225 (PayloadKeyMissing \:3088\:308a\:524d) *)
       outStatus === "AwaitingLLM",
         "AwaitingLLM",
       outStatus === "Skip",
@@ -935,25 +960,25 @@ Options[traceTransitions] = {
   "Detail"             -> False,
   "PromptPreviewLen"   -> 200,
   "ResponsePreviewLen" -> 200,
-  "TimeMatchTolerance" -> 60.0   (* sec; firing と LLM call の時刻マッチ許容幅 *)
+  "TimeMatchTolerance" -> 60.0   (* sec; firing \:3068 LLM call \:306e\:6642\:523b\:30de\:30c3\:30c1\:8a31\:5bb9\:5e45 *)
 };
 
 traceTransitions::usage =
-  "traceTransitions[wid] は workflow id wid の transition firing を Dataset で返す。\n" <>
-  "デフォルトでは Step / Transition / Status / OutputAssoc? / OutputHead / RawKeys /\n" <>
+  "traceTransitions[wid] \:306f workflow id wid \:306e transition firing \:3092 Dataset \:3067\:8fd4\:3059\:3002\n" <>
+  "\:30c7\:30d5\:30a9\:30eb\:30c8\:3067\:306f Step / Transition / Status / OutputAssoc? / OutputHead / RawKeys /\n" <>
   "PayloadKeys / PayloadKeyMissing / FailedHead / Messages / ConsumedIds / ProducedIds\n" <>
-  "を表示する。\n" <>
-  "Status カラムが取りうる値:\n" <>
+  "\:3092\:8868\:793a\:3059\:308b\:3002\n" <>
+  "Status \:30ab\:30e9\:30e0\:304c\:53d6\:308a\:3046\:308b\:5024:\n" <>
   "  OK / Failed ($Failed) / Errored (N msg) / BadOutput / AwaitingLLM / Skip /\n" <>
   "  NoPayload / LLMError (M/N) / <ExecutorStatus>\n" <>
-  "  - AwaitingLLM: handler が <|Status -> \"AwaitingLLM\"|> を返した状態 (Z 案)\n" <>
-  "  - Skip:        handler が <|Status -> \"Skip\"|> を返した状態\n" <>
-  "オプション \"Detail\" -> True で各 firing に対応する LLM 呼び出し (Model / Prompt /\n" <>
-  "Response の抜粋 / Duration) を統合した拡張 Dataset を返す。";
+  "  - AwaitingLLM: handler \:304c <|Status -> \"AwaitingLLM\"|> \:3092\:8fd4\:3057\:305f\:72b6\:614b (Z \:6848)\n" <>
+  "  - Skip:        handler \:304c <|Status -> \"Skip\"|> \:3092\:8fd4\:3057\:305f\:72b6\:614b\n" <>
+  "\:30aa\:30d7\:30b7\:30e7\:30f3 \"Detail\" -> True \:3067\:5404 firing \:306b\:5bfe\:5fdc\:3059\:308b LLM \:547c\:3073\:51fa\:3057 (Model / Prompt /\n" <>
+  "Response \:306e\:629c\:7c8b / Duration) \:3092\:7d71\:5408\:3057\:305f\:62e1\:5f35 Dataset \:3092\:8fd4\:3059\:3002";
 
-(* 同じ transition が何度発火するケースに備え、firing 時刻と handler trace 時刻が
-   最も近い 1 件を選ぶ。Workflow trace の "Timestamp" は Mathematica の AbsoluteTime
-   形式と限らないため、数値マッチに失敗したら順序ベースで取る。 *)
+(* \:540c\:3058 transition \:304c\:4f55\:5ea6\:767a\:706b\:3059\:308b\:30b1\:30fc\:30b9\:306b\:5099\:3048\:3001firing \:6642\:523b\:3068 handler trace \:6642\:523b\:304c
+   \:6700\:3082\:8fd1\:3044 1 \:4ef6\:3092\:9078\:3076\:3002Workflow trace \:306e "Timestamp" \:306f Mathematica \:306e AbsoluteTime
+   \:5f62\:5f0f\:3068\:9650\:3089\:306a\:3044\:305f\:3081\:3001\:6570\:5024\:30de\:30c3\:30c1\:306b\:5931\:6557\:3057\:305f\:3089\:9806\:5e8f\:30d9\:30fc\:30b9\:3067\:53d6\:308b\:3002 *)
 iObsObservedFor[transName_String, ts_, alreadyTaken_List] :=
   Module[{cands, available, chosen},
     cands = Select[$ObservedHandlerLog,
@@ -979,9 +1004,9 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
 
     trace = Quiet[ClaudeWorkflowTrace[wid]];
     If[!ListQ[trace], trace = {}];
-    (* TransitionFired と TransitionFailed (新: atomic rollback された fire) の
-       両方を拾う。Fired 系として扱い、後段の iObsDeriveStatus が ExecutorStatus
-       に基づき Status カラムを正しく "Failed (...)" 等に表示する。 *)
+    (* TransitionFired \:3068 TransitionFailed (\:65b0: atomic rollback \:3055\:308c\:305f fire) \:306e
+       \:4e21\:65b9\:3092\:62fe\:3046\:3002Fired \:7cfb\:3068\:3057\:3066\:6271\:3044\:3001\:5f8c\:6bb5\:306e iObsDeriveStatus \:304c ExecutorStatus
+       \:306b\:57fa\:3065\:304d Status \:30ab\:30e9\:30e0\:3092\:6b63\:3057\:304f "Failed (...)" \:7b49\:306b\:8868\:793a\:3059\:308b\:3002 *)
     fired = Select[trace,
       MemberQ[{"TransitionFired", "TransitionFailed"}, #[["Event"]]] &];
 
@@ -991,8 +1016,8 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
         Orange]];
       Return[Dataset[{}]]];
 
-    (* fired が空でも $ObservedHandlerLog がある場合は handler log から組む。
-       (例: ClaudeWorkflowTrace が無い環境、または手動 handler 呼び出し) *)
+    (* fired \:304c\:7a7a\:3067\:3082 $ObservedHandlerLog \:304c\:3042\:308b\:5834\:5408\:306f handler log \:304b\:3089\:7d44\:3080\:3002
+       (\:4f8b: ClaudeWorkflowTrace \:304c\:7121\:3044\:74b0\:5883\:3001\:307e\:305f\:306f\:624b\:52d5 handler \:547c\:3073\:51fa\:3057) *)
     If[Length[fired] === 0,
       fired = MapIndexed[
         <|"Event"          -> "TransitionFired",
@@ -1005,8 +1030,8 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
         $ObservedHandlerLog];
     ];
 
-    (* 各 firing に handler trace を 1:1 でマッチ。同じ transition の複数 firing は
-       時刻順 (= log 順) でずらしながら取る。 *)
+    (* \:5404 firing \:306b handler trace \:3092 1:1 \:3067\:30de\:30c3\:30c1\:3002\:540c\:3058 transition \:306e\:8907\:6570 firing \:306f
+       \:6642\:523b\:9806 (= log \:9806) \:3067\:305a\:3089\:3057\:306a\:304c\:3089\:53d6\:308b\:3002 *)
     takenObs = {};
     baseRows = MapIndexed[
       Module[{step = First[#2], ev = #1, obs, ts, execStatus,
@@ -1033,7 +1058,7 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
           "Messages"          -> Length[Lookup[obs, "Messages", {}]],
           "ConsumedIds"       -> Length[Lookup[ev, "ConsumedIds", {}]],
           "ProducedIds"       -> Length[Lookup[ev, "ProducedIds", {}]],
-          (* Detail モードで使う追加情報を埋め込んでおく (非Detail では削る) *)
+          (* Detail \:30e2\:30fc\:30c9\:3067\:4f7f\:3046\:8ffd\:52a0\:60c5\:5831\:3092\:57cb\:3081\:8fbc\:3093\:3067\:304a\:304f (\:975eDetail \:3067\:306f\:524a\:308b) *)
           "_execStatus"       -> ToString[execStatus],
           "_obsTime"          -> Lookup[obs, "Time", Missing[]],
           "_obsDuration"      -> Lookup[obs, "Duration", Missing[]],
@@ -1046,11 +1071,11 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
                         "_bindingKeys"}] &,
           baseRows]]]];
 
-    (* === Detail モード: LLM 呼び出しを transition + 時刻でマッチ === *)
-    (* 各 firing に対し、$LLMCallLog から
-         (a) TransitionName 一致
-         (b) Time が _obsTime ± tol 以内 (handler 起動時刻に近い)
-       の 1 件以上を取る。複数あれば prompt/response を結合表示。 *)
+    (* === Detail \:30e2\:30fc\:30c9: LLM \:547c\:3073\:51fa\:3057\:3092 transition + \:6642\:523b\:3067\:30de\:30c3\:30c1 === *)
+    (* \:5404 firing \:306b\:5bfe\:3057\:3001$LLMCallLog \:304b\:3089
+         (a) TransitionName \:4e00\:81f4
+         (b) Time \:304c _obsTime \[PlusMinus] tol \:4ee5\:5185 (handler \:8d77\:52d5\:6642\:523b\:306b\:8fd1\:3044)
+       \:306e 1 \:4ef6\:4ee5\:4e0a\:3092\:53d6\:308b\:3002\:8907\:6570\:3042\:308c\:3070 prompt/response \:3092\:7d50\:5408\:8868\:793a\:3002 *)
     llmCands = $LLMCallLog;
     llmFor[transName_, refTime_] :=
       Module[{cands},
@@ -1112,81 +1137,3 @@ traceTransitions[wid_String, opts:OptionsPattern[]] :=
     ]
   ];
 
-(* ::Subsection:: *)
-(* 6. \:30ed\:30fc\:30c9\:5b8c\:4e86\:30e1\:30c3\:30bb\:30fc\:30b8 *)
-
-Print[Style[
-  "ClaudeOrchestrator_observability v" <> $petriObservabilityVersion <>
-  " \:304c\:30ed\:30fc\:30c9\:3055\:308c\:307e\:3057\:305f\:3002", Bold]];
-Print["
-\:516c\:958b API:
-
-  --- LLM \:547c\:3073\:51fa\:3057\:30ed\:30b0 ---
-  ClaudeQueryBgLogged[prompt, opts]    \[RightArrow] ClaudeQueryBg + \:30ed\:30b0\:8a18\:9332
-  $LLMCallLog                          \[RightArrow] \:5168 LLM \:547c\:3073\:51fa\:3057\:306e\:8a18\:9332 (List)
-  showLLMCallLog[]                     \[RightArrow] Dataset \:8868\:793a
-  showLLMCallLog[idx]                  \[RightArrow] 1 \:4ef6\:306e prompt/response \:3092 Pretty Print
-  clearLLMCallLog[]
-
-  --- Handler \:89b3\:6e2c (\:672c\:4f53\:30d1\:30c3\:30c1\:975e\:4f9d\:5b58) ---
-  instrumentNetForObservation[net]     \[RightArrow] \:5168 handler \:3092\:89b3\:6e2c\:30e9\:30c3\:30d1\:3067\:5305\:3080
-                                          \:526f\:6b21\:52b9\:679c: Symbol handler \:3082 Function \:5316
-  $ObservedHandlerLog                  \[RightArrow] \:89b3\:6e2c\:30ed\:30b0
-  clearObservedHandlerLog[]
-
-  --- \:751f\:6210\:30b3\:30fc\:30c9\:3078\:306e logger \:6ce8\:5165 ---
-  withLLMLogging[code_String]          \[RightArrow] ClaudeQueryBg \[RightArrow] ClaudeQueryBgLogged
-
-  --- \:53ef\:8996\:5316 (\:672c\:4f53 plotPetriNet \:3068\:306f\:5225\:95a2\:6570\:3001\:540c\:6642\:4f7f\:7528\:53ef) ---
-  plotPetriNet[net]                       \[RightArrow] \:672c\:4f53\:306e\:5358\:7d14\:30b0\:30e9\:30d5 (petri_from_prompt.wl)
-  plotPetriNetDetail[net]                 \[RightArrow] Tooltip \:7121\:3057\:7248
-  plotPetriNetDetail[net, \"TraceWid\" -> wid]
-                                          \[RightArrow] Place / Transition / Edge \:306b Tooltip
-  plotPetriNetDetail[wid]                 \[RightArrow] wid \:304b\:3089\:81ea\:52d5\:7684\:306b net \:53d6\:5f97 + Tooltip
-  checkPetriNetVertices[net]              \[RightArrow] \:9802\:70b9\:6574\:5408\:6027\:691c\:67fb (\:5b64\:7acb\:9802\:70b9/\:672a\:5b9a\:7fa9\:9802\:70b9\:306e\:691c\:51fa)
-
-  --- transition \:8ffd\:8de1 Dataset ---
-  traceTransitions[wid]                \[RightArrow] \:57fa\:672c Dataset
-                                          (Status / RawKeys / PayloadKeys /
-                                          FailedHead / Messages \:7b49)
-                                          Status \:306f\:89b3\:6e2c\:30ed\:30b0\:512a\:5148\:3067\:5224\:5b9a:
-                                            OK / Failed (\\$Failed) /
-                                            Errored (N msg) / BadOutput /
-                                            NoPayload / LLMError (M/N)
-                                          LLMError \:306f handler \:306f\:6210\:529f\:3057\:305f\:304c
-                                          API \:5fdc\:7b54\:304c\:30a8\:30e9\:30fc\:6587\:5b57\:5217\:306e\:30b1\:30fc\:30b9
-                                          (\:4f8b: \"Error: model: ...\")
-  traceTransitions[wid, \"Detail\" -> True]
-                                       \[RightArrow] LLM Prompt / Response \:629c\:7c8b
-                                          \:3068 ExecStatus (\:672c\:4f53\:5224\:5b9a) \:3092\:542b\:3080
-
-\:63a8\:5968\:30d5\:30ed\:30fc (Pitfall A-F \:5168\:56de\:907f\:578b):
-
-  Needs[\"ClaudeOrchestrator`Workflow`\"]
-  Get[\"petri_from_prompt.wl\"]                       (* v0.10.0+ \:7d71\:5408\:7248 *)
-  Get[\"ClaudeOrchestrator_observability.wl\"]
-
-  prop = proposePetriNet[
-    \"Claude Opus \:3068 ChatGPT 5.5 \:3067\:4e26\:5217\:30ec\:30d3\:30e5\:30fc\",
-    \"Providers\" -> {\"anthropic\", \"openai\"},
-    \"InputPayloadKeys\" -> {\"Text\"}];
-
-  loggedCode = withLLMLogging[prop[[\"Code\"]]];     (* LLM \:30ed\:30b0\:6ce8\:5165 *)
-  net0 = parsePetriCode[loggedCode];                (* \:65e2\:5b58 parser \:3092\:4f7f\:3046 *)
-  net  = instrumentNetForObservation[net0];          (* handler \:89b3\:6e2c\:30e9\:30c3\:30d1 *)
-
-  clearLLMCallLog[]; clearObservedHandlerLog[];
-
-  wid = ClaudeCreateWorkflowNet[net];
-  ClaudeSubmitToken[wid, WorkflowToken[\"Kind\" -> \"Task\",
-    \"Payload\" -> <|\"Text\" -> $exampleDraftAbstract|>], \"Source\"];
-  ClaudeRunWorkflow[wid, \"Async\" -> True];
-
-  (* \:5b8c\:8d70\:5f8c\:306e\:89b3\:6e2c *)
-  plotPetriNet[wid]                                 (* \:672c\:4f53\:306e\:5358\:7d14\:30b0\:30e9\:30d5 *)
-  plotPetriNetDetail[wid]                           (* \:30c8\:30fc\:30af\:30f3\:5185\:5bb9\:30fbhandler\:8a73\:7d30\:3092Tooltip\:8868\:793a *)
-  traceTransitions[wid]                             (* \:57fa\:672c Dataset *)
-  traceTransitions[wid, \"Detail\" -> True]           (* LLM \:8a73\:7d30\:542b\:3080 *)
-  showLLMCallLog[]                                  (* \:5168 LLM \:547c\:3073\:51fa\:3057\:4e00\:89a7 *)
-  showLLMCallLog[3]                                 (* 3 \:4ef6\:76ee\:306e prompt/response *)
-"];

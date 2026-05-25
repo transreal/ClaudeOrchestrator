@@ -4,7 +4,7 @@ Mathematica / Wolfram Language 向けマルチエージェント・オーケス�
 
 ## 設計思想と実装の概要
 
-ClaudeOrchestrator は、[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位レイヤーとして動作するマルチエージェント分解・並列ワーカー配車・アーティファクト収集・統合・コミット機構です。Phase 36 以降は、タスク分解の結果を **ペトリネット (Workflow Net)** として表現・実行する真の multi-token workflow エンジンが統合され、自然文プロンプトから直接ペトリネットを構築して可視化・追跡できる拡張も同梱されています。
+ClaudeOrchestrator は、[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位レイヤーとして動作するマルチエージェント分解・並列ワーカー配車・アーティファクト収集・統合・コミット機構です。タスク分解の結果を **ペトリネット (Workflow Net)** として表現・実行する真の multi-token workflow エンジンが統合されており、自然文プロンプトから直接ペトリネットを構築して可視化・追跡できる拡張も同梱されています。さらに、`ClaudeEval` の複雑なプロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張を備えます。
 
 ### なぜこの設計が必要か
 
@@ -35,7 +35,7 @@ claudecode_base
   ↑
 ClaudeRuntime              ← 単一エージェント実行核
   ↑
-ClaudeOrchestrator         ← 本パッケージ (Phase 36 でペトリネット拡張を統合)
+ClaudeOrchestrator         ← 本パッケージ (ペトリネット拡張を統合)
   ├─ Workflow サブモジュール       (真の multi-token Petri net エンジン)
   ├─ Observability サブモジュール  (LLM 呼び出し / Handler 観測 / Tooltip 可視化)
   └─ docs/examples/petri_from_prompt.wl  (自然文 → ペトリネット → 実行のサンプル)
@@ -55,9 +55,9 @@ claudecode
 
 **Commit フェーズ** では、`ClaudeCommitArtifacts` が single committer runtime を起動し、`ReducedArtifact` をターゲットノートブックに反映します。スライド生成が検出された場合、ユーザーの作業ノートブックを保護するために `CreateDocument` で新規ノートブックを自動生成してコミット先とします。
 
-### ペトリネット拡張（Phase 36 以降）
+### ペトリネット拡張
 
-Phase 36 で **真の multi-token Petri net (MTP) workflow engine** が `ClaudeOrchestrator\`Workflow\`` 名前空間として統合されました。これにより、DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** の Petri net 用語のまま記述・実行できます。
+**真の multi-token Petri net (MTP) workflow engine** が `ClaudeOrchestrator\`Workflow\`` 名前空間として統合されています。これにより、DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** の Petri net 用語のまま記述・実行できます。
 
 `ClaudeOrchestrator.wl` をロードすると、**Workflow エンジン (`ClaudeOrchestrator_workflow.wl`) と Observability サブモジュール (`ClaudeOrchestrator_observability.wl`) は自動的に取り込まれます**(2026-05-15 以降)。さらに参考実装として `docs/examples/petri_from_prompt.wl` が付属しており、自然言語の目標から LLM にネット仕様を生成させることができます。こちらは example 段階のサンプル兼ライブラリなので、本体には統合されておらず別途 `Get` する必要があります。
 
@@ -114,6 +114,41 @@ ClaudeWorkflowState[wid]["Marking"]   (* <|"Done" -> {tid}, ...|> *)
 
 詳しい一連の流れ(提案 → レビュー → パース → 可視化 → 観測装着 → 実行 → トレース → snapshot) は `example.md` の **Part A** を参照してください。
 
+### PromptWorkflow 拡張 — ClaudeEval の複雑プロンプトを workflow に
+
+`ClaudeEval` に与えられるプロンプトのうち、複数のサブタスクや順序制御を含む **複雑なもの**は、単一の関数呼び出しでは表せません。PromptWorkflow 拡張 (`ClaudeOrchestrator_promptworkflow.wl`) は、こうした複雑プロンプトを WorkflowNet (Petri-net workflow) として再実行するための経路を提供します。`ClaudeOrchestrator.wl` のロード時に自動的に読み込まれます。
+
+PromptWorkflow 拡張の中核は、LLM が提案した workflow コードを **安全に扱う**ことです。提案コードはそのまま評価されず、次の流れを経ます。
+
+```
+複雑プロンプト
+   ↓ ClaudeWorkflowComplexPromptQ   (評価なし・ローカルで複雑さを判定)
+WorkflowCandidate と判定されたものだけ次へ
+   ↓ ClaudeProposeWorkflowNetFromPrompt   (LLM に WorkflowNet コードを要求)
+   ↓ ClaudeWorkflowCheckForbidden   (禁止パターンの静的検査)
+   ↓ ClaudeParseWorkflowNetCode   (HoldComplete でくるんだ非評価 parse)
+WorkflowNet[spec]   (builder を呼ばずに AST から抽出)
+   ↓ ClaudeCreateWorkflowRouteDraft   (PrivateVault にコード artifact を保存)
+WorkflowRouteDraft (Status: NeedsApproval)
+```
+
+設計上の要点は次のとおりです。
+
+- **複雑さの判定は評価を伴わずローカルで行う** — `ClaudeWorkflowComplexPromptQ` はルーター LLM を呼ぶ前に動作するため、workflow 候補かを試すためだけに秘密のプロンプトが外部送信されることはありません。
+- **提案コードは評価しない** — `ClaudeParseWorkflowNetCode` は `HoldComplete` でくるんだ非評価 parse を行い、builder を呼ばずに `WorkflowNet[spec]` を取り出します。評価前に `ClaudeWorkflowCheckForbidden` がファイル / ネットワーク / プロセス / 資格情報 / notebook 変更系の禁止パターンを静的検出します。
+- **自動実行・自動登録をしない** — 新規に生成された workflow はつねに `NeedsApproval` で停止します。`ClaudeWorkflowRouteFromPrompt` が `ClaudeEval` 統合フロー全体をオーケストレーションしますが、既存の一意な route がなければ提案と WorkflowRouteDraft 作成までで止まり、ユーザーの承認なしに実行されることはありません。
+- **draft は DryRun が既定** — `ClaudeCreateWorkflowRouteDraft` の既定は `DryRun -> True` で、明示的に `"DryRun" -> False` を渡さないかぎり書き込みを行いません。workflow コード本体は SourceVault PrivateVault 配下に private artifact として保存され、draft メタデータは `CodeHash` と `CodeStorage` 参照のみを持ちます。
+
+主要な API は以下のとおりです。
+
+- **複雑プロンプト判定** — `ClaudeWorkflowComplexPromptQ` でプロンプトが workflow 候補かを deterministic に判定します。
+- **WorkflowNet 提案** — `ClaudeProposeWorkflowNetFromPrompt` で自然言語のゴールから WorkflowNet コードを提案させ、safe parser に通し、失敗時は静的診断をフィードバックして再試行します。
+- **安全な parse** — `ClaudeParseWorkflowNetCode` / `ClaudeWorkflowCheckForbidden` / `ClaudeWorkflowNetWellFormedQ` で、提案コードを評価せずに検査・抽出します。
+- **WorkflowRouteDraft 作成** — `ClaudeCreateWorkflowRouteDraft` で提案を承認待ちの draft に変換します。
+- **統合フロー** — `ClaudeWorkflowRouteFromPrompt` が `ClaudeEval` の workflow 統合フロー全体をオーケストレーションします。
+
+詳細は `api_promptworkflow.md` を参照してください。
+
 ### 観測 (Observability) サブモジュール
 
 `petri_from_prompt.wl` 用に **LLM 呼び出しログ・Handler 観測・Tooltip 付き可視化・transition 追跡 Dataset** を提供する観測層が別関数として共存します(本体 `ClaudeQueryBg` / `parsePetriCode` / `plotPetriNet` は上書きしません)。
@@ -168,11 +203,11 @@ plotPetriNetDetail[wid]                   (* Tooltip 付き Graph *)
 
 ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
 
-### Auto ゲート（Phase 32 Task 3.2 以降）
+### Auto ゲート
 
 `$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers` の 3 つのリストにより、Auto モードでの分岐をプロジェクトに合わせて調整できます。短い factual query（パッケージ名・関数名・拡張子などのマーカーや「を調べて」「を教えて」「check」などの語尾を含むもの）は Orchestrator を経由せず Single パスに直送し、「スライド」「レポート」「プレゼン」「ペトリネット」など複雑タスク識別マーカーが含まれるプロンプトは短文でも Orchestrator 経路を通します。
 
-### Phase 36 統合
+### 自動ロードされるサブモジュール
 
 旧来は別ファイルだった以下のサブモジュールが本体の自動ロード対象になっており、`ClaudeOrchestrator.wl` を単独で `Get` するだけで利用できるようになりました。
 
@@ -182,6 +217,7 @@ ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator を�
 - `claudecode_a4_stub` → `ClaudeOrchestratorA4` — A4 フェーズ用フック群
 - `ClaudeOrchestrator\`Workflow\`` — 真の multi-token Petri net engine (`ClaudeOrchestrator_workflow.wl`)
 - 観測サブモジュール — `ClaudeQueryBgLogged` / `instrumentNetForObservation` / `plotPetriNetDetail` / `checkPetriNetVertices` / `traceTransitions` / `showLLMCallLog` / `withLLMLogging` ほか (`ClaudeOrchestrator_observability.wl`、2026-05-15 から自動ロード)
+- PromptWorkflow 拡張 — `ClaudeWorkflowRouteFromPrompt` / `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` ほか、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 (`ClaudeOrchestrator_promptworkflow.wl`)
 
 自動ロードはファイル単位の存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。観測モジュールは `BeginPackage` を持たない読み込み型ファイルなので、`$petriObservabilityVersion` の `ValueQ` で初期化済みかを判定しています。
 
@@ -222,14 +258,29 @@ PATH が通っている状態（`claude.cmd` がどのディレクトリから�
 
 #### 2. パッケージの取得
 
+[github](https://github.com/transreal/github) パッケージがインストール済みの場合は、`GitHubInstallPackage` でリポジトリから `$packageDirectory` へ直接インストールできます。
+
+```mathematica
+Block[{$CharacterEncoding = "UTF-8"},
+  Needs["GitHub`", "github.wl"]];
+
+GitHubInstallPackage["ClaudeOrchestrator",
+  "https://github.com/transreal/ClaudeOrchestrator"]
+```
+
+PromptWorkflow 拡張 `ClaudeOrchestrator_promptworkflow.wl` は `ClaudeOrchestrator.wl` と同じディレクトリに必要です（本体ロード時に自動ロードされます）。リポジトリに同梱されている場合は同時に取得されます。一度インストールしたパッケージは `GitHubUpdatePackage["ClaudeOrchestrator"]` で最新版に更新できます。
+
+github パッケージを使わない場合は、`git clone` で取得します。
+
 ```
 git clone https://github.com/transreal/ClaudeOrchestrator
 ```
 
-依存パッケージも同じ `$packageDirectory` に配置します。
+いずれの場合も、依存パッケージも同じ `$packageDirectory` に配置します。
 
 - [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime)
 - [claudecode](https://github.com/transreal/claudecode)
+- [github](https://github.com/transreal/github)（インストールの簡略化に使用）
 
 #### 3. `$Path` の設定
 
@@ -393,6 +444,18 @@ ClaudeOrchestrationResult[jobId][["Status"]]
 - **`checkPetriNetVertices[netOrWid]`** — 宣言頂点と辺集合の整合性を検査します。
 - **`traceTransitions[wid, opts]`** — firing event と handler / LLM ログを結合した Dataset を返します。`"Detail" -> True` で Prompt / Response 抜粋付き拡張モード。
 
+#### PromptWorkflow 拡張
+
+- **`ClaudeWorkflowComplexPromptQ[prompt]`** — プロンプトが workflow 候補かを評価なしで deterministic に判定します。`<|"Decision" -> "WorkflowCandidate" | "NotComplex", ...|>` を返します。
+- **`ClaudeProposeWorkflowNetFromPrompt[prompt, opts]`** — 自然言語のゴールから WorkflowNet コードを提案させ、safe parser に通します。提案のみで実行・登録はしません。オプション: `MaxProposalAttempts -> 3`、`CodeProvider -> Automatic`。
+- **`ClaudeParseWorkflowNetCode[input, opts]`** — LLM 提案コードを `HoldComplete` でくるんだ非評価 parse で扱い、builder を呼ばずに `WorkflowNet[spec]` を抽出します。
+- **`ClaudeWorkflowCheckForbidden[code]`** — workflow コードを評価せずに禁止パターン（ファイル / ネットワーク / プロセス / 資格情報 / notebook 変更系）を静的検出します。
+- **`ClaudeWorkflowForbiddenPatternRegistry[]`** — 禁止パターンの統合レジストリを返します。
+- **`ClaudeWorkflowNetWellFormedQ[spec]`** — WorkflowNet の宣言的 spec の well-formedness を検査します。
+- **`ClaudeCreateWorkflowRouteDraft[prompt, proposal, opts]`** — 提案を承認待ち (`NeedsApproval`) の WorkflowRouteDraft に変換します。既定は `DryRun -> True`。
+- **`ClaudeWorkflowRouteFromPrompt[prompt, opts]`** — `ClaudeEval` の workflow 統合フロー全体をオーケストレーションします。新規 workflow はつねに承認待ちで停止します。
+- **`ClaudePromptWorkflowStatus[]`** — PromptWorkflow 拡張の状態（バージョン・禁止パターン件数）を返します。
+
 #### docs/examples/petri_from_prompt.wl
 
 - 自然文プロンプト → `proposePetriNet` → place / transition / arc を含む WorkflowNet コード → `parsePetriCode` で Association 化 → `instrumentNetForObservation` で観測ラッパ装着 → `ClaudeCreateWorkflowNet` で wid 発行 → `ClaudeRunWorkflow` で実行 → `plotPetriNetDetail` / `traceTransitions` で観測する **エンドツーエンドサンプル**。詳細は `example.md` の Part A を参照。
@@ -420,6 +483,7 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 - **`$WorkflowVersion`** — Workflow サブモジュールのバージョン
 - **`$ClaudeWorkflowSnapshotDir`** — `ClaudeSnapshotWorkflow` の既定保存先
 - **`$petriObservabilityVersion`** — 観測サブモジュールのバージョン
+- **`$ClaudePromptWorkflowVersion`** — PromptWorkflow 拡張のバージョン
 - **`$LLMCallLog` / `$ObservedHandlerLog` / `$CurrentObservedTransition`** — 観測モジュールが追記するログ群
 - **`$ClaudeSlidesTemplatePath`** — スライド生成時の StyleDefinitions テンプレートパス
 
@@ -432,6 +496,7 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 | `api.md` | API リファレンス（全関数・データ型・グローバル変数の仕様） |
 | `api_workflow.md` | ペトリネット (Workflow) サブモジュールの API リファレンス |
 | `api_observability.md` | 観測 (Observability) サブモジュールの API リファレンス |
+| `api_promptworkflow.md` | PromptWorkflow 拡張の API リファレンス |
 | `user_manual.md` | ユーザーマニュアル（各フェーズ・ClaudeEval 非同期化・ペトリネット拡張の詳細な使い方） |
 | `setup.md` | インストール手順書（動作要件・環境構築・トラブルシューティング） |
 | `example.md` | 使用例集（バージョン確認からペトリネット拡張・バッチ処理まで） |

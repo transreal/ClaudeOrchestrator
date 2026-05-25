@@ -3,7 +3,8 @@
 	"files":[
 		"ClaudeOrchestrator.wl",
 		"ClaudeOrchestrator_observability.wl",
-		"ClaudeOrchestrator_workflow.wl"
+		"ClaudeOrchestrator_workflow.wl",
+		"ClaudeOrchestrator_promptworkflow.wl"
 	],
 	"directories":[
 		"ClaudeOrchestrator_info"

@@ -33,14 +33,48 @@ PATH が通っている状態（`claude.cmd` がどのディレクトリから�
 
 ## パッケージの取得
 
+### github パッケージによる簡単インストール
+
+[github](https://github.com/transreal/github) パッケージがインストール済みの場合は、`GitHubInstallPackage` でリポジトリから `$packageDirectory` へ直接インストールできます。
+
+```mathematica
+Block[{$CharacterEncoding = "UTF-8"},
+  Needs["GitHub`", "github.wl"]];
+
+GitHubInstallPackage["ClaudeOrchestrator",
+  "https://github.com/transreal/ClaudeOrchestrator"]
+```
+
+PromptWorkflow 拡張 `ClaudeOrchestrator_promptworkflow.wl` は `ClaudeOrchestrator.wl` と同じディレクトリに必要です（本体ロード時に自動ロードされます）。リポジトリに同梱されている場合は同時に取得されます。
+
+依存パッケージも同様にインストールできます。
+
+```mathematica
+GitHubInstallPackage["ClaudeRuntime",
+  "https://github.com/transreal/ClaudeRuntime"]
+GitHubInstallPackage["claudecode",
+  "https://github.com/transreal/claudecode"]
+```
+
+一度インストールしたパッケージは、`GitHubUpdatePackage` でリポジトリの最新版に更新できます。
+
+```mathematica
+GitHubUpdatePackage["ClaudeOrchestrator"]
+```
+
+### git clone による取得
+
+github パッケージを使わない場合は、`git clone` で取得します。
+
 ```
 git clone https://github.com/transreal/ClaudeOrchestrator
 ```
 
-依存パッケージも同じディレクトリ（`$packageDirectory`）に配置します。
+いずれの場合も、依存パッケージも同じディレクトリ（`$packageDirectory`）に配置します。
 
 - [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime)
 - [claudecode](https://github.com/transreal/claudecode)
+- [github](https://github.com/transreal/github)（インストールの簡略化に使用）
 
 ---
 

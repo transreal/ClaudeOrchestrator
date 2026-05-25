@@ -10,7 +10,7 @@
 6. [コミットフェーズ](#コミットフェーズ)
 7. [非同期実行 API](#非同期実行-api)
 8. [バッチ実行](#バッチ実行)
-9. [ペトリネット拡張 (Workflow + Observability)](#ペトリネット拡張-workflow--observability)
+9. [ペトリネット拡張 (Workflow + Observability + PromptWorkflow)](#ペトリネット拡張-workflow--observability--promptworkflow)
 10. [Real LLM 統合](#real-llm-統合)
 11. [グローバル設定変数](#グローバル設定変数)
 12. [エラーと検証](#エラーと検証)
@@ -36,16 +36,19 @@ NBAccess → claudecode_base → ClaudeRuntime → ClaudeOrchestrator → claude
 
 `$ClaudeEvalHook`(ClaudeEval) は `ClaudeRunOrchestrationAsync` 経由でオーケストレーションを起動し、フロントエンド(ノートブック UI)をブロックせずに `orchJobId` を即座に返します。完了後の結果は `ClaudeOrchestrationResult` で取得できます。
 
-**Phase 36 統合（v2026-04-28 以降）:**
+**自動ロードされるサブモジュール:**
 
-旧来は別ファイルだった以下のサブモジュールが本体に統合され、`ClaudeOrchestrator.wl` を単独で `Get` するだけで利用できるようになりました。
+以下のサブモジュールは本体に統合されており、`ClaudeOrchestrator.wl` を単独で `Get` するだけで利用できます。
 
 - `ClaudeOrchestratorDirectives` — ディレクティブ管理
 - `ClaudeOrchestratorRouting` — ローカル LLM 名／モデル名のルーティング
 - `claudecode_commit_safety` — コミット前後の整合性チェック
 - `claudecode_a4_stub` → `ClaudeOrchestratorA4` — A4 フェーズ用フック群
+- `ClaudeOrchestrator`Workflow`` — multi-token Petri net 実行エンジン (`ClaudeOrchestrator_workflow.wl`)
+- 観測サブモジュール — `ClaudeOrchestrator_observability.wl`
+- PromptWorkflow 拡張 — `ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 (`ClaudeOrchestrator_promptworkflow.wl`)
 
-**Auto ゲート強化（Phase 32 Task 3.2）:**
+**Auto ゲート強化:**
 
 `$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers` の 3 つのリストにより、Auto モードで短い factual query をオーケストレーション経路から除外し、Single パスに直送できます。詳細は[グローバル設定変数](#グローバル設定変数)を参照してください。
 
@@ -284,7 +287,7 @@ ClaudeCommitArtifacts[targetNotebook, reducedArtifact, opts]
 |>
 ```
 
-`CommitResult["Diagnostics"]` には Phase 36 統合の commit safety 経路を通った場合に `HeldExprFound` / `LastProviderResponseHead` などの診断情報が付属します。`"CommitRetryMax" -> N` で再試行回数を、`"DeterministicFallback" -> False` で決定論的フォールバックを無効化できます。
+`CommitResult["Diagnostics"]` には commit safety 経路を通った場合に `HeldExprFound` / `LastProviderResponseHead` などの診断情報が付属します。`"CommitRetryMax" -> N` で再試行回数を、`"DeterministicFallback" -> False` で決定論的フォールバックを無効化できます。
 
 **使用例:**
 ```wolfram
@@ -460,7 +463,7 @@ batchResult[[All, "Result"]]
 
 ---
 
-## ペトリネット拡張 (Workflow + Observability)
+## ペトリネット拡張 (Workflow + Observability + PromptWorkflow)
 
 ClaudeOrchestrator は、DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** のペトリネット用語のまま記述・実行できる Workflow エンジン (`ClaudeOrchestrator\`Workflow\``) と、それを観測するための Observability サブモジュールを内蔵しています。どちらも `ClaudeOrchestrator.wl` をロードすれば**自動的に取り込まれます**(2026-05-15 以降)。
 
@@ -707,6 +710,96 @@ traceTransitions[wid, opts]
 
 ---
 
+### D. PromptWorkflow 拡張 (ClaudeOrchestrator_promptworkflow.wl)
+
+PromptWorkflow 拡張は、`ClaudeEval` に与えられた **複雑なプロンプト**(複数のサブタスクや順序制御を含むもの)を WorkflowNet として再実行するための経路です。`ClaudeOrchestrator.wl` のロード時に自動的に取り込まれます。
+
+A 節の `proposePetriNet` が example 段階のサンプルであるのに対し、PromptWorkflow 拡張は本体に統合された機能で、LLM 提案コードの安全な取り扱い(評価前の静的検査・非評価 parse・承認待ち停止)を一貫して行います。
+
+#### ClaudeWorkflowComplexPromptQ
+
+プロンプトが workflow 候補かどうかを、**評価を伴わずローカルで** deterministic に判定します。ルーター LLM を呼ぶ前に動作するため、workflow 候補かを試すためだけに秘密のプロンプトが外部送信されることはありません。
+
+```mathematica
+ClaudeWorkflowComplexPromptQ["文書を要約し、要点を抽出し、レポートにまとめる"]
+(* → <|"Decision" -> "WorkflowCandidate", "Reason" -> ..., "Signals" -> ...|> *)
+
+ClaudeWorkflowComplexPromptQ["今日の天気は？"]
+(* → <|"Decision" -> "NotComplex", ...|> *)
+```
+
+明示的な workflow 要求、複数のサブタスク動詞、またはサブタスク動詞と順序制御語の組み合わせを手がかりに判定します。
+
+#### ClaudeProposeWorkflowNetFromPrompt
+
+自然言語のゴールを WorkflowNet の提案に変換します。コードプロバイダーに WorkflowNet コードを要求し、safe parser に通し、失敗時は静的診断をフィードバックして再試行します。**提案のみ**で、workflow の実行・登録は一切しません。
+
+```mathematica
+prop = ClaudeProposeWorkflowNetFromPrompt[
+  "文書を要約し、要点を抽出し、レポートにまとめる"];
+prop["Status"]
+(* "Proposed" / "NeedsRepair" / "Rejected" *)
+prop["AttemptTrace"]   (* 各試行の記録 *)
+```
+
+**オプション:**
+
+- `"MaxProposalAttempts" -> 3` — 提案の最大試行回数。
+- `"CodeProvider" -> Automatic` — `Automatic` なら `ClaudeCode`ClaudeQuery` を weak-call。`Function` を渡すとコードを直接供給(テスト用)。
+- `"FeedbackMode" -> "StaticDiagnostics"` — 再試行時に静的診断をフィードバック。
+
+#### ClaudeParseWorkflowNetCode / ClaudeWorkflowCheckForbidden
+
+LLM が提案した WorkflowNet コードを **評価せずに** 扱うための関数です。`ClaudeParseWorkflowNetCode` はフェンス付きコードブロックを抽出し、禁止パターン検査を行い、`HoldComplete` でくるんだ非評価 parse で AST から `WorkflowNet[spec]` を取り出します。builder を呼び出すことはありません。
+
+```mathematica
+res = ClaudeParseWorkflowNetCode[codeString];
+res["Status"]
+(* "Parsed" / "Rejected" / "ParseFailed" / "NoWorkflowNet" *)
+
+(* 評価せずに禁止パターンだけを静的検査することもできる *)
+ClaudeWorkflowCheckForbidden[codeString]
+(* → <|"Status" -> "Clean" | "ForbiddenDetected", "Findings" -> {...}|> *)
+```
+
+`ClaudeWorkflowForbiddenPatternRegistry[]` で禁止パターンの一覧(ファイル / ネットワーク / プロセス / 資格情報 / notebook 変更系)を確認できます。
+
+#### ClaudeCreateWorkflowRouteDraft
+
+成功した提案を WorkflowRouteDraft に変換します。workflow コード本体は SourceVault PrivateVault 配下に private artifact として保存され、draft メタデータは `CodeHash` と `CodeStorage` 参照のみを持ちます。draft は Status `NeedsApproval` で作成され、自動昇格・自動実行はされません。
+
+```mathematica
+draft = ClaudeCreateWorkflowRouteDraft["...", prop];
+draft["Status"]
+(* "NeedsApproval" *)
+```
+
+**オプション:**
+
+- `"DryRun" -> True` — 既定。書き込みを行わず計画のみ報告します。実際に保存するには `"DryRun" -> False` を明示します。
+- `"PrivacyLevel" -> 0.75`
+- `"WorkflowTemplateId" -> Automatic`
+
+#### ClaudeWorkflowRouteFromPrompt
+
+`ClaudeEval` の workflow 統合フロー全体をオーケストレーションします。既存の一意な route があればそれを使い、なければローカルの複雑プロンプト検出器を実行し、`WorkflowCandidate` と判定されたものだけが提案と WorkflowRouteDraft 作成へ進みます。
+
+```mathematica
+decision = ClaudeWorkflowRouteFromPrompt[
+  "文書を要約し、要点を抽出し、レポートにまとめる"];
+```
+
+新規に生成された workflow は **つねに `NeedsApproval` で停止** し、ユーザーの承認なしに自動登録・自動実行されることはありません。
+
+#### PromptWorkflow 拡張の注意事項
+
+- LLM 提案コードは `ClaudeParseWorkflowNetCode` の非評価 parse を経るため、そのまま評価されることはありません。評価前に `ClaudeWorkflowCheckForbidden` が禁止パターンを静的検出します。
+- 新規生成された workflow はつねに承認待ちで停止します。`ClaudeWorkflowRouteFromPrompt` / `ClaudeProposeWorkflowNetFromPrompt` は workflow を自動登録・自動実行しません。
+- `ClaudeCreateWorkflowRouteDraft` の既定は `DryRun -> True` です。実際に draft を保存するには `"DryRun" -> False` を明示してください。
+- `ClaudeWorkflowComplexPromptQ` は評価を伴わずローカルで動作するため、複雑プロンプト判定のためにプロンプトが外部送信されることはありません。
+- API の詳細は `api_promptworkflow.md` を参照してください。
+
+---
 ### 全体ワークフロー: 最小コード例
 
 `example.md` の Part A の要点だけを 1 ブロックにまとめると以下のとおりです。
@@ -867,7 +960,7 @@ pd["Status"]     (* "OK" / "Failed" *)
 
 環境変数 `CLAUDE_ORCH_REAL_LLM` でも opt-in できます。
 
-### Auto ゲートのカスタマイズ(Phase 32 Task 3.2)
+### Auto ゲートのカスタマイズ
 
 Auto モードで「短い factual query は Orchestrator を通さず Single パスに直送する」挙動を制御する 3 つのリストを公開しています。プロジェクト固有の用語が頻出する場合は、これらを拡張することで余計なオーケストレーション起動を抑えられます。
 
