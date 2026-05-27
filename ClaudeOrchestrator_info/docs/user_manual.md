@@ -708,6 +708,17 @@ traceTransitions[wid, opts]
 - `"PromptPreviewLen" -> 200` / `"ResponsePreviewLen" -> 200` — Detail モードの Prompt / Response 抜粋文字数。
 - `"TimeMatchTolerance" -> 60.0` — firing と LLM call の時刻マッチ許容幅(秒)。
 
+#### C-6. ChatGPT Codex 対応 (2026-05-27 追記)
+
+`ClaudeOrchestrator_observability.wl` は ChatGPT Codex(OpenAI 系プロバイダ)からの応答も `ClaudeQueryBgLogged` の単一経路でログ化できるよう、以下の点が更新されています。
+
+- **応答パース耐性の強化**: Codex が返す応答が文字列ではなく `<|"response" -> ...|>` 形式の Association(あるいは入れ子の raw レコード)で返ってくるケースに対応し、`StringQ[raw], raw` → `AssociationQ[raw], Lookup[raw, "response", ...]` → `True, ToString[raw]` の優先順で安全にテキスト化します。Response が `HoldComplete` 等で包まれていても `ToString` まで降りて落ちません。
+- **A6 post-processing フックの共通化**: `iApplyA6Hook[result, raw]` という内部フックを導入し、`ClaudeOrchestrator\`A6PostProcessParseProposal` が定義されていれば呼び出して `result` Association を加工した上で返します。未定義なら `result` をそのまま返す no-op です。これにより Codex 応答に固有の整形ロジック(`"ArtifactPayload" -> <|"Summary" -> text|>` への詰め直しなど)を本体を壊さず差し込めます。
+- **transition 名の伝搬**: `Block[{$CurrentObservedTransition = ...}]` のスコープは Codex 呼び出し中も維持されるため、`showLLMCallLog[]` で Anthropic / OpenAI どちらの呼び出しかを `Model` 列で識別しつつ、`Transition` 列で発火元の transition を追跡できます。
+- **自動ロード**: `ClaudeOrchestrator_observability.wl` は `ClaudeOrchestrator.wl` のロード時に自動取り込みされます。手動で再ロードしたい場合は `Get["ClaudeOrchestrator_observability.wl"]` を実行してください(`$petriObservabilityVersion` が定義されていれば取り込み済み)。
+
+> Codex プロバイダ経由のときは `ClaudeQueryBgLogged` のオプションで `"Provider" -> "openai"` 等を明示するか、`$ClaudeOrchestratorRealLLMEndpoint` を経由してルーティング設定に従わせてください。`$LLMCallLog` の `Model` 列がプロバイダ識別の最終手段になります。
+
 ---
 
 ### D. PromptWorkflow 拡張 (ClaudeOrchestrator_promptworkflow.wl)
@@ -996,6 +1007,7 @@ AppendTo[$ClaudeEvalAutoComplexMarkers, "10ページ"];
 | `ClaudeRealLLMQuery` が `$Failed` を返す | エンドポイントの設定誤り | `ClaudeRealLLMDiagnose` で詳細を確認する |
 | `ClaudeOrchestrationResult[jobId]` が `Missing` を返す | ジョブが未完了 | `ClaudeOrchestrationStatus[jobId]["Status"]` で進捗を確認する |
 | 非同期ジョブが `"Failed"` 状態になる | バックグラウンド実行中のエラー | `ClaudeOrchestrationResult[jobId]["Failures"]` でエラー詳細を確認する |
+| ChatGPT Codex 応答が `showLLMCallLog[]` に文字列として残らない | Codex が Association 形式で返している | `ClaudeOrchestrator_observability.wl` を再ロードして `ClaudeQueryBgLogged` の Association 対応を有効化(C-6 節参照) |
 | `petri_from_prompt.wl` の `Get` が失敗する | `docs/examples/` パスが解決できていない | `$packageDirectory` 配下に `ClaudeOrchestrator/docs/examples/petri_from_prompt.wl` が存在するか確認する |
 
 ### TaskSpec の必須キー

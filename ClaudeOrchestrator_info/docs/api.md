@@ -1,234 +1,280 @@
 # ClaudeOrchestrator API リファレンス
 
-LLM 向け API リファレンス。Multi-Agent Orchestration Layer (ClaudeRuntime 上のタスク分解・並列 worker 配車・artifact 収集・reduction・single-committer commit 機構)。
+LLM 向け API 仕様。ClaudeRuntime の上に乗る multi-agent orchestration 層。
 
-## バージョン・定数
+## バージョン
 
 ### $ClaudeOrchestratorVersion
 型: String
 パッケージバージョン。
 
-### $ClaudeOrchestratorRoles
-型: List
-許容 Role リスト: `{"Explore", "Plan", "Draft", "Verify", "Reduce", "Commit"}`
+### ClaudeOrchestrator\`$DirectivesVersion
+型: String, 初期値: "v2026-04-26-phase-a4x-stage2-fix2"
+Directives 統合モジュールのバージョン。
 
-### $ClaudeOrchestratorCapabilities
-型: Association
-Role → Capability リストの Association。
+### ClaudeOrchestrator\`$RoutingVersion
+型: String, 初期値: "v2026-04-26-phase-a4-5-stage1"
+Routing 統合モジュールのバージョン。
 
-### $ClaudeOrchestratorDenyHeads
-型: List
-worker が提案してはいけない head のリスト (NotebookWrite, CreateNotebook, EvaluationNotebook, RunProcess, SystemCredential など)。
+### ClaudeOrchestrator\`$ClaudeCommitSafetyVersion
+型: String, 初期値: "v2026-04-26-phase-a42-stage4-inlinecode"
+CommitSafety 統合モジュールのバージョン。
 
-### $ClaudeEvalAutoSkipKeywords
-型: List
-Auto モードで短い factual query を Single パスにフォールバックさせるためのテクニカルキーワードリスト (パッケージ名、関数名、拡張子等)。プロンプトに含まれ、かつタスクが 300 文字未満・複雑さ指標なしの場合、Orchestrator 経路を通らず従来の Single パスで直接処理される。
+### ClaudeOrchestrator\`$A4StubVersion
+型: String, 初期値: "v2026-04-26-phase-a44-stub"
+A4 hook stub のバージョン。
 
-### $ClaudeEvalAutoFactualEndings
-型: List
-Auto モードで Single フォールバックさせる「調査・質問型」の語尾・フレーズリスト「を調べて」「を教えて」check if compare 等。
-
-### $ClaudeEvalAutoComplexMarkers
-型: List
-Orchestrator 経路を通すべき「複雑タスク」を識別するマーカーリスト。スライド・レポート・プレゼン・複数の成果物要求など。
-
-### $ClaudeOrchestratorRealLLMEndpoint
-型: None | String | Function, 初期値: None
-real LLM 統合エンドポイント設定。
-- `None`: real LLM 統合テストをスキップ
-- `"ClaudeCode"`: ClaudeCode\`ClaudeQueryBg を使う
-- `"CLI"`: claude CLI を RunProcess で呼ぶ
-- `fn[prompt]`: カスタム関数を使う
-環境変数 `CLAUDE_ORCH_REAL_LLM` でも opt-in 可能。
-
-### $ClaudeOrchestratorCLICommand
-型: Automatic | String, 初期値: Automatic
-CLI mode で起動する実行ファイル名/フルパス。
-- `Automatic`: OS に応じて "claude" (Unix) / "claude.cmd" (Windows)
-- String: フルパスまたはコマンド名を明示
-環境変数 `CLAUDE_ORCH_CLI_PATH` でも上書き可能。
-
-### $ClaudeOrchestratorAsyncMode
-型: Boolean, 初期値: True
-`$ClaudeEvalHook` が非同期経路 (ClaudeRunOrchestrationAsync) と同期経路 (ClaudeRunOrchestration) のどちらを使うかを制御。False で旧同期挙動に戻る。
-
-### $ClaudeOrchestratorEnableDirectives
-型: Boolean, 初期値: True
-Directives サブモジュール有効化フラグ。BeginPackage より前に設定して効果あり。
-
-### $ClaudeOrchestratorEnableRouting
-型: Boolean, 初期値: True
-Routing サブモジュール有効化フラグ。
-
-### $ClaudeOrchestratorEnableCommitSafety
-型: Boolean, 初期値: True
-CommitSafety サブモジュール有効化フラグ。
-
-### $ClaudeOrchestratorEnableA4Stub
-型: Boolean, 初期値: True
-A4Stub サブモジュール有効化フラグ。
-
-### $DirectivesVersion
-型: String
-Directives 統合モジュールのバージョン文字列。
-
-### $DirectivesVerbose
-型: Boolean, 初期値: False
-True で directive prefix 構築時に診断メッセージを出力。
-
-### $RoutingVersion
-型: String
-Routing 統合モジュールのバージョン文字列。
-
-### $RoutingVerbose
-型: Boolean, 初期値: False
-True で ResolveQueryFnForRole 呼出時に診断メッセージを出力。
-
-### $A4StubVersion
-型: String
-A4 hook stub のバージョン文字列。
-
-### $ClaudeCommitSafetyVersion
-型: String
-Commit safety patch のバージョン文字列。
-
-## Planning フェーズ
+## Orchestration コア API
 
 ### ClaudePlanTasks[input, opts]
 親タスク input を TaskSpec DAG に分解する。
-→ Association `<|"Tasks" -> {<|"TaskId"->..., "Role"->..., "Goal"->..., "Inputs"->..., "Outputs"->..., "Capabilities"->..., "DependsOn"->..., "ExpectedArtifactType"->..., "OutputSchema"->...|>, ...}|>`
-Options: Planner -> Automatic (プランナー関数, Automatic で mock), MaxTasks -> 10 (最大タスク数)
+→ `<|"Tasks" -> {<|"TaskId"->..., "Role"->..., "Goal"->..., "Inputs"->..., "Outputs"->..., "Capabilities"->..., "DependsOn"->..., "ExpectedArtifactType"->..., "OutputSchema"->...|>, ...}|>`
+Options: Planner -> Automatic (プランナー関数、mock fallback), MaxTasks -> 10 (最大タスク数)
 
 ### ClaudeValidateTaskSpec[taskSpec] → Association
 TaskSpec の妥当性を検証。`<|"Valid"->True/False, "Errors"->{...}|>` を返す。
 
-## Worker spawn / Artifact フェーズ
-
 ### ClaudeSpawnWorkers[tasks, opts]
-依存順に worker runtime を起動し、各 task の artifact を収集する。
-→ Association `<|"Artifacts" -> <|taskId -> artifact, ...|>, "Failures" -> {...}, "Status" -> "Complete"|"Partial"|"Failed"|>`
-Options: WorkerAdapterBuilder -> Automatic (Role -> TaskSpec を受け取り adapter を返す関数), MaxParallelism -> 1 (Stage 2 以降で拡張)
+依存順に worker runtime を起動し artifact を収集する。
+→ `<|"Artifacts" -> <|taskId -> artifact, ...|>, "Failures" -> {...}, "Status" -> "Complete"|"Partial"|"Failed"|>`
+Options: WorkerAdapterBuilder -> Automatic (Role -> TaskSpec から adapter を返す関数), MaxParallelism -> 1 (現状 1、Stage 2 以降で拡張)
 
 ### ClaudeCollectArtifacts[spawnResult] → Dataset
-`spawnResult["Artifacts"]` を Dataset として返す。
+spawnResult["Artifacts"] を Dataset として返す。
 
 ### ClaudeValidateArtifact[artifact, outputSchema] → Association
-artifact の payload が OutputSchema を満たすか検証。`<|"Valid"->True/False, "Errors"->{...}|>`。
-
-## Reduction フェーズ
+artifact の payload が OutputSchema を満たすか検証。`<|"Valid"->True/False, "Errors"->{...}|>` を返す。
 
 ### ClaudeReduceArtifacts[artifacts, opts]
-複数 artifact を統合し中間成果物 (ReducedArtifact) を返す。
-→ Association `<|"ArtifactType"->"Reduced", "Payload"->..., "Sources"->...|>`
+複数 artifact を統合し ReducedArtifact を返す。
+→ `<|"ArtifactType"->"Reduced", "Payload"->..., "Sources"->...|>`
 Options: Reducer -> Automatic (artifacts を受け取り ReducedArtifact を返す関数)
 
-## Commit フェーズ
-
 ### ClaudeCommitArtifacts[targetNotebook, reducedArtifact, opts]
-single committer runtime を起動し、reducedArtifact を target notebook に反映。committer の HeldExpr 内 EvaluationNotebook[] / CreateNotebook[...] 参照は targetNotebook に ReplaceAll で書換えられる。
-→ Association `<|"Status"->"Committed"|"Failed"|"RolledBack", "Mode"->..., "Details"->...|>`
-Options: CommitterAdapterBuilder -> Automatic, CommitMode -> "Direct" (or "Transactional" : shadow buffer に書いてから verify/flush, 失敗時 rollback), Verifier -> Automatic (`fn[buffer, cells] -> True/False`)
-
-## 全体 Orchestration (同期)
+single committer runtime で reducedArtifact を target notebook に反映。committer の HeldExpr は EvaluationNotebook[] / CreateNotebook[...] が targetNotebook に ReplaceAll で書換えられる。
+→ `<|"Status"->"Committed"|"Failed"|"RolledBack", "Mode"->..., "Details"->...|>`
+Options: CommitterAdapterBuilder -> Automatic, CommitMode -> "Direct" ("Direct" | "Transactional"), Verifier -> Automatic (fn[buffer, cells] -> True/False)
+Transactional モードでは shadow buffer に書いてから verify / flush し、失敗時は target notebook を無変更のまま rollback する。
 
 ### ClaudeRunOrchestration[input, opts]
-Planning → Spawn → Reduce → (optional) Commit の全フェーズを直列に回す。
-→ Association (4 フェーズの結果を束ねたもの)
+Planning → Spawn → Reduce → (optional) Commit を直列に回す。
+→ 4 フェーズの結果を束ねた Association
 Options: TargetNotebook -> None (Commit するなら指定), Planner -> Automatic, WorkerAdapterBuilder -> Automatic, Reducer -> Automatic, CommitterAdapterBuilder -> Automatic, MaxTasks -> 10, MaxParallelism -> 1, Confirm -> False
 
 ### ClaudeContinueBatch[runtimeId, batchInstructions, opts]
-単一 runtime セッションを維持したまま、batchInstructions に含まれる prompt を `ClaudeContinueTurn` で順次投入する。notebook 共有問題回避用の現実解。
-→ List `{<|"Index"->i, "Prompt"->..., "Result"->...|>, ...}`
+単一 runtime セッション維持のまま batchInstructions の prompt を ClaudeContinueTurn で順次投入。notebook 共有問題の現実解。
+→ `{<|"Index"->i, "Prompt"->..., "Result"->...|>, ...}`
 Options: WaitBetween -> Quantity[1, "Seconds"]
 
-## 全体 Orchestration (非同期)
+## Async Orchestration API
 
-### ClaudeRunOrchestrationAsync[input, opts] → orchJobId
-Plan → Spawn → Reduce → Commit を DAG コールバックチェーンで非同期実行し、orchJobId を即座に返す。フロントエンドをブロックしない。opts は ClaudeRunOrchestration と同じ。
+### ClaudeRunOrchestrationAsync[input, opts] → String
+Plan → Spawn → Reduce → Commit を DAG コールバックチェーンで非同期実行。orchJobId を即座に返す。フロントエンドをブロックしない。opts は ClaudeRunOrchestration と同じ。
 
 ### ClaudeOrchestrationStatus[orchJobId] → Association
-orchestration ジョブの現在状態。`<|"Status"->"Planning"|"Spawning"|"Reducing"|"Committing"|"Done"|"Failed", "Phase"->..., "ElapsedSecs"->..., "PlanJobId"->..., "SpawnJobId"->...|>`。
+orchestration ジョブの現在状態。`<|"Status"->"Planning"|"Spawning"|"Reducing"|"Committing"|"Done"|"Failed", "Phase"->..., "ElapsedSecs"->..., "PlanJobId"->..., "SpawnJobId"->...|>`
 
 ### ClaudeOrchestrationResult[orchJobId] → Association | Missing
-完了済み orchestration の最終結果 (ClaudeRunOrchestration と同形)。未完了なら Missing。
+完了済み orchestration の最終結果。未完了なら Missing を返す。
 
-### ClaudeOrchestrationWait[orchJobId, timeoutSec]
-orchestration 完了まで待機 (テスト・スクリプト専用。対話セルでは使用を避ける)。既定タイムアウト 300 秒。
+### ClaudeOrchestrationWait[orchJobId, timeoutSec] → Association
+orchestration 完了まで待機 (テスト・スクリプト専用、対話セルでは避ける)。既定タイムアウト 300 秒。
 
-### ClaudeOrchestrationCancel[orchJobId]
+### ClaudeOrchestrationCancel[orchJobId] → Null
 実行中の DAG を中止しレジストリから除去する。
 
 ### ClaudeOrchestrationJobs[] → Dataset
 現在追跡中の orchestration ジョブ一覧。
 
+### $ClaudeOrchestratorAsyncMode
+型: Boolean, 初期値: True
+$ClaudeEvalHook が非同期経路 (ClaudeRunOrchestrationAsync) と同期経路 (ClaudeRunOrchestration) のどちらを使うかを制御。False で旧同期挙動。
+
+## Role / Capability 定数
+
+### $ClaudeOrchestratorRoles
+型: List, 初期値: {"Explore", "Plan", "Draft", "Verify", "Reduce", "Commit"}
+許容 Role のリスト。
+
+### $ClaudeOrchestratorCapabilities
+型: Association
+Role -> Capability リストの Association。
+
+### $ClaudeOrchestratorDenyHeads
+型: List
+worker が提案してはいけない head のリスト (NotebookWrite, CreateNotebook, EvaluationNotebook, RunProcess, SystemCredential など)。
+
+## Auto ゲート定数 (Phase 32 Task 3.2)
+
+### $ClaudeEvalAutoSkipKeywords
+型: List
+Auto モードで短い factual query を Single パスにフォールバックさせるためのテクニカルマーカーリスト (パッケージ名、関数名、拡張子等)。プロンプトに含まれかつタスクが 300 文字未満・複雑さ指標なしの場合、Orchestrator 経路を通らず Single パスで処理される。ユーザはリストを拡張して特有名称を追加可能。
+
+### $ClaudeEvalAutoFactualEndings
+型: List
+Auto モードで Single フォールバックさせるための「調査・質問型」の語尾・フレーズリスト「を調べて」「を教えて」check if compare 等。
+
+### $ClaudeEvalAutoComplexMarkers
+型: List
+Orchestrator 経路を通すべき「複雑タスク」を識別するマーカーリスト。スライド・レポート・プレゼン・複数の成果物要求などが含まれる。短いタスクでも Orchestrator 経路を通すようになる。
+
 ## Real LLM 統合
 
+### $ClaudeOrchestratorRealLLMEndpoint
+型: None | String | Function, 初期値: None
+real LLM endpoint 設定:
+- None (既定): 統合テストをスキップ
+- "ClaudeCode": ClaudeCode\`ClaudeQueryBg (同期版) を使う
+- "CLI": claude CLI を RunProcess で呼ぶ
+- fn[prompt]: カスタム関数
+
+環境変数 CLAUDE_ORCH_REAL_LLM でも opt-in 可。
+
+### $ClaudeOrchestratorCLICommand
+型: Automatic | String, 初期値: Automatic
+CLI mode で起動する実行ファイル名/フルパス。Automatic で OS 別 ("claude" / "claude.cmd")。環境変数 CLAUDE_ORCH_CLI_PATH で上書き可。
+
 ### ClaudeRealLLMAvailable[] → Boolean
-real-LLM 統合が設定済みなら True。`$ClaudeOrchestratorRealLLMEndpoint` と環境変数 `CLAUDE_ORCH_REAL_LLM` を確認。
+real-LLM 統合が設定済みなら True。$ClaudeOrchestratorRealLLMEndpoint と env CLAUDE_ORCH_REAL_LLM を見る。
 
 ### ClaudeRealLLMQuery[prompt] → String | $Failed
-設定済みの real-LLM エンドポイントに prompt を投入する。
+設定済み real-LLM endpoint で prompt を実行し response を返す。
 
 ### ClaudeRealLLMDiagnose[prompt] → Association
-real LLM 呼び出しを実行し、診断情報 (endpoint, CLI パス, ExitCode, raw stdout, unwrap 結果, JSON parse 可否) を返す。W1-W3 等の失敗切り分け用。
+real LLM 呼び出しを実行し診断情報を返す (endpoint, CLI パス, ExitCode, raw stdout, unwrap 結果, JSON parse 可否)。
 
 ### ClaudeRealLLMDiagnosePlan[input] → Association
-実 LLM planner パイプラインを走らせ、plan 結果, raw LLM 応答 head, task count, status, error 情報を返す。W1 失敗切り分け用。
+実 LLM planner パイプラインを走らせ、plan 結果、raw LLM 応答 head、 task count、status、error 情報を返す。
 
-## Directives 統合 API
+## Directives 統合 (Phase 34 A4.x Stage 2)
 
-### DirectivesEnabledQ[] → Boolean
-ClaudeDirectives がロードされかつリポジトリ有効なら True。False ならフックは passthrough。
+### ClaudeOrchestrator\`DirectivesEnabledQ[] → Boolean
+ClaudeDirectives がロードされリポジトリが利用可能なら True。False で hook は passthrough。
 
-### DirectivesPreviewPrefix[role, model, goal] → String
-`ClaudeInjectDirectivePrefix` が prepend する directive prefix を hook 経由せず取得 (デバッグ用)。
+### ClaudeOrchestrator\`DirectivesPreviewPrefix[role, model, goal] → String
+ClaudeInjectDirectivePrefix が prepend する directive prefix を hook を介さず取得 (デバッグ用)。
 
-### DirectivesSelected[role, model, goal] → Association
-→ `<|"Rules"->{...names...}, "Skills"->{...names...}, "Mode"->modeStr, "Tokens"->n, "Model"->resolvedModelStr|>`
+### ClaudeOrchestrator\`DirectivesSelected[role, model, goal] → Association
+bundle の DirectiveMeta から `<|"Rules"->{...}, "Skills"->{...}, "Mode"->modeStr, "Tokens"->n, "Model"->resolvedModelStr|>` を返す。
 
-### DirectivesResolveBundle[taskSpec_Association, opts] → Association
-TaskSpec の Role / Goal / Inputs / DependsOn を読み取り ClaudeResolveDirectiveBundle にブリッジする。
-Options: "Model" -> spec, "Mode" -> Automatic|"Full"|"Summary"|"Index"|"Lazy", "TokenBudget" -> Automatic (or Integer), "MaxSkills" -> Integer
+### ClaudeOrchestrator\`DirectivesResolveBundle[taskSpec, opts]
+TaskSpec から ClaudeDirectives bundle を解決する。Role / Goal / Inputs / DependsOn から bridges。
+→ bundle Association
+Options: "Model" -> spec, "Mode" -> Automatic ("Automatic"|"Full"|"Summary"|"Index"|"Lazy"), "TokenBudget" -> Automatic (Integer|Automatic), "MaxSkills" -> Integer
 
-### DirectivesInvalidateCache[]
-キャッシュされた ClaudeDirectives リポジトリを破棄し次回呼び出しで再ロードさせる。
+### ClaudeOrchestrator\`DirectivesInvalidateCache[] → Null
+キャッシュ済み ClaudeDirectives リポジトリを破棄し再ロードを強制。
 
-### DirectivesNormalizeModel[modelSpec, role] → String
-directive projection 用の文字列モデル名を返す。String / List ({provider, model, url}) / Automatic / None を扱う。
+### ClaudeOrchestrator\`DirectivesNormalizeModel[modelSpec, role] → String
+String / List ({provider, model, url}) / Automatic / None を統一して文字列モデル名へ正規化。
 
-### DirectivesAutoLoadStatus[] → String
-最近の ClaudeDirectives リポジトリ自動ロード試行の結果を表す文字列。EnabledQ が False の理由診断用。
+### ClaudeOrchestrator\`DirectivesAutoLoadStatus[] → String
+最近の ClaudeDirectives リポジトリ自動ロード試行結果を記述する文字列。EnabledQ[] が False を返す原因の診断用。
 
-### DirectivesForceLoad[] / DirectivesForceLoad[path]
-ClaudeDirectives リポジトリのロードを再試行する (path 指定可)。auto-load 試行フラグをリセットし EnabledQ がリトライするようにする。
+### ClaudeOrchestrator\`DirectivesForceLoad[] / [path]
+ClaudeDirectives リポジトリの再ロードを試行する (path 省略で既定パス)。auto-load 試行フラグをリセットし EnabledQ[] が再試行するようにする。
+→ Boolean (成功時 True)
 
-## Routing 統合 API
+### ClaudeOrchestrator\`$DirectivesVerbose
+型: Boolean, 初期値: False
+True にすると directive prefix 構築のたびに診断メッセージを出力する。
 
-### RoutingEnabledQ[] → Boolean
-CLI (ClaudeQueryBg) または API (iQueryViaAPI) の少なくとも一方の query path が呼出可能なら True。
+## Routing 統合 (Phase 34 A4.5)
 
-### RoutingPreviewModel[role, model] → spec
-role-aware default lookup と qwen→$ClaudePrivateModel 展開後の解決済 model spec を返す。デフォルト引数: role="" , model=Automatic。
+### ClaudeOrchestrator\`RoutingEnabledQ[] → Boolean
+少なくとも 1 つの query path (CLI = ClaudeQueryBg または API = iQueryViaAPI) が呼び出し可能なら True。
 
-### RoutingGetInfo[role, model] → Association
-→ `<|"Source"->str, "Path"->"CLI"|"API"|"Default", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
-デフォルト引数: role="" , model=Automatic。
+### ClaudeOrchestrator\`RoutingPreviewModel[role, model] → spec
+role-aware default lookup と qwen→$ClaudePrivateModel expansion 後の解決済み model spec を返す。引数省略可 ([] / [role]) で既定値は role="", model=Automatic。
 
-### RoutingListPaths[] → Association
-利用可能な routing path を Association で返す。
-→ `<|"CLI"->Boolean, "API"->Boolean, "PrivateModel"->Boolean, "RoleDefaults"->Boolean|>`
+### ClaudeOrchestrator\`RoutingGetInfo[role, model] → Association
+`<|"Source"->str, "Path"->"CLI"|"API"|"Default", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>` を返す。
 
-## A4 hook API
+### ClaudeOrchestrator\`RoutingListPaths[] → Association
+利用可能 routing パスを示す `<|"CLI"->Boolean, "API"->Boolean, "PrivateModel"->Boolean, "RoleDefaults"->Boolean|>`。
 
-### A4InjectDirectivePrefix[prompt, role, model, goal] → String
-prompt の前に Role/Model/Goal に応じた directive prefix を prepend して返す。ClaudeDirectives 未ロード/未配備時は passthrough (prompt をそのまま返す)。
+### ClaudeOrchestrator\`$RoutingVerbose
+型: Boolean, 初期値: False
+True にすると ClaudeResolveQueryFnForRole 呼び出しごとに診断メッセージを出力。
 
-### A4ResolveQueryFnForRole[queryFn, model, role] → Association
-queryFn が明示指定 (Automatic/None 以外) なら respect、それ以外は role-aware model 解決と spec に応じた closure を構築。
-→ `<|"QueryFunction"->fn, "Source"->str, "Path"->"CLI"|"API"|"Explicit"|"Empty", "Model"->resolved, "Role"->role|>`
+## A4 Hook API
 
-### A4ResolveModelForRole[role, model] → spec
-role に応じた model 解決。
-- List spec (len ≥ 2): そのまま
-- non-empty String (≠ "Automatic"): ローカル LLM 名 (qwen/llama/mistral/phi-/deepseek/gemma) なら $ClaudePrivateModel に展開、それ以外はそのまま
-- Automatic / None / "": role 別 default を引いてから上記展開
+### ClaudeOrchestrator\`A4ResolveQueryFnForRole[queryFn, model, role] → Association
+role / model に応じた queryFn を解決。
+→ `<|"QueryFunction"->fn, "Source"->str, "Path"->"CLI"|"API"|"Empty"|"Explicit", "Model"->resolved, "Role"->role|>`
+動作:
+- 明示的 queryFn (Symbol/Function) → passthrough
+- List spec ({prov, model, url}) かつ API 可 → API queryFn 構築
+- "qwen*"/"llama*"/"mistral*"/"phi-*"/"deepseek*"/"gemma*" 文字列 → $ClaudePrivateModel に展開し API 経路
+- それ以外 → CLI 経路 (Model オプションは渡さない、CLI default 使用)
+- いずれも不可 → empty fn (空文字列を返す)
+
+### ClaudeOrchestrator\`A4ResolveModelForRole[role, model] → spec
+role / model を解決し String または List ({prov, model, url}) を返す。Automatic/None/"" は role 別 default ($ClaudeRoleDefaultModels) を引く。
+
+### ClaudeOrchestrator\`A4InjectDirectivePrefix[prompt, role, model, goal] → String
+directive prefix を prompt の前に prepend する。ClaudeDirectives 未配備なら passthrough (prompt をそのまま返す)。失敗時もユーザー副作用なし。
+
+## 機能オン/オフフラグ
+
+### $ClaudeOrchestratorEnableDirectives
+型: Boolean, 初期値: True
+Directives 統合モジュールの有効化。BeginPackage より前に設定する必要あり。
+
+### $ClaudeOrchestratorEnableRouting
+型: Boolean, 初期値: True
+Routing 統合モジュールの有効化。
+
+### $ClaudeOrchestratorEnableCommitSafety
+型: Boolean, 初期値: True
+CommitSafety 統合 (3rd-tier commit fallback) の有効化。
+
+### $ClaudeOrchestratorEnableA4Stub
+型: Boolean, 初期値: True
+A4Stub (hook 最小実装) の有効化。Directives / Routing が本格実装で上書きする。
+
+## TaskSpec データ構造
+
+TaskSpec Association キー:
+- "TaskId" → String (一意 ID)
+- "Role" → String ($ClaudeOrchestratorRoles のいずれか)
+- "Goal" → String (タスクの目的)
+- "Inputs" → List (入力 artifact ID リスト)
+- "Outputs" → List (出力 artifact ID リスト)
+- "Capabilities" → List (許可される tool capability)
+- "DependsOn" → List (依存 TaskId リスト)
+- "ExpectedArtifactType" → String (期待される artifact 型)
+- "OutputSchema" → Association (payload schema)
+
+## Artifact データ構造
+
+Artifact Association キー:
+- "ArtifactType" → String
+- "Payload" → Any (OutputSchema 準拠)
+- "Sources" → List (生成元 TaskId)
+- "TaskId" → String (生成元タスク)
+
+## 使用パターン例
+
+非同期 orchestration の典型フロー:
+
+```
+jobId = ClaudeRunOrchestrationAsync["スライドを作成", TargetNotebook -> nb];
+While[ClaudeOrchestrationStatus[jobId]["Status"] =!= "Done",
+  Pause[1]];
+result = ClaudeOrchestrationResult[jobId]
+```
+
+Routing 経路の確認:
+
+```
+ClaudeOrchestrator`RoutingGetInfo["Verify", "qwen3.6-27b"]
+(* → <|"QueryFunction"->fn, "Path"->"API", "Model"->{"lmstudio",...}, ...|> *)
+```
+
+CommitArtifacts の Transactional モード:
+
+```
+ClaudeCommitArtifacts[nb, reduced,
+  CommitMode -> "Transactional",
+  Verifier -> Function[{buf, cells}, Length[cells] >= 3]]

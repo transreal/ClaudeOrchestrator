@@ -1,135 +1,144 @@
 # ClaudeOrchestrator_observability API リファレンス
 
-petri_from_prompt.wl (proposePetriNet 統一版) への observability 補完モジュール。LLM 呼び出しログ、handler 観測、生成コードへの logger 注入、Tooltip 付き Petri net 可視化、transition firing 追跡 Dataset を提供する。
+`petri_from_prompt.wl` ベースの WorkflowNet 実行に対する観測 (observability) 補完モジュール。LLM 呼び出しログ・Handler 観測・transition 追跡・Tooltip 付き可視化を提供する。
 
-## 依存
+依存: `petri_from_prompt.wl` (plotPetriNet, getTokensInPlace, iExtractEdges), [ClaudeOrchestrator](https://github.com/transreal/ClaudeOrchestrator) (`ClaudeWorkflowTrace`, `ClaudeWorkflowState`), [claudecode](https://github.com/transreal/claudecode) (`ClaudeQueryBg`)。
 
-- `ClaudeOrchestrator\`Workflow\`` (ClaudeWorkflowTrace, ClaudeWorkflowState のみ使用)
-- petri_from_prompt.wl (plotPetriNet, getTokensInPlace, iExtractEdges)
-- ClaudeCode`ClaudeQueryBg
-
-## バージョン変数
+## 変数
 
 ### $petriObservabilityVersion
-型: String, 初期値: `"0.2.1 (2026-05-17)"`
-パッケージのバージョン文字列。
+型: String, 初期値: "0.3.0 (2026-05-26)"
+バージョン文字列。
+
+### $LLMCallLog
+型: List of Association, 初期値: {}
+ClaudeQueryBgLogged 呼び出し履歴。各エントリは Index, Time, TimeStr, Duration, TransitionName, Model, Fallback, Prompt, PromptLen, Response, ResponseLen, OptionList, ProviderKind, ProviderDisplayName, HarnessBundleId, DirectiveSnapshotId, RuntimeEnvironmentHash, ProviderResultMetadata を持つ。
+
+### $ObservedHandlerLog
+型: List of Association, 初期値: {}
+instrumentNetForObservation 経由で記録された handler 呼び出しログ。各エントリは Index, TransitionName, Time, TimeStr, Duration, BindingKeys, BindingPayloads, OutputRaw, OutputAssocQ, OutputHead, RawKeys, PayloadKeys, PayloadKeyMissing, OutputPayload, OutputStatus, Messages, FailedHead, HandlerType を持つ。
+
+### $CurrentObservedTransition
+型: String, 初期値: "?"
+観測ラッパが Block で束縛する現在の transition 名。ClaudeQueryBgLogged がこれを参照して log entry に記録する。
 
 ## LLM 呼び出しログ
 
-### $LLMCallLog
-型: List of Association, 初期値: `{}`
-ClaudeQueryBgLogged が追記する LLM 呼び出しエントリのリスト。各エントリは以下のキーを持つ: `Index`, `Time`, `TimeStr`, `Duration`, `TransitionName`, `Model`, `Fallback`, `Prompt`, `PromptLen`, `Response`, `ResponseLen`, `OptionList`。
-
-### $CurrentObservedTransition
-型: String, 初期値: `"?"`
-handler 内で Block 束縛される現在の transition 名。ClaudeQueryBgLogged はこの値を読んで `TransitionName` フィールドに記録する。
-
 ### ClaudeQueryBgLogged[prompt, opts]
-ClaudeCode`ClaudeQueryBg と同じ呼び出しを行い、開始時刻 / 所要時間 / Model / Fallback / プロンプト / 応答を `$LLMCallLog` に追記する。ClaudeQueryBg 本体・Options・DownValues は一切変更しない。
+ClaudeCode\`ClaudeQueryBg と同一引数で呼び出し、開始時刻 / 所要時間 / Model / Fallback / Prompt / Response を $LLMCallLog に追記してから応答をそのまま返す。$CurrentObservedTransition が束縛中ならその transition 名も記録。ClaudeQueryBg 本体・Options・Protect は一切変更しない。応答が ProviderResultMetadata を持つ Association ならその provenance キーを log entry に lift する。
 → ClaudeQueryBg の戻り値そのまま
-opts: ClaudeCode`ClaudeQueryBg と同じ。`ClaudeCode\`Model`, `ClaudeCode\`Fallback` を Lookup する。
 
 ### clearLLMCallLog[] → String
-`$LLMCallLog` を空にする。`"$LLMCallLog cleared"` を返す。
+$LLMCallLog を {} に戻す。"$LLMCallLog cleared" を返す。
 
 ### showLLMCallLog[] → Dataset | $Failed
-`$LLMCallLog` を `#`, `Time`, `Trans`, `Model`, `PromptLen`, `ResponseLen`, `Duration`, `Preview` (応答先頭 60 文字) の Dataset で返す。空なら警告して `$Failed`。
+$LLMCallLog 一覧を #, Time, Trans, Provider, Model, PromptLen, ResponseLen, Duration, Preview カラムの Dataset として返す。空なら警告を Print して $Failed。
 
 ### showLLMCallLog[idx_Integer] → Column | $Failed
-1 件のエントリを Pretty Print (Column + Pane) で表示。範囲外なら警告して `$Failed`。
+idx 番目のエントリを Pretty Print する Column を返す。範囲外なら警告を Print して $Failed。Time, Transition, Provider, Model, Fallback, Duration, PromptLen, ResponseLen, HarnessBundle / DirectiveSnapshot / RuntimeEnvHash (Missing 以外のとき), Prompt, Response を表示する。
 
 ## Handler 観測
 
-### $ObservedHandlerLog
-型: List of Association, 初期値: `{}`
-instrumentNetForObservation で挿入された観測ラッパが追記する handler 呼び出しログ。キー: `Index`, `TransitionName`, `Time`, `TimeStr`, `Duration`, `BindingKeys`, `BindingPayloads`, `OutputRaw`, `OutputAssocQ`, `OutputHead`, `RawKeys`, `PayloadKeys`, `PayloadKeyMissing`, `OutputPayload`, `OutputStatus`, `Messages`, `FailedHead`, `HandlerType`。
+### instrumentNetForObservation[net_Association] → net'
+net 内の全 transition の Handler を観測ラッパで包んだ新しい net を返す。元の net は破壊しない。Symbol handler も明示的に handler[binding] を呼ぶ Function ラッパで包む (本体 iExecutePureFunction の Symbol/Function 判定差バグ回避)。各呼び出し時に Block で $CurrentObservedTransition = tname を束縛し、$ObservedHandlerLog にエントリを追記する。
+
+### instrumentNetForObservation[trans_Association, tname_String] → trans'
+単一 transition Association を観測用にラップして返す内部多重定義。RuntimeSpec の Handler を差し替える。
 
 ### clearObservedHandlerLog[] → String
-`$ObservedHandlerLog` を空にする。`"$ObservedHandlerLog cleared"` を返す。
+$ObservedHandlerLog を {} に戻す。"$ObservedHandlerLog cleared" を返す。
 
-### instrumentNetForObservation[net_Association] → Association
-net 内全 transition の Handler を観測ラッパで包んだ新しい net を返す。Symbol handler も Function ラッパで包まれるため、本体側 iExecutePureFunction の Symbol/Function 判定差バグも回避する。handler 実行は `Block[{$CurrentObservedTransition = tname, $MessageList = {}}, ...]` で囲まれ、内部の ClaudeQueryBgLogged が transition 名を取得できる。
-副作用: handler 呼び出しのたび `$ObservedHandlerLog` にエントリ追加。
-
-### instrumentNetForObservation[trans_Association, tname_String] → Association
-単一 transition Association の `RuntimeSpec.Handler` のみラップした新 transition Association を返す (内部利用)。
-
-## コード文字列への logger 注入
+## logger 注入
 
 ### withLLMLogging[code_String] → String
-code 内の `ClaudeCode\`ClaudeQueryBg` および無修飾 `ClaudeQueryBg` 呼び出しを `Global\`ClaudeQueryBgLogged` に置換した文字列を返す。関数名 → 関数名 の置換のみ。Function スコープ / 局所変数 / HoldAll などには影響しない。識別子境界は RegularExpression `(?<![A-Za-z0-9\`$])ClaudeQueryBg(?![A-Za-z0-9])` で判定。
+code 内の `ClaudeCode\`ClaudeQueryBg` および無修飾 `ClaudeQueryBg` 呼び出しを `Global\`ClaudeQueryBgLogged` に置換した文字列を返す。関数名のみを書き換え、Function スコープ / 局所変数 / HoldAll などには触れない。識別子境界を正規表現で限定して安全に置換する。
 
-## 可視化 (Tooltip 拡張)
+## 可視化
 
 ### plotPetriNetDetail[netOrWid, opts]
-WorkflowNet を Petri net グラフとして描画する Tooltip 拡張版。本体 plotPetriNet とは独立した別関数 (本体は上書きしない)。Place / Transition / Edge にホバーで token / handler trace / firing event の詳細を表示する。Graph[vertices, edges, ...] 2 引数形式で生成 (孤立 Place を含めるため)。
+WorkflowNet を Tooltip 付きペトリネットグラフとして描画する。本体 plotPetriNet は上書きせず別関数として共存。netOrWid が String なら $iWorkflowNets から net を解決し自動的に "TraceWid" -> netOrWid モードになる。"TraceWid" -> wid が有効な場合、Place には現在のトークン、Transition には handler / LLM 呼び出し詳細、Edge には firing event をホバー Tooltip で表示する。Graph の vertex list は Join[places, transitions] を明示的に渡し、孤立 Place ("Failed" 等) も描画される。
 → Graph | $Failed
 Options:
-- `"TraceWid" -> None` (wid 文字列。指定で Tooltip モード。netOrWid が文字列ならその wid を自動採用)
-- 加えて `Options[Graph]` 全部 (VertexLayout 等もそのまま受け取る)
+- "TraceWid" -> None (workflow id 文字列。None ならツールチップなし)
+- Options[Graph] の全オプション (VertexLayout 等もそのまま透過)
 
-netOrWid: net Association (`"Places"` キーを持つ) または wid 文字列 (`ClaudeOrchestrator\`Workflow\`Private\`$iWorkflowNets[wid]` から解決)。wid からの解決に失敗すると赤メッセージを Print し `$Failed`。
-
-頂点形状: Place → `"Circle"`, Transition → `"Square"` (`"Rectangle"` は未定義のため不可)。色: Source = Yellow, Final = Green, Place = Blue, Transition = Red。
-例: `plotPetriNetDetail[wid, VertexLayout -> "LayeredDigraphEmbedding"]`
+例: `plotPetriNetDetail[wid]` / `plotPetriNetDetail[net, "TraceWid" -> wid, VertexLayout -> "LayeredDigraphEmbedding"]`
 
 ### checkPetriNetVertices[net_Association] → Association
-net の頂点整合性を診断する。返却 Association のキー:
-- `"DeclaredVertices"` — Places ∪ Transitions
-- `"VerticesFromEdges"` — iObsExtractEdges から導出される頂点集合
-- `"IsolatedDeclaredVertices"` — 宣言だけで辺を持たない頂点 (例: `"Failed"` Final Place)
-- `"UnknownVerticesInEdges"` — 辺に現れるが宣言が無い頂点
+net の頂点整合性を診断する。
+→ <|"DeclaredVertices" -> {...}, "VerticesFromEdges" -> {...}, "IsolatedDeclaredVertices" -> {...}, "UnknownVerticesInEdges" -> {...}|>
+IsolatedDeclaredVertices が非空なら Graph[edges,...] 1 引数形式では描画落ちする可能性、UnknownVerticesInEdges が非空なら handler / iExtractEdges 側のバグ可能性を示す。
 
 ### checkPetriNetVertices[wid_String] → Association | $Failed
-wid から net を解決して同じ診断を返す。解決失敗で `$Failed`。
+wid から net を解決して同上の診断を返す。解決失敗時は Print して $Failed。
 
 ### checkPetriNetVertices[_] → $Failed
-それ以外はフォールバック。
+それ以外は $Failed。
 
 ## Transition 追跡
 
 ### traceTransitions[wid_String, opts]
-`ClaudeWorkflowTrace[wid]` の TransitionFired / TransitionFailed イベントを基底に、`$ObservedHandlerLog` から handler 詳細を、`$LLMCallLog` から LLM 呼び出し詳細を結合した Dataset を返す。firing trace も `$ObservedHandlerLog` も空なら警告して `Dataset[{}]`。firing trace が空でも `$ObservedHandlerLog` があれば handler log から組む。
+wid の TransitionFired / TransitionFailed event を ClaudeWorkflowTrace から取得し、$ObservedHandlerLog の handler 詳細・$LLMCallLog の LLM 呼び出し詳細を結合した Dataset を返す。Status カラムは観測ログ優先で判定し、本体 ExecutorStatus を盲信しない。
 → Dataset
-列 (デフォルト): `Step`, `Transition`, `Status`, `Attempt`, `OutputAssoc?`, `OutputHead`, `RawKeys`, `PayloadKeys`, `PayloadKeyMissing`, `FailedHead`, `Messages`, `ConsumedIds`, `ProducedIds`
-"Detail" -> True で各 firing に対応する LLM 呼び出し (Model / Prompt 抜粋 / Response 抜粋 / Duration) を統合した拡張 Dataset。
 Options:
-- `"Detail" -> False` (LLM 呼び出し詳細列を追加するか)
-- `"PromptPreviewLen" -> 200` (Detail モードでの Prompt 抜粋長)
-- `"ResponsePreviewLen" -> 200` (Detail モードでの Response 抜粋長)
-- `"TimeMatchTolerance" -> 60.0` (firing と LLM call の時刻マッチ許容秒)
+- "Detail" -> False (True で LLM 呼び出しの Model / Prompt 抜粋 / Response 抜粋 / Duration / Attempt を統合した拡張 Dataset を返す)
+- "PromptPreviewLen" -> 200 (Detail モードでの Prompt 抜粋長)
+- "ResponsePreviewLen" -> 200 (Detail モードでの Response 抜粋長)
+- "TimeMatchTolerance" -> 60.0 (firing と LLM call の時刻マッチ許容秒数)
 
-Status カラムの取り得る値 (本体 ExecutorStatus を盲信せず観測ログ優先で判定):
-- `"OK"` — 正常完了
-- `"Failed ($Failed)"` — handler が $Failed を返した
-- `"Errored (N msg)"` — $MessageList に N 件メッセージ
-- `"BadOutput (<Head>)"` — Association 以外が返った
-- `"AwaitingLLM"` — Z 案 (handler が `<|Status -> "AwaitingLLM"|>` を同期 return)
-- `"Skip"` — handler が `<|Status -> "Skip"|>` を返した
-- `"NoPayload"` — Association だが `"Payload"` キー無し
-- `"LLMError (M/N)"` — LLM 呼び出し M 件が API エラー応答 (handler は graceful 通過)
-- `"<ExecutorStatus>"` — 観測ログが無い場合のフォールバック
+Status が取りうる値:
+- "OK" 正常完了
+- "Failed ($Failed)" handler が $Failed を返した
+- "Errored (N msg)" $MessageList に N 件メッセージ
+- "BadOutput (Head)" Association 以外が返った
+- "AwaitingLLM" handler が <|Status -> "AwaitingLLM"|> を返した (Z 案: 非同期 LLM 待ち)
+- "Skip" handler が <|Status -> "Skip"|> を返した
+- "NoPayload" Association だが "Payload" キーなし
+- "LLMError (M/N)" N 件の LLM 呼び出しのうち M 件が API エラー応答
+- "<ExecutorStatus>" 観測ログが無い場合のフォールバック
 
-判定優先順 (iObsDeriveStatus 内): FailedHead → Messages → BadOutput → OutputStatus (AwaitingLLM / Skip) → PayloadKeyMissing → LLMError → OK。
+例: `traceTransitions[wid, "Detail" -> True]`
 
-## LLM 応答エラーパターン判定 (内部だが挙動把握用)
+## 内部 API (補助)
 
-iObsLLMErrorPatternQ が true 判定する応答パターン:
-- `"Error:"` で始まる
-- `"[ClaudeQuery error"` / `"[Error]"` / `"[ClaudeQueryBg error"` で始まる
-- `"$Failed"` で始まる
-- 正規表現 `(?is)^\s*\{[^}]*"error"[^}]*\}.*` にマッチ (JSON エラー応答)
-- 長さ < 120 で `"error"` (IgnoreCase) を含む
+### iProviderDisplayName[id_String] → String
+provider id ("chatgptcodex", "ChatGPTCodexCLI", "claude" 等) を UI 表示名 ("ChatGPT Codex", "Claude", "LM Studio", "OpenAI", "Unknown") に正規化。未知 id はそのまま返す。
 
-## 内部シンボル (ClearAll で宣言、参考)
+### iProviderDisplayName[___] → "Unknown"
+非文字列 fallback。
 
-`iObsExtractEdges`, `iObsMakeHandlerWrapper`, `iObsHandlerTraceFor`, `iObsLLMCallsFor`, `iObsLLMCallsForFiring`, `iObsLLMErrorPatternQ`, `iObsMkPlaceTooltip`, `iObsMkTransitionTooltip`, `iObsMkEdgeTooltip`, `iObsResolveNet`, `iObsObservedFor`, `iObsDeriveStatus`
+### iObsExtractEdges[net_Association] → List of Rule
+net の Transitions から InputArcs / OutputArcs を走査し、place -> transition / transition -> place の Rule リストを返す。
 
-## 典型ワークフロー
+### iObsResolveNet[netOrWid] → net | $Failed
+Association ならそのまま、String なら ClaudeOrchestrator\`Workflow\`Private\`$iWorkflowNets から検索。失敗時 $Failed。
 
-1. `net2 = instrumentNetForObservation[net]` で handler ラップ
-2. handler 内コードを生成する場合は `code2 = withLLMLogging[code]` で logger に差し替え
-3. `ClaudeRunWorkflow[net2, ...]` 等で実行 (本パッケージは workflow 実行 API は持たない)
-4. `traceTransitions[wid, "Detail" -> True]` で結果確認
-5. `plotPetriNetDetail[wid]` で Tooltip 付き可視化
-6. 描画が崩れたら `checkPetriNetVertices[wid]` で頂点整合性を診断
+### iObsHandlerTraceFor[transName_String] → List
+$ObservedHandlerLog と ClaudeOrchestrator\`Workflow\`Private\`$iHandlerTraceLog から transName 一致分を連結して返す。
+
+### iObsLLMCallsFor[transName_String] → List
+$LLMCallLog から TransitionName == transName のエントリを返す。
+
+### iObsLLMCallsForFiring[transName_String, refTime_, tol_:60.0] → List
+$LLMCallLog から transition 名一致 + refTime が NumericQ なら ±tol 秒以内のものを返す。
+
+### iObsMkPlaceTooltip[wid_String, place_String] → Column
+place の現トークン (getTokensInPlace) を Tooltip 用 Column として整形。
+
+### iObsMkTransitionTooltip[wid_String, trans_String] → Column
+transition の handler trace と LLM 呼び出し詳細を Tooltip 用 Column として整形。
+
+### iObsMkEdgeTooltip[wid, src, dst, kind, placesList, transitionsList] → Column
+edge の firing event (TransitionFired / TransitionFailed) ConsumedIds / ProducedIds を Tooltip 用 Column として整形。kind は "InputArc" | "OutputArc"。
+
+### iObsMakeHandlerWrapper[handler, tname_String] → Function
+handler を観測ラップする Function を返す。Block[{$CurrentObservedTransition = tname, $MessageList = {}}, ...] 内で Quiet[handler[binding]] を呼び、$ObservedHandlerLog にエントリを追記して output を返す。handlerHead で Identity / Function / Symbol / その他を分岐する。
+
+### iObsObservedFor[transName_String, ts_, alreadyTaken_List] → Association
+$ObservedHandlerLog から transName 一致かつ Index が alreadyTaken に無いものを抽出し、ts が NumericQ なら時刻最近接、それ以外は先頭を選ぶ。
+
+### iObsLLMErrorPatternQ[response_] → Bool
+LLM 応答が API エラーパターン ("Error:", "[ClaudeQuery error", "[Error]", "[ClaudeQueryBg error", "$Failed", JSON `{"error":...}`, 短文中の "error" 単語) に該当するかを判定する。
+
+### iObsDeriveStatus[execStatus_, obs_, llmCalls_:{}] → String
+本体 ExecutorStatus を盲信せず、handler 観測ログ obs と LLM 呼び出し llmCalls から Status 文字列を導出する。優先順位: FailedHead > Messages 数 > OutputAssocQ 否定 > OutputStatus=="AwaitingLLM" > OutputStatus=="Skip" > PayloadKeyMissing > LLM エラー数 > "OK"。obs が空なら LLMError 判定のみ後 execStatus 文字列化を返す。

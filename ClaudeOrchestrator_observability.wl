@@ -198,10 +198,12 @@ ClearAll[
   iObsMkEdgeTooltip,
   iObsResolveNet,
   iObsObservedFor,
-  iObsDeriveStatus
+  iObsDeriveStatus,
+  (* Phase 5 (2026-05-26): provider provenance display *)
+  iProviderDisplayName
 ];
 
-$petriObservabilityVersion = "0.2.1 (2026-05-17)";
+$petriObservabilityVersion = "0.3.0 (2026-05-26)";
 
 (* \:65e2\:5b58\:30ed\:30b0\:3092\:6e29\:5b58\:3059\:308b\:305f\:3081\:3001\:672a\:5b9a\:7fa9\:306e\:3068\:304d\:3060\:3051\:521d\:671f\:5316 *)
 If[!ListQ[$LLMCallLog],         $LLMCallLog = {}];
@@ -228,8 +230,30 @@ ClaudeQueryBgLogged::usage =
   " \:547c\:3073\:51fa\:3057\:4e2d\:306b $CurrentObservedTransition \:304c\:675f\:7e1b\:3055\:308c\:3066\:3044\:308c\:3070\:3001\:305d\:306e transition \:540d\:3082\:8a18\:9332\:3059\:308b\:3002" <>
   " ClaudeQueryBg \:672c\:4f53\:306f\:5909\:66f4\:3057\:306a\:3044\:306e\:3067\:3001Options / Protect / Context \:306e\:6574\:5408\:306f\:58ca\:308c\:306a\:3044\:3002";
 
+(* ------------------------------------------------------------------
+   Phase 5 (2026-05-26, spec 13.2): provider identifier -> UI display
+   name. Accepts the internal provider id ("chatgptcodex"), the
+   ProviderKind from a ProviderResultMetadata association
+   ("ChatGPTCodexCLI") or a human label, and normalizes to a stable
+   display string. Unknown ids pass through unchanged.
+   ------------------------------------------------------------------ *)
+iProviderDisplayName[id_String] :=
+  Module[{p},
+    p = ToLowerCase @ StringTrim @ id;
+    Which[
+      MemberQ[{"chatgptcodex", "chatgptcodexcli", "chatgpt-codex",
+        "codex", "chatgpt codex"}, p], "ChatGPT Codex",
+      MemberQ[{"anthropic", "claude", "claude-cli", "claudecli"}, p],
+        "Claude",
+      MemberQ[{"lmstudio", "lm studio", "lm-studio"}, p], "LM Studio",
+      MemberQ[{"openai", "open-ai"}, p], "OpenAI",
+      MemberQ[{"generic", "unknown", ""}, p], "Unknown",
+      True, id]];
+iProviderDisplayName[___] := "Unknown";
+
 ClaudeQueryBgLogged[prompt_, opts:OptionsPattern[]] :=
-  Module[{t0, t1, response, transName, optAssoc, model, fallback, entry},
+  Module[{t0, t1, response, transName, optAssoc, model, fallback,
+          entry, prm, providerKind},
     t0 = AbsoluteTime[];
     transName = If[StringQ[$CurrentObservedTransition],
       $CurrentObservedTransition, "?"];
@@ -240,6 +264,20 @@ ClaudeQueryBgLogged[prompt_, opts:OptionsPattern[]] :=
 
     response = ClaudeCode`ClaudeQueryBg[prompt, opts];
     t1 = AbsoluteTime[];
+
+    (* Phase 5 (spec 13.2): if the response carries a Codex /
+       provider ProviderResultMetadata association, lift its
+       provenance keys into the trace entry. ClaudeQueryBg may return
+       a bare string (no metadata) or an association. *)
+    prm = If[AssociationQ[response],
+      Lookup[response, "ProviderResultMetadata", <||>], <||>];
+    If[!AssociationQ[prm], prm = <||>];
+    providerKind = Lookup[prm, "ProviderKind",
+      Which[
+        StringQ[model], iProviderDisplayName[model],
+        ListQ[model] && Length[model] >= 1 && StringQ[model[[1]]],
+          model[[1]],
+        True, "Unknown"]];
 
     entry = <|
       "Index"          -> Length[$LLMCallLog] + 1,
@@ -253,7 +291,18 @@ ClaudeQueryBgLogged[prompt_, opts:OptionsPattern[]] :=
       "PromptLen"      -> StringLength[ToString[prompt]],
       "Response"       -> response,
       "ResponseLen"    -> StringLength[ToString[response]],
-      "OptionList"     -> {opts}
+      "OptionList"     -> {opts},
+      (* Phase 5 (2026-05-26, spec 13.2): provider provenance *)
+      "ProviderKind"           -> providerKind,
+      "ProviderDisplayName"    -> iProviderDisplayName[
+        ToString[providerKind]],
+      "HarnessBundleId"        -> Lookup[prm, "HarnessBundleId",
+        Missing["NotApplicable"]],
+      "DirectiveSnapshotId"    -> Lookup[prm, "DirectiveSnapshotId",
+        Missing["NotApplicable"]],
+      "RuntimeEnvironmentHash" -> Lookup[prm, "RuntimeEnvironmentHash",
+        Missing["NotApplicable"]],
+      "ProviderResultMetadata" -> prm
     |>;
     AppendTo[$LLMCallLog, entry];
     response
@@ -271,6 +320,7 @@ showLLMCallLog[] :=
           <|"#"           -> Lookup[c, "Index", "?"],
             "Time"        -> Lookup[c, "TimeStr", "?"],
             "Trans"       -> Lookup[c, "TransitionName", "?"],
+            "Provider"    -> Lookup[c, "ProviderDisplayName", "?"],
             "Model"       -> ToString[Lookup[c, "Model", "?"]],
             "PromptLen"   -> Lookup[c, "PromptLen", 0],
             "ResponseLen" -> Lookup[c, "ResponseLen", 0],
@@ -291,12 +341,26 @@ showLLMCallLog[idx_Integer] :=
             Bold, Darker[Blue]],
       Row[{Style["Time:        ", Bold], Lookup[entry, "TimeStr", "?"]}],
       Row[{Style["Transition:  ", Bold], Lookup[entry, "TransitionName", "?"]}],
+      Row[{Style["Provider:    ", Bold],
+        ToString[Lookup[entry, "ProviderDisplayName", "?"]]}],
       Row[{Style["Model:       ", Bold], ToString[Lookup[entry, "Model", "?"]]}],
       Row[{Style["Fallback:    ", Bold], ToString[Lookup[entry, "Fallback", False]]}],
       Row[{Style["Duration:    ", Bold],
         ToString[Round[Lookup[entry, "Duration", 0.0], 0.001]] <> " s"}],
       Row[{Style["PromptLen:   ", Bold], ToString[Lookup[entry, "PromptLen", 0]]}],
       Row[{Style["ResponseLen: ", Bold], ToString[Lookup[entry, "ResponseLen", 0]]}],
+      Sequence @@ If[
+        MatchQ[Lookup[entry, "HarnessBundleId", Missing[]],
+          _Missing | Missing] &&
+        MatchQ[Lookup[entry, "DirectiveSnapshotId", Missing[]],
+          _Missing | Missing],
+        {},
+        {Row[{Style["HarnessBundle:    ", Bold],
+            ToString[Lookup[entry, "HarnessBundleId", "?"]]}],
+         Row[{Style["DirectiveSnapshot:", Bold], " ",
+            ToString[Lookup[entry, "DirectiveSnapshotId", "?"]]}],
+         Row[{Style["RuntimeEnvHash:   ", Bold],
+            ToString[Lookup[entry, "RuntimeEnvironmentHash", "?"]]}]}],
       "",
       Style["--- Prompt ---", Bold, Darker[Green]],
       Pane[Lookup[entry, "Prompt", ""], {640, 220},

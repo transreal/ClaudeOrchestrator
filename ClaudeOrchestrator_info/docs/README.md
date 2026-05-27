@@ -160,6 +160,16 @@ WorkflowRouteDraft (Status: NeedsApproval)
 - **構造診断** — `checkPetriNetVertices[net]` は宣言頂点と辺集合の整合性を検査し、`IsolatedDeclaredVertices`(宣言だけで辺なし)と `UnknownVerticesInEdges`(辺だけで宣言なし)を返します。
 - **Transition 追跡** — `traceTransitions[wid]` は `ClaudeWorkflowTrace` の firing event と `$ObservedHandlerLog` / `$LLMCallLog` を結合した Dataset を返し、`"Detail" -> True` で Prompt / Response 抜粋付きにも切り替えられます。
 
+#### ChatGPT Codex 対応(2026-05-26 以降)
+
+`ClaudeOrchestrator_observability.wl` は、Claude 以外のプロバイダ呼び出しもログ上で識別できるよう拡張されています。
+
+- **プロバイダ表示名の正規化** — 内部ヘルパ `iProviderDisplayName` が `"chatgptcodex"` / `"ChatGPTCodexCLI"` といった provider id を `"ChatGPT Codex"` に正規化します。`"claude"` / `"openai"` / `"lmstudio"` などの主要プロバイダも統一的に表示名へ変換され、未知 id は素通しされます。
+- **provenance キーの自動取り込み** — `ClaudeQueryBgLogged` は応答が `ProviderResultMetadata` を持つ Association の場合、`ProviderKind`・`ProviderDisplayName`・`HarnessBundleId`・`DirectiveSnapshotId`・`RuntimeEnvironmentHash` などを `$LLMCallLog` の各エントリに lift します。これにより Codex 経由の呼び出しと Claude 経由の呼び出しを区別したまま保存できます。
+- **ログ表示の更新** — `showLLMCallLog[]` の Dataset には `Provider` カラムが追加され、`showLLMCallLog[idx]` の詳細表示でも `Provider` / `HarnessBundle` / `DirectiveSnapshot` / `RuntimeEnvHash` が Missing 以外のときに表示されます。`traceTransitions` の Detail モードもこの情報を反映します。
+
+これにより、ChatGPT Codex を含む複数プロバイダを混在運用しても、どの transition がどのプロバイダ・どのハーネスバンドルで実行されたかを単一のログから追跡できます。
+
 #### 観測モジュールの最小コード例
 
 ```wolfram
@@ -173,7 +183,7 @@ ClaudeRunWorkflow[wid];
 
 traceTransitions[wid]                     (* firing 一覧 (Dataset) *)
 traceTransitions[wid, "Detail" -> True]   (* + Prompt / Response 抜粋 *)
-showLLMCallLog[]                          (* LLM 呼出一覧 *)
+showLLMCallLog[]                          (* LLM 呼出一覧 (Provider カラム付) *)
 showLLMCallLog[1]                         (* 1 件の Prompt / Response 全文 *)
 plotPetriNetDetail[wid]                   (* Tooltip 付き Graph *)
 ```
@@ -216,7 +226,7 @@ ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator を�
 - `claudecode_commit_safety` — コミット前後の整合性チェック
 - `claudecode_a4_stub` → `ClaudeOrchestratorA4` — A4 フェーズ用フック群
 - `ClaudeOrchestrator\`Workflow\`` — 真の multi-token Petri net engine (`ClaudeOrchestrator_workflow.wl`)
-- 観測サブモジュール — `ClaudeQueryBgLogged` / `instrumentNetForObservation` / `plotPetriNetDetail` / `checkPetriNetVertices` / `traceTransitions` / `showLLMCallLog` / `withLLMLogging` ほか (`ClaudeOrchestrator_observability.wl`、2026-05-15 から自動ロード)
+- 観測サブモジュール — `ClaudeQueryBgLogged` / `instrumentNetForObservation` / `plotPetriNetDetail` / `checkPetriNetVertices` / `traceTransitions` / `showLLMCallLog` / `withLLMLogging` ほか (`ClaudeOrchestrator_observability.wl`、2026-05-15 から自動ロード。2026-05-26 から ChatGPT Codex を含む複数プロバイダの provenance 記録に対応)
 - PromptWorkflow 拡張 — `ClaudeWorkflowRouteFromPrompt` / `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` ほか、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 (`ClaudeOrchestrator_promptworkflow.wl`)
 
 自動ロードはファイル単位の存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。観測モジュールは `BeginPackage` を持たない読み込み型ファイルなので、`$petriObservabilityVersion` の `ValueQ` で初期化済みかを判定しています。
@@ -228,6 +238,8 @@ ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator を�
 ### Real LLM 統合
 
 `$ClaudeOrchestratorRealLLMEndpoint` を `"ClaudeCode"`（ClaudeCode パッケージ経由）・`"CLI"`（claude CLI を RunProcess で呼ぶ）・カスタム関数のいずれかに設定することで、実際の LLM をプランナーとして利用できます。デフォルト（`None`）はモックのみで動作するため、CI 環境でも安全に使用できます。Windows 環境では `claude.cmd` を自動検出し、UTF-8 の文字化けを防ぐためにファイル経由の stdout 取得方式（`chcp 65001` + リダイレクト）を採用しています。
+
+ChatGPT Codex など Claude 以外のプロバイダで実行された呼び出しも、Observability サブモジュールの `$LLMCallLog` に `ProviderKind` / `ProviderDisplayName` 付きで保存されるため、混在運用時のトレースが容易です。
 
 ---
 
@@ -437,12 +449,12 @@ ClaudeOrchestrationResult[jobId][["Status"]]
 
 #### 観測 (Observability) 拡張
 
-- **`ClaudeQueryBgLogged[prompt, opts]`** — `ClaudeQueryBg` を呼びつつ Prompt / Response / Model / Duration を `$LLMCallLog` に記録します。`showLLMCallLog[]` / `clearLLMCallLog[]` で参照・リセット可能。
+- **`ClaudeQueryBgLogged[prompt, opts]`** — `ClaudeQueryBg` を呼びつつ Prompt / Response / Model / Duration を `$LLMCallLog` に記録します。`showLLMCallLog[]` / `clearLLMCallLog[]` で参照・リセット可能。応答が `ProviderResultMetadata` を持つ場合は `ProviderKind` / `ProviderDisplayName` / `HarnessBundleId` / `DirectiveSnapshotId` / `RuntimeEnvironmentHash` も lift し、ChatGPT Codex を含む複数プロバイダの provenance を記録します。
 - **`instrumentNetForObservation[net]`** — WorkflowNet の全 transition Handler を観測ラッパで包み、binding / OutputPayload / $MessageList を `$ObservedHandlerLog` に追記します。
 - **`withLLMLogging[code]`** — 文字列コード中の `ClaudeQueryBg` 呼び出しを `ClaudeQueryBgLogged` に書き換える logger 注入ヘルパ。
 - **`plotPetriNetDetail[widOrNet, opts]`** — トークン内容・handler binding・LLM Prompt/Response の Tooltip 付きで描画する Graph を返します。
 - **`checkPetriNetVertices[netOrWid]`** — 宣言頂点と辺集合の整合性を検査します。
-- **`traceTransitions[wid, opts]`** — firing event と handler / LLM ログを結合した Dataset を返します。`"Detail" -> True` で Prompt / Response 抜粋付き拡張モード。
+- **`traceTransitions[wid, opts]`** — firing event と handler / LLM ログを結合した Dataset を返します。`"Detail" -> True` で Prompt / Response 抜粋付き拡張モード。プロバイダ識別情報も保持されます。
 
 #### PromptWorkflow 拡張
 
@@ -482,9 +494,9 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 - **`$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers`** — Auto ゲート分岐に使うキーワードリスト群
 - **`$WorkflowVersion`** — Workflow サブモジュールのバージョン
 - **`$ClaudeWorkflowSnapshotDir`** — `ClaudeSnapshotWorkflow` の既定保存先
-- **`$petriObservabilityVersion`** — 観測サブモジュールのバージョン
+- **`$petriObservabilityVersion`** — 観測サブモジュールのバージョン(ChatGPT Codex 対応版は `"0.3.0 (2026-05-26)"` 以降)
 - **`$ClaudePromptWorkflowVersion`** — PromptWorkflow 拡張のバージョン
-- **`$LLMCallLog` / `$ObservedHandlerLog` / `$CurrentObservedTransition`** — 観測モジュールが追記するログ群
+- **`$LLMCallLog` / `$ObservedHandlerLog` / `$CurrentObservedTransition`** — 観測モジュールが追記するログ群(`$LLMCallLog` は `ProviderKind` / `ProviderDisplayName` などのプロバイダ情報も含む)
 - **`$ClaudeSlidesTemplatePath`** — スライド生成時の StyleDefinitions テンプレートパス
 
 ---
@@ -495,7 +507,7 @@ ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書
 |----------|------|
 | `api.md` | API リファレンス（全関数・データ型・グローバル変数の仕様） |
 | `api_workflow.md` | ペトリネット (Workflow) サブモジュールの API リファレンス |
-| `api_observability.md` | 観測 (Observability) サブモジュールの API リファレンス |
+| `api_observability.md` | 観測 (Observability) サブモジュールの API リファレンス(ChatGPT Codex 対応の provenance フィールドを含む) |
 | `api_promptworkflow.md` | PromptWorkflow 拡張の API リファレンス |
 | `user_manual.md` | ユーザーマニュアル（各フェーズ・ClaudeEval 非同期化・ペトリネット拡張の詳細な使い方） |
 | `setup.md` | インストール手順書（動作要件・環境構築・トラブルシューティング） |
@@ -658,11 +670,33 @@ traceTransitions[widObs, "Detail" -> True]
 (* Tooltip 付きグラフ *)
 plotPetriNetDetail[widObs, VertexLayout -> "LayeredDigraphEmbedding"]
 
-(* LLM 呼び出しログの確認 *)
+(* LLM 呼び出しログの確認(Provider カラム付き) *)
 showLLMCallLog[]
 ```
 
-### 例 8: Real LLM 統合の診断
+### 例 8: ChatGPT Codex を含む複数プロバイダの混在トレース
+
+`ClaudeOrchestrator_observability.wl` (2026-05-26 以降) は、応答に `ProviderResultMetadata` が含まれていれば自動的に provenance キーを `$LLMCallLog` に保存します。Codex 経由の呼び出しと Claude 経由の呼び出しを同じログから区別できます。
+
+```mathematica
+(* 観測ラッパ付きで workflow を実行(handler 内で複数プロバイダを呼ぶ前提) *)
+clearLLMCallLog[];
+clearObservedHandlerLog[];
+
+netObs = instrumentNetForObservation[net];
+widObs = ClaudeCreateWorkflowNet[netObs];
+ClaudeSubmitToken[widObs, WorkflowToken[]];
+ClaudeRunWorkflow[widObs];
+
+(* Provider カラムでフィルタ *)
+showLLMCallLog[]
+(* "ChatGPT Codex" / "Claude" / "LM Studio" 等が表示される *)
+
+(* 個別 entry を詳細表示すると Provider / HarnessBundle / DirectiveSnapshot / RuntimeEnvHash も確認可能 *)
+showLLMCallLog[1]
+```
+
+### 例 9: Real LLM 統合の診断
 
 ```mathematica
 $ClaudeOrchestratorRealLLMEndpoint = "CLI";
@@ -674,7 +708,7 @@ diag[["ExitCode"]]
 (* 0 *)
 ```
 
-### 例 9: ジョブ一覧と中断
+### 例 10: ジョブ一覧と中断
 
 ```mathematica
 ClaudeOrchestrationJobs[]
