@@ -4,7 +4,7 @@ Mathematica / Wolfram Language 向けマルチエージェント・オーケス�
 
 ## 設計思想と実装の概要
 
-ClaudeOrchestrator は、[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位レイヤーとして動作するマルチエージェント分解・並列ワーカー配車・アーティファクト収集・統合・コミット機構です。タスク分解の結果を **ペトリネット (Workflow Net)** として表現・実行する真の multi-token workflow エンジンが統合されており、自然文プロンプトから直接ペトリネットを構築して可視化・追跡できる拡張も同梱されています。さらに、`ClaudeEval` の複雑なプロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張を備えます。
+ClaudeOrchestrator は、[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位レイヤーとして動作するマルチエージェント分解・並列ワーカー配車・アーティファクト収集・統合・コミット機構です。タスク分解の結果を **ペトリネット (Workflow Net)** として表現・実行する真の multi-token workflow エンジンと、その実行を観測するモジュール、さらに `ClaudeEval` の複雑なプロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張を統合しています。
 
 ### なぜこの設計が必要か
 
@@ -35,10 +35,11 @@ claudecode_base
   ↑
 ClaudeRuntime              ← 単一エージェント実行核
   ↑
-ClaudeOrchestrator         ← 本パッケージ (ペトリネット拡張を統合)
-  ├─ Workflow サブモジュール       (真の multi-token Petri net エンジン)
-  ├─ Observability サブモジュール  (LLM 呼び出し / Handler 観測 / Tooltip 可視化)
-  └─ docs/examples/petri_from_prompt.wl  (自然文 → ペトリネット → 実行のサンプル)
+ClaudeOrchestrator         ← 本パッケージ (Workflow / Observability / PromptWorkflow を統合)
+  ├─ ClaudeOrchestrator_workflow.wl        (真の multi-token Petri net エンジン)
+  ├─ ClaudeOrchestrator_observability.wl   (LLM 呼び出し / Handler 観測 / Tooltip 可視化)
+  ├─ ClaudeOrchestrator_promptworkflow.wl  (ClaudeEval 複雑プロンプトの WorkflowNet 化)
+  └─ docs/examples/petri_from_prompt.wl    (自然文 → ペトリネット → 実行のサンプル)
   ↑
 claudecode
 ```
@@ -55,25 +56,25 @@ claudecode
 
 **Commit フェーズ** では、`ClaudeCommitArtifacts` が single committer runtime を起動し、`ReducedArtifact` をターゲットノートブックに反映します。スライド生成が検出された場合、ユーザーの作業ノートブックを保護するために `CreateDocument` で新規ノートブックを自動生成してコミット先とします。
 
-### ペトリネット拡張
+### ペトリネット拡張 (Workflow)
 
 **真の multi-token Petri net (MTP) workflow engine** が `ClaudeOrchestrator\`Workflow\`` 名前空間として統合されています。これにより、DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** の Petri net 用語のまま記述・実行できます。
 
-`ClaudeOrchestrator.wl` をロードすると、**Workflow エンジン (`ClaudeOrchestrator_workflow.wl`) と Observability サブモジュール (`ClaudeOrchestrator_observability.wl`) は自動的に取り込まれます**(2026-05-15 以降)。さらに参考実装として `docs/examples/petri_from_prompt.wl` が付属しており、自然言語の目標から LLM にネット仕様を生成させることができます。こちらは example 段階のサンプル兼ライブラリなので、本体には統合されておらず別途 `Get` する必要があります。
-
-中核となる「自然言語で書いた目標 → LLM がペトリネット仕様を生成 → 実行 → 観測 → トレース」という一連の流れで、3 つのモジュールがどう役割分担するかを表すと:
+`ClaudeOrchestrator.wl` をロードすると、**Workflow エンジン (`ClaudeOrchestrator_workflow.wl`)・Observability (`ClaudeOrchestrator_observability.wl`)・PromptWorkflow (`ClaudeOrchestrator_promptworkflow.wl`) の 3 サブモジュールはすべて自動的に取り込まれます**。中核となる「自然言語で書いた目標 → LLM がペトリネット仕様を生成 → 実行 → 観測 → トレース」という一連の流れは、サンプルライブラリ `docs/examples/petri_from_prompt.wl` を `Get` することで体験できます。
 
 ```
 自然文 goal
    ↓ proposePetriNet         (petri_from_prompt.wl: LLM にコード生成させる)
 proposal["Code"]              (Wolfram コード文字列)
-   ↓ parsePetriCode           (ToExpression して net Association を取り出す)
+   ↓ ClaudeApplyProposal      (workflow: proposal を評価して builder 関数を定義)
+   ↓ または parsePetriCode    (petri_from_prompt.wl: net Association を取り出す)
 net                           (Places / Transitions / InitialMarking を持つ Association)
    ↓ instrumentNetForObservation   (observability: handler を観測ラッパで包む)
 observedNet
-   ↓ ClaudeCreateWorkflowNet  (Workflow: WorkflowId を発行・登録)
+   ↓ ClaudeCreateWorkflowNet  (workflow: WorkflowId を発行・登録)
 wid                           (文字列。以降の API はすべて wid に対して呼ぶ)
-   ↓ ClaudeSubmitToken        (SourcePlace に初期 token を投入)
+   ↓ ClaudeSubmitToken / ClaudeBindAndSubmit / ClaudeSubmitInputs
+                              (SourcePlace に初期 token を投入)
    ↓ ClaudeRunWorkflow        (sink 到達 / MaxSteps まで実行。Async 切替可)
    ↓ traceTransitions / showLLMCallLog / plotPetriNetDetail
                               (observability: 結果と挙動を確認)
@@ -82,31 +83,36 @@ wid                           (文字列。以降の API はすべて wid に対
 主要な API は以下のとおりです。
 
 - **WorkflowNet 構築** — `WorkflowToken`・`WorkflowPlace`・`WorkflowTransition`・`WorkflowNet` で immutable な net 仕様を組み立て、`ClaudeCreateWorkflowNet` で WorkflowId を発行・登録します。
-- **トークン投入と Fire 制御** — `ClaudeSubmitToken` で SourcePlace あるいは任意の place にトークンを投入し、`ClaudeEnabledTransitions` で fire 可能な (transition, binding) を確認、`ClaudeFireTransition` / `ClaudeStepWorkflow` で一歩ずつ進行できます。
+- **トークン投入と Fire 制御** — `ClaudeSubmitToken` で SourcePlace あるいは任意の place にトークンを投入し、糖衣関数 `ClaudeSubmitInputs` / `ClaudeBindAndSubmit` でも Payload Association を簡単に作れます。`ClaudeEnabledTransitions` で fire 可能な (transition, binding) を確認、`ClaudeFireTransition` / `ClaudeStepWorkflow` で一歩ずつ進行できます。
+- **Proposal 適用** — `ClaudeApplyProposal` は `proposePetriNet` の戻り値 (proposal) の `"Code"` を評価して `"BuilderName"` の builder 関数を定義します。`builder[]` を呼ぶことで `WorkflowNet[...]` Association が得られます。
 - **同期 / 非同期実行** — `ClaudeRunWorkflow` は sink 到達 / enabled 空 / MaxSteps 到達まで反復実行し、`"Async" -> True` で `ClaudeCode` の polling task に寄生して非同期実行も可能です。`ClaudeWaitWorkflow` / `ClaudeAsyncJobInfo` / `ClaudeCleanupAsyncJob` で async ジョブを管理できます。
 - **状態参照とトレース** — `ClaudeWorkflowStatus`・`ClaudeWorkflowList`・`ClaudeWorkflowState`・`ClaudeWorkflowTrace` で marking・トークン payload・event 履歴を任意の時点で取得できます。
 - **ライフサイクル制御** — `ClaudePauseWorkflow` / `ClaudeResumeWorkflow` / `ClaudeCancelWorkflow` で一時停止・再開・中止を制御できます。
 - **Completion Hook** — `ClaudeRegisterCompletionHook` / `ClaudeUnregisterCompletionHooks` で workflow 完了時のコールバックを登録できます。同一 wid に複数登録可、登録順に一回限り発火します。
+- **AwaitingLLM コールバック** — `ClaudeCompleteHandlerOutput` で `AwaitingLLM` 状態の transition に非同期 LLM 応答を流し込めます。
 - **Snapshot / Restore** — `ClaudeSnapshotWorkflow` で WorkflowNet を FormatVersion 2 のディレクトリ（meta / workflow / llmgraph / aux）として保存し、`ClaudeRestoreWorkflow` で再構築できます。
 
 #### ペトリネット拡張の最小コード例
 
 ```wolfram
-(* ロード: ClaudeOrchestrator.wl 本体 + サンプル petri_from_prompt.wl *)
+(* ロード: ClaudeOrchestrator.wl 本体だけで Workflow / Observability /
+   PromptWorkflow の 3 サブモジュールがすべて自動ロードされる *)
 Block[{$CharacterEncoding = "UTF-8"},
   Get[FileNameJoin[{$packageDirectory, "ClaudeOrchestrator.wl"}]]];
+
+(* 自然文プロンプトからのサンプル例を試す場合のみ追加で Get する *)
 Get[FileNameJoin[{$packageDirectory, "ClaudeOrchestrator_info",
   "docs", "examples", "petri_from_prompt.wl"}]];
 
-goal = "3 方式 (Monte Carlo / Leibniz / Wallis) で π を計算して比較する";
+goal     = "3 方式 (Monte Carlo / Leibniz / Wallis) で π を計算して比較する";
 proposal = proposePetriNet[goal];          (* LLM が WorkflowNet コードを生成 *)
-net      = parsePetriCode[proposal["Code"]]; (* Wolfram コードを評価 *)
+builder  = ClaudeApplyProposal[proposal];  (* proposal を評価し builder を定義 *)
+net      = builder[];                      (* WorkflowNet[...] Association を取得 *)
 
 observedNet = instrumentNetForObservation[net];  (* 観測ラッパを装着 *)
 wid         = ClaudeCreateWorkflowNet[observedNet];
 
-ClaudeSubmitToken[wid,
-  WorkflowToken["Payload" -> <|"NumSamples" -> 100000|>]];
+ClaudeSubmitInputs[wid, <|"NumSamples" -> 100000|>];
 
 ClaudeRunWorkflow[wid, "Async" -> False, "MaxSteps" -> 50];
 ClaudeWorkflowState[wid]["Marking"]   (* <|"Done" -> {tid}, ...|> *)
@@ -151,12 +157,12 @@ WorkflowRouteDraft (Status: NeedsApproval)
 
 ### 観測 (Observability) サブモジュール
 
-`petri_from_prompt.wl` 用に **LLM 呼び出しログ・Handler 観測・Tooltip 付き可視化・transition 追跡 Dataset** を提供する観測層が別関数として共存します(本体 `ClaudeQueryBg` / `parsePetriCode` / `plotPetriNet` は上書きしません)。
+WorkflowNet 実行に **LLM 呼び出しログ・Handler 観測・Tooltip 付き可視化・transition 追跡 Dataset** を提供する観測層が `ClaudeOrchestrator_observability.wl` として共存します(本体 `ClaudeQueryBg` / `parsePetriCode` / `plotPetriNet` は上書きしません)。
 
 - **LLM ログ** — `ClaudeQueryBgLogged` は `ClaudeQueryBg` を呼び出しつつ Prompt / Response / Model / Duration を `$LLMCallLog` に記録します。`showLLMCallLog[]` で Dataset 一覧、`showLLMCallLog[idx]` で 1 件の Prompt / Response 全文表示、`clearLLMCallLog[]` でリセットできます。
 - **Handler 観測** — `instrumentNetForObservation` は net の全 transition の Handler を観測ラッパで包み、binding・OutputPayload・`$MessageList` を `$ObservedHandlerLog` に追記します。`clearObservedHandlerLog[]` でリセット。
 - **Logger 注入** — `withLLMLogging[code_String]` は生成コード文字列中の `ClaudeQueryBg` 呼び出しを `Global\`ClaudeQueryBgLogged` に置換します。関数名のみの置換なので Function スコープ・局所変数・HoldAll は壊しません。
-- **拡張描画** — `plotPetriNetDetail[wid_or_net, opts]` は place / transition / edge にトークン内容・handler binding・LLM Prompt / Response の Tooltip を表示する Graph を返します。`wid` 文字列を直接渡すと自動的に `"TraceWid" -> wid` モードになります。本体 `plotPetriNet`(Tooltip なし基本表示)とは共存します。
+- **拡張描画** — `plotPetriNetDetail[wid_or_net, opts]` は place / transition / edge にトークン内容・handler binding・LLM Prompt / Response の Tooltip を表示する Graph を返します。`wid` 文字列を直接渡すと自動的に `"TraceWid" -> wid` モードになります。サンプル `petri_from_prompt.wl` 側の `plotPetriNet` (Tooltip なし基本表示) とは共存します。
 - **構造診断** — `checkPetriNetVertices[net]` は宣言頂点と辺集合の整合性を検査し、`IsolatedDeclaredVertices`(宣言だけで辺なし)と `UnknownVerticesInEdges`(辺だけで宣言なし)を返します。
 - **Transition 追跡** — `traceTransitions[wid]` は `ClaudeWorkflowTrace` の firing event と `$ObservedHandlerLog` / `$LLMCallLog` を結合した Dataset を返し、`"Detail" -> True` で Prompt / Response 抜粋付きにも切り替えられます。
 
@@ -190,7 +196,9 @@ plotPetriNetDetail[wid]                   (* Tooltip 付き Graph *)
 
 ### docs/examples/petri_from_prompt.wl — 自然文プロンプトからペトリネットへ
 
-`docs/examples/petri_from_prompt.wl` は、**ClaudeOrchestrator パッケージ本体には統合されていない example 段階のサンプル兼ライブラリ**です。上記の Workflow / Observability サブモジュールと連携して、自然文の要求から place / transition / arc を含むペトリネット仕様(Wolfram コード)を LLM に生成させます。利用する場合は `ClaudeOrchestrator.wl` をロードしたあと、別途このファイルを `Get` してください。
+`docs/examples/petri_from_prompt.wl` は、**ClaudeOrchestrator パッケージ本体には統合されていない example 段階のサンプル兼ライブラリ**です。Workflow / Observability / PromptWorkflow の 3 サブモジュールと連携して、自然文の要求から place / transition / arc を含むペトリネット仕様(Wolfram コード)を LLM に生成させます。
+
+PromptWorkflow 拡張が安全な静的解析と `WorkflowRouteDraft` 作成までを担当し、本サンプルは **LLM に評価可能なコードを生成させて即座に実行する** 軽量経路を提供します。両者は使い分けることを想定しています — 機密プロンプトや承認フローが必要な場合は PromptWorkflow を、自由なペトリネット試作には本サンプルを使ってください。利用する場合は `ClaudeOrchestrator.wl` をロードしたあと、別途このファイルを `Get` してください。
 
 主な公開関数:
 
@@ -198,6 +206,8 @@ plotPetriNetDetail[wid]                   (* Tooltip 付き Graph *)
 - **`reviewPetriProposal[goal]`** — 提案を Frame 付き Column で人間が読める形式で表示します(コード本体・診断指標)。
 - **`parsePetriCode[code]`** — 生成コードを評価して `WorkflowNet[...]` Association を取り出します。`builder[]` 不在時には末尾の `WorkflowNet[...]` 式を直接評価する fallback あり。
 - **`plotPetriNet[netOrWid]`** — 基本的なペトリネット可視化(Tooltip なし、Observability の `plotPetriNetDetail` とは独立に共存)。
+
+なお、proposal を直接 builder として展開する `ClaudeApplyProposal`、Payload Association 生成の糖衣関数 `ClaudeSubmitInputs` / `ClaudeBindAndSubmit` は Workflow サブモジュールに統合済みなので、本サンプルと組み合わせてシンプルに記述できます。
 
 詳細な実行例は `example.md` の Part A を参照してください。
 
@@ -217,23 +227,36 @@ ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator を�
 
 `$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers` の 3 つのリストにより、Auto モードでの分岐をプロジェクトに合わせて調整できます。短い factual query（パッケージ名・関数名・拡張子などのマーカーや「を調べて」「を教えて」「check」などの語尾を含むもの）は Orchestrator を経由せず Single パスに直送し、「スライド」「レポート」「プレゼン」「ペトリネット」など複雑タスク識別マーカーが含まれるプロンプトは短文でも Orchestrator 経路を通します。
 
-### 自動ロードされるサブモジュール
+### モジュール構成と自動ロード
 
-旧来は別ファイルだった以下のサブモジュールが本体の自動ロード対象になっており、`ClaudeOrchestrator.wl` を単独で `Get` するだけで利用できるようになりました。
+`ClaudeOrchestrator.wl` のモジュール構成は、**本体に直接インライン統合された旧サブモジュール群** と、**自動ロードされる 3 つの外部サブモジュール** の二層に整理されています。
 
-- `ClaudeOrchestratorDirectives` — ディレクティブ管理
-- `ClaudeOrchestratorRouting` — ローカル LLM 名／モデル名のルーティング
-- `claudecode_commit_safety` — コミット前後の整合性チェック
-- `claudecode_a4_stub` → `ClaudeOrchestratorA4` — A4 フェーズ用フック群
-- `ClaudeOrchestrator\`Workflow\`` — 真の multi-token Petri net engine (`ClaudeOrchestrator_workflow.wl`)
-- 観測サブモジュール — `ClaudeQueryBgLogged` / `instrumentNetForObservation` / `plotPetriNetDetail` / `checkPetriNetVertices` / `traceTransitions` / `showLLMCallLog` / `withLLMLogging` ほか (`ClaudeOrchestrator_observability.wl`、2026-05-15 から自動ロード。2026-05-26 から ChatGPT Codex を含む複数プロバイダの provenance 記録に対応)
-- PromptWorkflow 拡張 — `ClaudeWorkflowRouteFromPrompt` / `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` ほか、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 (`ClaudeOrchestrator_promptworkflow.wl`)
+#### 本体にインライン統合済みの旧サブモジュール (Phase 36, 2026-04-28 以降)
 
-自動ロードはファイル単位の存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。観測モジュールは `BeginPackage` を持たない読み込み型ファイルなので、`$petriObservabilityVersion` の `ValueQ` で初期化済みかを判定しています。
+以下の旧サブモジュールは現在 `ClaudeOrchestrator.wl` 本体にインライン統合されており、別ファイルとしてのロードは不要です。`Get["ClaudeOrchestrator.wl"]` ひとつですべて利用できます。
+
+- 旧 `ClaudeOrchestratorDirectives` — ディレクティブ管理 (Role / Capability / 禁止 Head)
+- 旧 `ClaudeOrchestratorRouting` — ローカル LLM 名・モデル名のルーティング
+- 旧 `claudecode_commit_safety.wl` — コミット前後の整合性チェック (HeldExpr 検出・決定論的フォールバック)
+- 旧 `claudecode_a4_stub.wl` / `ClaudeOrchestratorA4` — A4 フェーズ用フック群
+
+これらの機能は本体パッケージから引き続き呼び出せます。バージョン文字列はそれぞれ `$DirectivesVersion` / `$RoutingVersion` / `$ClaudeCommitSafetyVersion` / `$A4StubVersion` として参照できます。
+
+#### 自動ロードされる外部サブモジュール (3 ファイル)
+
+以下の 3 ファイルは `ClaudeOrchestrator.wl` のロード時に自動的に取り込まれます。`BeginPackage["ClaudeOrchestrator\`"]` と同一コンテキストを使うため、外側から見ると単一パッケージのように扱えます。
+
+| ファイル | 役割 | 主な公開 API |
+|---|---|---|
+| [`ClaudeOrchestrator_workflow.wl`](https://github.com/transreal/ClaudeOrchestrator_workflow) | multi-token Petri net 実行エンジン (`ClaudeOrchestrator\`Workflow\``) | `ClaudeCreateWorkflowNet` / `ClaudeSubmitToken` / `ClaudeSubmitInputs` / `ClaudeBindAndSubmit` / `ClaudeApplyProposal` / `ClaudeRunWorkflow` / `ClaudeWorkflowState` / `ClaudeSnapshotWorkflow` ほか |
+| [`ClaudeOrchestrator_observability.wl`](https://github.com/transreal/ClaudeOrchestrator_observability) | LLM 呼び出し・transition handler のログ／Tooltip 付き可視化 (ChatGPT Codex を含む複数プロバイダの provenance 記録対応) | `ClaudeQueryBgLogged` / `showLLMCallLog` / `instrumentNetForObservation` / `plotPetriNetDetail` / `traceTransitions` / `checkPetriNetVertices` ほか |
+| [`ClaudeOrchestrator_promptworkflow.wl`](https://github.com/transreal/ClaudeOrchestrator_promptworkflow) | `ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 | `ClaudeWorkflowComplexPromptQ` / `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` / `ClaudeWorkflowCheckForbidden` / `ClaudeCreateWorkflowRouteDraft` / `ClaudeWorkflowRouteFromPrompt` ほか |
+
+自動ロードはファイル単位の存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。手動ロード防止フラグ (例: `Global\`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True`) を立てると個別に無効化できます。観測モジュールは `BeginPackage` を持たない読み込み型ファイルなので、`$petriObservabilityVersion` の `ValueQ` で初期化済みかを判定しています。
 
 #### サンプル: `docs/examples/petri_from_prompt.wl`
 
-自然文プロンプトから WorkflowNet を生成するサンプル兼ライブラリ `docs/examples/petri_from_prompt.wl` がリポジトリに同梱されています。**これは example の段階の参考実装で、`ClaudeOrchestrator.wl` 本体には統合されておらず、自動ロードもされません。** Part A のような流れ(自然文 → ネット生成 → 実行 → 観測)を試す場合は、`ClaudeOrchestrator.wl` をロードしたあと別途 `Get` してください。詳細は `example.md` の事前準備を参照。
+自然文プロンプトから WorkflowNet を生成するサンプル兼ライブラリ `docs/examples/petri_from_prompt.wl` がリポジトリに同梱されています。**これは example の段階の参考実装で、`ClaudeOrchestrator.wl` 本体には統合されておらず、自動ロードもされません。** 自然文 → ネット生成 → 実行 → 観測 の一連のフローを試す場合は、`ClaudeOrchestrator.wl` をロードしたあと別途 `Get` してください。詳細は `example.md` の事前準備を参照。
 
 ### Real LLM 統合
 
@@ -280,7 +303,7 @@ GitHubInstallPackage["ClaudeOrchestrator",
   "https://github.com/transreal/ClaudeOrchestrator"]
 ```
 
-PromptWorkflow 拡張 `ClaudeOrchestrator_promptworkflow.wl` は `ClaudeOrchestrator.wl` と同じディレクトリに必要です（本体ロード時に自動ロードされます）。リポジトリに同梱されている場合は同時に取得されます。一度インストールしたパッケージは `GitHubUpdatePackage["ClaudeOrchestrator"]` で最新版に更新できます。
+自動ロードされる 3 つの外部サブモジュール (`ClaudeOrchestrator_workflow.wl` / `ClaudeOrchestrator_observability.wl` / `ClaudeOrchestrator_promptworkflow.wl`) は `ClaudeOrchestrator.wl` と同じディレクトリに必要です（本体ロード時に自動ロードされます）。リポジトリに同梱されている場合は同時に取得されます。一度インストールしたパッケージは `GitHubUpdatePackage["ClaudeOrchestrator"]` で最新版に更新できます。
 
 github パッケージを使わない場合は、`git clone` で取得します。
 
@@ -438,317 +461,6 @@ ClaudeOrchestrationResult[jobId][["Status"]]
 - **`WorkflowToken` / `WorkflowPlace` / `WorkflowTransition` / `WorkflowNet`** — immutable な net 構成要素のビルダー。`Kind`・`Capacity`・`AcceptedKinds`・`InputArcs` / `OutputArcs`・`Guard`・`Executor`・`RetryPolicy`・`AccessPolicy`・`Timeout`・`Priority` を指定できます。
 - **`ClaudeCreateWorkflowNet[spec, opts]`** — WorkflowNet 仕様を検証し WorkflowId を発行・登録します。
 - **`ClaudeSubmitToken[wid, token, place]`** — 任意の place（省略時は SourcePlace）にトークンを投入します。
-- **`ClaudeEnabledTransitions[wid]`** — 現在 fire 可能な (transition, binding) を Priority 降順で返します。
-- **`ClaudeFireTransition[wid, transitionName, binding, opts]`** / **`ClaudeStepWorkflow[wid, opts]`** — 1 transition / 1 step ずつ fire します。NBAccess hard policy → guard → capability の順で検証されます。
-- **`ClaudeRunWorkflow[wid, opts]`** — sink 到達 / enabled 空 / `MaxSteps` 到達まで反復実行します。`"Async" -> True` で非同期実行に切り替え、即座に WorkflowId を返します。
-- **`ClaudeWaitWorkflow[wid, opts]`** / **`ClaudeAsyncJobInfo[wid]`** / **`ClaudeCleanupAsyncJob[wid]`** — 非同期 workflow の待機・進捗参照・GC を行います。
-- **`ClaudePauseWorkflow[wid]`** / **`ClaudeResumeWorkflow[wid]`** / **`ClaudeCancelWorkflow[wid]`** — ライフサイクル制御。
-- **`ClaudeWorkflowStatus[wid]`** / **`ClaudeWorkflowList[]`** / **`ClaudeWorkflowState[wid]`** / **`ClaudeWorkflowTrace[wid]`** — marking・トークン payload・event 履歴を参照します。
-- **`ClaudeRegisterCompletionHook[wid, fn]`** / **`ClaudeUnregisterCompletionHooks[wid]`** — 完了時コールバックを登録・解除します。
-- **`ClaudeSnapshotWorkflow[wid, opts]`** — FormatVersion 2 のディレクトリへ snapshot を保存します。
-
-#### 観測 (Observability) 拡張
-
-- **`ClaudeQueryBgLogged[prompt, opts]`** — `ClaudeQueryBg` を呼びつつ Prompt / Response / Model / Duration を `$LLMCallLog` に記録します。`showLLMCallLog[]` / `clearLLMCallLog[]` で参照・リセット可能。応答が `ProviderResultMetadata` を持つ場合は `ProviderKind` / `ProviderDisplayName` / `HarnessBundleId` / `DirectiveSnapshotId` / `RuntimeEnvironmentHash` も lift し、ChatGPT Codex を含む複数プロバイダの provenance を記録します。
-- **`instrumentNetForObservation[net]`** — WorkflowNet の全 transition Handler を観測ラッパで包み、binding / OutputPayload / $MessageList を `$ObservedHandlerLog` に追記します。
-- **`withLLMLogging[code]`** — 文字列コード中の `ClaudeQueryBg` 呼び出しを `ClaudeQueryBgLogged` に書き換える logger 注入ヘルパ。
-- **`plotPetriNetDetail[widOrNet, opts]`** — トークン内容・handler binding・LLM Prompt/Response の Tooltip 付きで描画する Graph を返します。
-- **`checkPetriNetVertices[netOrWid]`** — 宣言頂点と辺集合の整合性を検査します。
-- **`traceTransitions[wid, opts]`** — firing event と handler / LLM ログを結合した Dataset を返します。`"Detail" -> True` で Prompt / Response 抜粋付き拡張モード。プロバイダ識別情報も保持されます。
-
-#### PromptWorkflow 拡張
-
-- **`ClaudeWorkflowComplexPromptQ[prompt]`** — プロンプトが workflow 候補かを評価なしで deterministic に判定します。`<|"Decision" -> "WorkflowCandidate" | "NotComplex", ...|>` を返します。
-- **`ClaudeProposeWorkflowNetFromPrompt[prompt, opts]`** — 自然言語のゴールから WorkflowNet コードを提案させ、safe parser に通します。提案のみで実行・登録はしません。オプション: `MaxProposalAttempts -> 3`、`CodeProvider -> Automatic`。
-- **`ClaudeParseWorkflowNetCode[input, opts]`** — LLM 提案コードを `HoldComplete` でくるんだ非評価 parse で扱い、builder を呼ばずに `WorkflowNet[spec]` を抽出します。
-- **`ClaudeWorkflowCheckForbidden[code]`** — workflow コードを評価せずに禁止パターン（ファイル / ネットワーク / プロセス / 資格情報 / notebook 変更系）を静的検出します。
-- **`ClaudeWorkflowForbiddenPatternRegistry[]`** — 禁止パターンの統合レジストリを返します。
-- **`ClaudeWorkflowNetWellFormedQ[spec]`** — WorkflowNet の宣言的 spec の well-formedness を検査します。
-- **`ClaudeCreateWorkflowRouteDraft[prompt, proposal, opts]`** — 提案を承認待ち (`NeedsApproval`) の WorkflowRouteDraft に変換します。既定は `DryRun -> True`。
-- **`ClaudeWorkflowRouteFromPrompt[prompt, opts]`** — `ClaudeEval` の workflow 統合フロー全体をオーケストレーションします。新規 workflow はつねに承認待ちで停止します。
-- **`ClaudePromptWorkflowStatus[]`** — PromptWorkflow 拡張の状態（バージョン・禁止パターン件数）を返します。
-
-#### docs/examples/petri_from_prompt.wl
-
-- 自然文プロンプト → `proposePetriNet` → place / transition / arc を含む WorkflowNet コード → `parsePetriCode` で Association 化 → `instrumentNetForObservation` で観測ラッパ装着 → `ClaudeCreateWorkflowNet` で wid 発行 → `ClaudeRunWorkflow` で実行 → `plotPetriNetDetail` / `traceTransitions` で観測する **エンドツーエンドサンプル**。詳細は `example.md` の Part A を参照。
-
-#### ClaudeEval との統合(非同期化)
-
-ClaudeOrchestrator をロードすると `$ClaudeEvalHook` が自動的に上書きされ、`ClaudeEval[...]` はオーケストレーターパイプライン経由で実行されます。`ClaudeEval[...]` は `ClaudeRunOrchestrationAsync` を呼び出してノートブック UI をブロックせず `orchJobId` を即座に返し、完了後の結果は `ClaudeOrchestrationResult` で取得できます。
-
-#### Real LLM 統合・診断
-
-- **`ClaudeRealLLMAvailable[]`** — 実 LLM 統合が設定されているか確認します。
-- **`ClaudeRealLLMQuery[prompt]`** — 設定済みエンドポイント経由でプロンプトを実行します。
-- **`ClaudeRealLLMDiagnose[prompt]`** — エンドポイント・CLI パス・ExitCode・stdout・JSON パース結果などの診断情報を返します。
-- **`ClaudeRealLLMDiagnosePlan[input]`** — 実 LLM プランナーパイプラインを走らせ、結果と診断情報を返します。
-
-#### グローバル定数・変数
-
-- **`$ClaudeOrchestratorVersion`** — パッケージバージョン文字列
-- **`$ClaudeOrchestratorRoles`** — 許容 Role のリスト: `{"Explore", "Plan", "Draft", "Verify", "Reduce", "Commit"}`
-- **`$ClaudeOrchestratorCapabilities`** — Role → Capability リストの Association
-- **`$ClaudeOrchestratorDenyHeads`** — worker が提案を禁止されている head のリスト
-- **`$ClaudeOrchestratorRealLLMEndpoint`** — 実 LLM 統合モードの制御(既定: `None`)
-- **`$ClaudeOrchestratorCLICommand`** — CLI 実行ファイルのパス(既定: `Automatic`)
-- **`$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers`** — Auto ゲート分岐に使うキーワードリスト群
-- **`$WorkflowVersion`** — Workflow サブモジュールのバージョン
-- **`$ClaudeWorkflowSnapshotDir`** — `ClaudeSnapshotWorkflow` の既定保存先
-- **`$petriObservabilityVersion`** — 観測サブモジュールのバージョン(ChatGPT Codex 対応版は `"0.3.0 (2026-05-26)"` 以降)
-- **`$ClaudePromptWorkflowVersion`** — PromptWorkflow 拡張のバージョン
-- **`$LLMCallLog` / `$ObservedHandlerLog` / `$CurrentObservedTransition`** — 観測モジュールが追記するログ群(`$LLMCallLog` は `ProviderKind` / `ProviderDisplayName` などのプロバイダ情報も含む)
-- **`$ClaudeSlidesTemplatePath`** — スライド生成時の StyleDefinitions テンプレートパス
-
----
-
-### ドキュメント一覧
-
-| ファイル | 内容 |
-|----------|------|
-| `api.md` | API リファレンス（全関数・データ型・グローバル変数の仕様） |
-| `api_workflow.md` | ペトリネット (Workflow) サブモジュールの API リファレンス |
-| `api_observability.md` | 観測 (Observability) サブモジュールの API リファレンス(ChatGPT Codex 対応の provenance フィールドを含む) |
-| `api_promptworkflow.md` | PromptWorkflow 拡張の API リファレンス |
-| `user_manual.md` | ユーザーマニュアル（各フェーズ・ClaudeEval 非同期化・ペトリネット拡張の詳細な使い方） |
-| `setup.md` | インストール手順書（動作要件・環境構築・トラブルシューティング） |
-| `example.md` | 使用例集（バージョン確認からペトリネット拡張・バッチ処理まで） |
-| `docs/examples/petri_from_prompt.wl` | 自然文 → ペトリネット → 実行のエンドツーエンドサンプル |
-
----
-
-## 使用例・デモ
-
-### ClaudeEval の非同期化について(v2026-04-20 以降)
-
-**ClaudeOrchestrator をロードすると、`ClaudeEval` の実装が自動的にオーケストレーターベースに切り替わります。** パッケージ読み込み時に内部フック `$ClaudeEvalHook` が上書きされ、以後の `ClaudeEval[...]` 呼び出しはすべてマルチエージェントパイプライン経由で `ClaudeRunOrchestrationAsync` 経由で非同期実行されます(ノートブックをブロックしません)。
-
-ClaudeRuntime 単体の動作に戻したい場合は、ClaudeOrchestrator をロードしないか、`$ClaudeEvalHook` を手動でリセットしてください。
-
-### 例 0: ClaudeEval がオーケストレーターに切り替わることの確認
-
-```mathematica
-(* ClaudeOrchestrator ロード前 — ClaudeRuntime ベースの ClaudeEval *)
-Needs["ClaudeRuntime`", "ClaudeRuntime.wl"];
-$ClaudeEvalHook  (* ClaudeRuntime 既定のフック *)
-
-(* ClaudeOrchestrator をロード *)
-Block[{$CharacterEncoding = "UTF-8"},
-  Needs["ClaudeOrchestrator`", "ClaudeOrchestrator.wl"]];
-
-(* ロード後 — $ClaudeEvalHook がオーケストレーターに置き換わっていることを確認 *)
-$ClaudeEvalHook
-(* ClaudeOrchestrator ベースのフック関数が返る *)
-
-(* 以降の ClaudeEval 呼び出しはすべてオーケストレーターパイプラインを通る(非同期) *)
-ClaudeEval["フィボナッチ数列の最初の 10 項を求めて表示する"]
-(* → ClaudeRunOrchestrationAsync 経由で非同期実行される(orchJobId を即座に返す) *)
-```
-
-### 例 1: タスク分解（モックプランナー）
-
-```mathematica
-plan = ClaudePlanTasks["Mathematica で素数リストを生成して CSV に保存する"];
-plan["Tasks"][[All, {"TaskId", "Role", "Goal"}]]
-```
-
-### 例 2: TaskSpec の検証
-
-```mathematica
-spec = <|
-  "TaskId" -> "t1", "Role" -> "Draft",
-  "Goal" -> "素数リストを生成する",
-  "Inputs" -> {}, "Outputs" -> {"primes.csv"},
-  "Capabilities" -> {"FileWrite"}, "DependsOn" -> {},
-  "ExpectedArtifactType" -> "File", "OutputSchema" -> <||>
-|>;
-ClaudeValidateTaskSpec[spec]
-(* <|"Valid" -> True, "Errors" -> {}|> *)
-```
-
-### 例 3: 非同期オーケストレーション
-
-```mathematica
-(* ジョブを非同期で起動 *)
-jobId = ClaudeRunOrchestrationAsync[
-  "行列の固有値を求めてレポートを生成する",
-  MaxTasks -> 4
-];
-
-(* 状態を確認 *)
-ClaudeOrchestrationStatus[jobId][["Status"]]
-(* "Planning" → ... → "Done" *)
-
-(* 完了を待機してから結果取得 *)
-ClaudeOrchestrationWait[jobId, 120];
-ClaudeOrchestrationResult[jobId][["SpawnResult", "Status"]]
-(* "Complete" *)
-```
-
-### 例 4: バッチ処理(単一セッション継続)
-
-```mathematica
-runtime = First @ ClaudeSpawnWorkers[tasks]["Artifacts"];
-runtimeId = runtime["RuntimeId"];
-
-results = ClaudeContinueBatch[
-  runtimeId,
-  {"ステップ 1 を実行", "ステップ 2 を実行", "結果を要約"},
-  WaitBetween -> Quantity[2, "Seconds"]
-];
-results[[All, "Index"]]
-(* {1, 2, 3} *)
-```
-
-### 例 5: ペトリネット拡張 — 自然文プロンプトからペトリネット実行
-
-`docs/examples/petri_from_prompt.wl` を `Get` すると、`proposePetriNet` / `reviewPetriProposal` / `parsePetriCode` / `plotPetriNet` などのサンプル API が定義されます。これらを使うと、自然文の目標から WorkflowNet コードを LLM に生成させ、Workflow + Observability エンジンで実行・観測できます。
-
-```mathematica
-(* 同梱サンプルの解決とロード *)
-petriExampleFile = FileNameJoin[{
-  Quiet @ Check[NotebookDirectory[], $packageDirectory],
-  "ClaudeOrchestrator", "docs", "examples", "petri_from_prompt.wl"
-}];
-Get[petriExampleFile]
-
-(* 自然文 → WorkflowNet コード生成 → 実行 *)
-goal = "3 方式 (Monte Carlo / Leibniz / Wallis) で π を計算して比較する";
-proposal    = proposePetriNet[goal];
-net         = parsePetriCode[proposal["Code"]];
-observedNet = instrumentNetForObservation[net];
-wid         = ClaudeCreateWorkflowNet[observedNet];
-ClaudeSubmitToken[wid,
-  WorkflowToken["Payload" -> <|"NumSamples" -> 100000|>]];
-ClaudeRunWorkflow[wid];
-ClaudeWorkflowState[wid]["Marking"]
-```
-
-詳細な解説と各 API の使用例は `example.md` の Part A を参照してください。
-
-### 例 6: ペトリネット拡張 — Workflow API で直接 net を組む
-
-```mathematica
-(* Place / Transition / Net を組み立て、WorkflowId を発行 *)
-src  = WorkflowPlace["Start"];
-mid  = WorkflowPlace["Mid"];
-dst  = WorkflowPlace["Done"];
-t1   = WorkflowTransition["T1",
-  "InputArcs"  -> {<|"Place" -> "Start", "Multiplicity" -> 1|>},
-  "OutputArcs" -> {<|"Place" -> "Mid",   "Multiplicity" -> 1|>},
-  "Executor"   -> "PureFunction",
-  "RuntimeSpec"-> <|"Handler" -> (#&)|>];
-t2   = WorkflowTransition["T2",
-  "InputArcs"  -> {<|"Place" -> "Mid",   "Multiplicity" -> 1|>},
-  "OutputArcs" -> {<|"Place" -> "Done",  "Multiplicity" -> 1|>},
-  "Executor"   -> "PureFunction",
-  "RuntimeSpec"-> <|"Handler" -> (#&)|>];
-net = WorkflowNet[
-  "SourcePlace" -> "Start",
-  "FinalPlaces" -> {"Done"},
-  "Places"      -> <|"Start" -> src, "Mid" -> mid, "Done" -> dst|>,
-  "Transitions" -> <|"T1" -> t1, "T2" -> t2|>];
-wid = ClaudeCreateWorkflowNet[net];
-
-(* トークン投入と実行 *)
-ClaudeSubmitToken[wid, WorkflowToken["Kind" -> "Task", "Payload" -> <|"id" -> 1|>]];
-ClaudeRunWorkflow[wid, "MaxSteps" -> 10][["Status"]]
-(* "Done" *)
-```
-
-### 例 7: ペトリネット拡張 — 観測モジュールでトレースと可視化
-
-```mathematica
-(* 観測ラッパで Handler を包む *)
-netObs = instrumentNetForObservation[net];
-widObs = ClaudeCreateWorkflowNet[netObs];
-ClaudeSubmitToken[widObs, WorkflowToken["Kind" -> "Task", "Payload" -> <|"id" -> 1|>]];
-ClaudeRunWorkflow[widObs, "MaxSteps" -> 10];
-
-(* transition firing と LLM 呼び出しを結合した Dataset *)
-traceTransitions[widObs, "Detail" -> True]
-
-(* Tooltip 付きグラフ *)
-plotPetriNetDetail[widObs, VertexLayout -> "LayeredDigraphEmbedding"]
-
-(* LLM 呼び出しログの確認(Provider カラム付き) *)
-showLLMCallLog[]
-```
-
-### 例 8: ChatGPT Codex を含む複数プロバイダの混在トレース
-
-`ClaudeOrchestrator_observability.wl` (2026-05-26 以降) は、応答に `ProviderResultMetadata` が含まれていれば自動的に provenance キーを `$LLMCallLog` に保存します。Codex 経由の呼び出しと Claude 経由の呼び出しを同じログから区別できます。
-
-```mathematica
-(* 観測ラッパ付きで workflow を実行(handler 内で複数プロバイダを呼ぶ前提) *)
-clearLLMCallLog[];
-clearObservedHandlerLog[];
-
-netObs = instrumentNetForObservation[net];
-widObs = ClaudeCreateWorkflowNet[netObs];
-ClaudeSubmitToken[widObs, WorkflowToken[]];
-ClaudeRunWorkflow[widObs];
-
-(* Provider カラムでフィルタ *)
-showLLMCallLog[]
-(* "ChatGPT Codex" / "Claude" / "LM Studio" 等が表示される *)
-
-(* 個別 entry を詳細表示すると Provider / HarnessBundle / DirectiveSnapshot / RuntimeEnvHash も確認可能 *)
-showLLMCallLog[1]
-```
-
-### 例 9: Real LLM 統合の診断
-
-```mathematica
-$ClaudeOrchestratorRealLLMEndpoint = "CLI";
-ClaudeRealLLMAvailable[]
-(* True *)
-
-diag = ClaudeRealLLMDiagnose["Hello, world!"];
-diag[["ExitCode"]]
-(* 0 *)
-```
-
-### 例 10: ジョブ一覧と中断
-
-```mathematica
-ClaudeOrchestrationJobs[]
-(* Dataset[{<|"JobId"->..., "Status"->"Running", ...|>}] *)
-
-ClaudeOrchestrationCancel[jobId]
-(* True *)
-```
-
-リポジトリ: [https://github.com/transreal/ClaudeOrchestrator](https://github.com/transreal/ClaudeOrchestrator)
-
-関連リポジトリ:
-
-- [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) — 単一エージェント実行核
-- [claudecode](https://github.com/transreal/claudecode) — 上位 UI / セッション層
-- [ClaudeOrchestrator_workflow](https://github.com/transreal/ClaudeOrchestrator_workflow) — Workflow サブモジュール
-- [ClaudeOrchestrator_observability](https://github.com/transreal/ClaudeOrchestrator_observability) — Observability サブモジュール
-- [NBAccess](https://github.com/transreal/NBAccess) — ノートブックアクセス基盤
-
----
-
-## 免責事項
-
-本ソフトウェアは "as is"（現状有姿）で提供されており、明示・黙示を問わずいかなる保証もありません。
-本ソフトウェアの使用または使用不能から生じるいかなる損害についても責任を負いません。
-今後の動作保証のための更新が行われるとは限りません。
-本ソフトウェアとドキュメントはほぼすべてが生成AIによって生成されたものです。
-Windows 11上での実行を想定しており、MacOS, LinuxのMathematicaでの動作検証は一切していません(生成AIの処理で対応可能と想定されます)。
-
----
-
-## ライセンス
-
-```
-MIT License
-
-Copyright (c) 2026 Katsunobu Imai
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- **`ClaudeSubmitInputs[wid, payload, place]`** — `payload` Association から `Kind="Task"` の Token を作って SourcePlace に投入する糖衣関数。
+- **`ClaudeBindAndSubmit[wid, vars...]`** — グローバルシンボル群を `SymbolName -> 値` の Association として束ねて投入する HoldRest 糖衣関数。
+- **`ClaudeApplyProposal[pro
