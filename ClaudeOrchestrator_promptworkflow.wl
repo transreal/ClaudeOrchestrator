@@ -721,13 +721,17 @@ iCPWArtifactDir[] :=
     FileNameJoin[{pv, "promptrouter", "artifacts", "wf-code"}]
   ];
 
-(* atomic-ish UTF-8 write of one string to a path *)
-iCPWAtomicWriteString[path_String, content_String] :=
+(* atomic-ish write of one string to a path.
+   Stage 9 P1.5: encoding \:5f15\:6570\:8ffd\:52a0\:3002\:901a\:5e38\:306e Wolfram \:6587\:5b57\:5217\:306f
+   "UTF-8" (\:65e2\:5b9a)\:3001ExportString["RawJSON"] / WriteRawJSONString \:306e\:623b\:308a
+   (codepoint = UTF-8 byte \:306e Latin-1 \:8868\:73fe) \:306f "ISO8859-1" \:3092\:6307\:5b9a\:3059\:308b
+   (\:305d\:3046\:3057\:306a\:3044\:3068\:4e8c\:91cd encode \:3067\:6587\:5b57\:5316\:3051)\:3002 *)
+iCPWAtomicWriteString[path_String, content_String, encoding_String:"UTF-8"] :=
   Module[{strm, renamed},
     strm = Quiet[OpenWrite[path <> ".tmp", BinaryFormat -> True]];
     If[Head[strm] =!= OutputStream,
       Return[<|"Status" -> "Failed", "Reason" -> "OpenFailed"|>]];
-    BinaryWrite[strm, StringToByteArray[content, "UTF-8"]];
+    BinaryWrite[strm, StringToByteArray[content, encoding]];
     Close[strm];
     If[FileExistsQ[path], Quiet[DeleteFile[path]]];
     renamed = Quiet @ Check[
@@ -766,7 +770,7 @@ iCPWSaveCodeArtifact[code_String] :=
         "ByteCount" -> StringLength[code],
         "Kind"      -> "WorkflowCodeArtifact"|>,
         "RawJSON"], "{}"];
-    metaWrite = iCPWAtomicWriteString[metaPath, metaJson];
+    metaWrite = iCPWAtomicWriteString[metaPath, metaJson, "ISO8859-1"];
 
     <|
       "Status"       -> "OK",
