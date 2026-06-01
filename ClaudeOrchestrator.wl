@@ -1310,7 +1310,7 @@ JSON \:30d6\:30ed\:30c3\:30af\:306e\:5916\:5074\:306b\:8aac\:660e\:6587\:7b49\:3
   t1 (Explore: \:6700\:65b0\:52d5\:5411\:8abf\:67fb) \:2192 t2 (Reduce: 3 \:884c\:8981\:7d04) \:2192 t3 (Plan: \:30b9\:30e9\:30a4\:30c9\:69cb\:6210\:6848)";
 
 iPlannerBuildPrompt[input_, plannerOpts_Association] :=
-  Module[{maxTasks, prompt, basePrompt, isJa, intent, slideHint},
+  Module[{maxTasks, prompt, basePrompt, isJa, intent, slideHint, nbCtx, nbCtxBlock},
     maxTasks = Lookup[plannerOpts, "MaxTasks", 10];
     isJa     = $Language === "Japanese";
     basePrompt = If[isJa,
@@ -1322,12 +1322,29 @@ iPlannerBuildPrompt[input_, plannerOpts_Association] :=
     slideHint = "";
     If[TrueQ[intent["IsSlide"]],
       slideHint = iBuildSlidePlannerHint[intent, isJa]];
-    
+
+    (* A 実装 (2026-06-01): 評価ノートブックのコンテキスト (a=1234; text="..." 等) を
+       planner にも見せる。これにより planner は「text の本文をレビュー」のような
+       タスクを、本文の実体を踏まえて分解できる。コンテキストは claudecode 側で
+       dispatch 入口に捕捉済み ($ClaudeEvalNotebookContext)。 *)
+    nbCtx = Quiet @ Check[ClaudeCode`$ClaudeEvalNotebookContext, ""];
+    If[!StringQ[nbCtx], nbCtx = ""];
+    nbCtxBlock = If[StringTrim[nbCtx] =!= "",
+      If[isJa,
+        "\:73fe\:5728\:306e\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8 (\:5b9a\:7fa9\:6e08\:307f\:5909\:6570\:30fb\:76f4\:524d\:306e\:51fa\:529b):\n" <>
+        "\:30e6\:30fc\:30b6\:8981\:6c42\:4e2d\:306e\:5909\:6570\:540d\:306f\:3053\:306e\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:3067\:89e3\:6c7a\:3055\:308c\:308b\:3002\n```\n" <>
+        nbCtx <> "\n```\n\n",
+        "CURRENT NOTEBOOK CONTEXT (defined variables / recent outputs):\n" <>
+        "Variable names in the user request resolve to values shown here.\n```\n" <>
+        nbCtx <> "\n```\n\n"],
+      ""];
+
     prompt = basePrompt <> "\n\n" <>
       If[isJa,
         "\:30bf\:30b9\:30af\:6570\:306e\:4e0a\:9650: " <> ToString[maxTasks] <> "\n\n",
         "Maximum number of tasks: " <> ToString[maxTasks] <> "\n\n"] <>
       slideHint <>
+      nbCtxBlock <>
       If[isJa,
         "\:30e6\:30fc\:30b6\:306e\:8981\:6c42:\n",
         "USER REQUEST:\n"] <>
@@ -1752,17 +1769,24 @@ iIsShortFactualQuery[_] := False;
    P4 \:7d71\:5408 (2026-05-18): SourceVault references \:306e\:62bd\:51fa\:306a\:3069\:30fb\:30b1\:30fc\:30b9\:3067
    \:4f7f\:308f\:308c\:308b\:3002\:3055\:3089\:306a\:308b post-processing \:306e\:8ffd\:52a0\:3082\:53ef\:80fd\:3002 *)
 iApplyA6Hook[result_, raw_] :=
-  Module[{rawStr},
+  Module[{rawStr, a6},
     If[!AssociationQ[result], Return[result, Module]];
     rawStr = Which[
       StringQ[raw], raw,
       AssociationQ[raw], Module[{r = Lookup[raw, "response", ""]},
         If[StringQ[r], r, ToString[raw]]],
       True, ToString[raw]];
-    If[Length[Names["ClaudeOrchestrator`A6PostProcessParseProposal"]] > 0,
-      Quiet @ Check[
+    (* 2026-06-01: A5 と同じ半登録バグ対策。A6PostProcessParseProposal は
+       シンボル名だけ存在し定義 (DownValues) が無いことがある。その場合
+       Names>0 を通過して適用すると未評価のシンボル式が返り、ParseProposal
+       全体が非 Association 化 -> iRunSingleWorkerSync で parsed=None ->
+       NoProposal となって worker が全滅する。iHookCallableQ で DownValues
+       まで確認し、適用結果が Association でなければ元の result に戻す。 *)
+    If[iHookCallableQ["ClaudeOrchestrator`A6PostProcessParseProposal"],
+      a6 = Quiet @ Check[
         ClaudeOrchestrator`A6PostProcessParseProposal[result, rawStr],
-        result],
+        result];
+      If[AssociationQ[a6], a6, result],
       result]
   ];
 
@@ -2080,6 +2104,19 @@ $iWorkerSystemPromptJaTemplate =
   \:306a\:3069\:306e\:8981\:7d04\:6587\:306f\:3001 \:5f8c\:6bb5\:3067\:5b9f\:884c\:3055\:308c\:308b\:5ba3\:8a00\:304c payload \:306b\:5b58\:5728\:3057\:306a\:3044\:9650\:308a\:8a18\:8f09\:3057\:306a\:3044\:3002
 - \:865a\:507d\:306e\:6210\:529f\:4e3b\:5f35\:306f\:691c\:8a3c\:30d5\:30ec\:30fc\:30e0\:30ef\:30fc\:30af\:3067\:691c\:51fa\:3055\:308c\:3001 artifact \:304c\:5374\:4e0b\:3055\:308c\:308b\:3002";
 
+(* iHookCallableQ: フックシンボルが「実際に呼び出せる」か判定する。
+   シンボル名が存在するだけ (Names>0) では不十分で、DownValues が
+   登録されていなければ適用しても未評価のシンボル式が残り、後段の
+   StringJoin で例外になる (2026-06-01 発見の A5 半登録バグ対策)。
+   SourceVault 側 Status 判定と同じ基準 (Names>0 && DownValues>0) に揃える。 *)
+iHookCallableQ[fullName_String] :=
+  Length[Names[fullName]] > 0 &&
+  Length[DownValues[Symbol[fullName]]] > 0;
+
+(* iEnsureString: 非文字列を確実に文字列へ落とす保険。フック未評価などで
+   prompt が String でなくなった場合でも StringJoin を壊さない。 *)
+iEnsureString[s_] := If[StringQ[s], s, ToString[s]];
+
 iWorkerBuildSystemPrompt[role_String, task_Association,
     depArtifacts_Association, referenceText_:None] :=
   Module[{prompt, goalStr, schemaStr, depSection, schema, intent,
@@ -2126,26 +2163,70 @@ iWorkerBuildSystemPrompt[role_String, task_Association,
       "{{DEPENDENCY_SECTION}}" -> depSection
     }];
     
-        (* === A4 hook: role 別 directive prefix 注入 === *)
-    If[Length[Names["ClaudeOrchestrator`A4InjectDirectivePrefix"]] > 0,
-      prompt = Quiet @ Check[
-        ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role,
-          ClaudeOrchestrator`A4ResolveModelForRole[role, Automatic],
-          ToString[Lookup[task, "Goal", ""]]],
-        prompt]];
+        (* === A4 hook: role 別 directive prefix 注入 ===
+       iHookCallableQ で DownValues の有無まで確認する (Names だけだと
+       半登録シンボルが未評価で残り prompt が非文字列化する)。
+       適用後も iEnsureString で文字列保証し、万一非文字列が返っても元の
+       prompt に戻す。 *)
+    If[iHookCallableQ["ClaudeOrchestrator`A4InjectDirectivePrefix"],
+      Module[{a4 = Quiet @ Check[
+          ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role,
+            ClaudeOrchestrator`A4ResolveModelForRole[role, Automatic],
+            ToString[Lookup[task, "Goal", ""]]],
+          prompt]},
+        prompt = If[StringQ[a4], a4, prompt]]];
     (* === /A4 hook === *)
     
-    (* === A5 hook: SourceVault context 注入 (P3, 2026-05-18) === *)
-    If[Length[Names["ClaudeOrchestrator`A5InjectSourceVaultContext"]] > 0,
-      prompt = Quiet @ Check[
-        ClaudeOrchestrator`A5InjectSourceVaultContext[prompt, role, task],
-        prompt]];
+    (* === A5 hook: SourceVault context 注入 (P3, 2026-05-18) ===
+       2026-06-01: Names だけの判定だと SourceVault が Enable していない
+       半登録状態 (シンボルはあるが DownValues 無し) を通過し、A5 適用が
+       未評価のまま prompt に残って StringJoin::string で worker 全滅して
+       いた。iHookCallableQ で DownValues まで確認する。 *)
+    If[iHookCallableQ["ClaudeOrchestrator`A5InjectSourceVaultContext"],
+      Module[{a5 = Quiet @ Check[
+          ClaudeOrchestrator`A5InjectSourceVaultContext[prompt, role, task],
+          prompt]},
+        prompt = If[StringQ[a5], a5, prompt]]];
     (* === /A5 hook === *)
     
-If[slideHint =!= "",
-      prompt = prompt <> "\n\n" <> slideHint];
+    (* 2026-06-01: referenceText を一般の「参照本文」としてプロンプトに注入する。
+       従来は iBuildSlideWorkerHint (slide 用途) でしか使われず、slide でない
+       タスク (レビュー等) では caller が渡した本文 (例: 変数 text の中身) が
+       worker に全く届かなかった。slide hint が付かない場合に限り、ここで
+       参照本文セクションとして追加する (slide 経路では二重注入を避ける)。 *)
+    If[slideHint === "" && StringQ[referenceText] &&
+       StringTrim[referenceText] =!= "",
+      prompt = iEnsureString[prompt] <> "\n\n" <>
+        If[isJa,
+          "参照本文 (タスクが参照する入力テキスト):\n",
+          "REFERENCE TEXT (input text the task refers to):\n"] <>
+        referenceText];
     
-    prompt
+    (* A 実装 (2026-06-01): 評価ノートブックのコンテキスト (a=1234; text="..." 等) を
+       全 worker に注入する。caller が ReferenceText を明示しなくても、ユーザー要求中の
+       変数名 (例: text) が指す本文を worker が参照できるようにする。
+       claudecode 側 dispatch 入口で捕捉済み ($ClaudeEvalNotebookContext)。
+       CLI サブプロセス worker は Global` コンテキストを共有できないため、
+       この文字列注入が唯一の伝達手段 (runtime-orchestrator-boundary skill 参照)。 *)
+    Module[{nbCtx = Quiet @ Check[ClaudeCode`$ClaudeEvalNotebookContext, ""]},
+      If[!StringQ[nbCtx], nbCtx = ""];
+      If[StringTrim[nbCtx] =!= "",
+        prompt = iEnsureString[prompt] <> "\n\n" <>
+          If[isJa,
+            "\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8 (\:5b9a\:7fa9\:6e08\:307f\:5909\:6570\:30fb\:76f4\:524d\:306e\:51fa\:529b):\n" <>
+            "\:30bf\:30b9\:30af\:4e2d\:306e\:5909\:6570\:540d (\:4f8b: text, a) \:306f\:3053\:3053\:306b\:5b9a\:7fa9\:3055\:308c\:305f\:5024\:3092\:6307\:3059\:3002\n" <>
+            "\:3053\:308c\:3089\:306f\:30bf\:30b9\:30af\:5b9f\:884c\:306e\:305f\:3081\:306e\:5165\:529b\:30c7\:30fc\:30bf\:3068\:3057\:3066\:6271\:3046\:3053\:3068\:3002\n```\n" <>
+            nbCtx <> "\n```",
+            "NOTEBOOK CONTEXT (defined variables / recent outputs):\n" <>
+            "Variable names in the task (e.g. text, a) refer to the values defined here.\n" <>
+            "Treat these as input data for executing the task.\n```\n" <>
+            nbCtx <> "\n```"]]];
+
+If[slideHint =!= "",
+      prompt = iEnsureString[prompt] <> "\n\n" <> iEnsureString[slideHint]];
+    
+    (* 最終保険: 何があっても String を返す *)
+    iEnsureString[prompt]
   ];
 
 (* ---- iDetectWorkerSlideIntent ----
@@ -2690,10 +2771,18 @@ iRunSingleWorkerSync[task_Association, builder_, queryFn_,
       "OutputSchema" -> Lookup[task, "OutputSchema", <||>]
     |>;
     
-    (* === adapter 6 \:95a2\:6570\:30d5\:30eb\:7d4c\:8def === *)
-    ctxPacket = Quiet @ Check[adapter["BuildContext"][input, <||>], <||>];
-    queryResp = Quiet @ Check[adapter["QueryProvider"][ctxPacket, <||>], None];
-    parsed    = Quiet @ Check[adapter["ParseProposal"][queryResp], None];
+    (* === adapter 6 \:95a2\:6570\:30d5\:30eb\:7d4c\:8def ===
+       \:7f60 #16 \:56de\:907f (2026-06-01): Quiet @ Check[expr, fallback] \:306f expr \:304c
+       Association \:3092\:6b63\:5e38\:306b\:8fd4\:3057\:3066\:3082\:3001QueryProvider \:5185\:90e8\:306e\:7121\:5bb3\:306a
+       Message (StringTake / JSON \:8a66\:884c\:7b49) \:306b\:53cd\:5fdc\:3057\:3066 fallback \:306b\:843d\:3061\:308b\:3002
+       \:305d\:306e\:7d50\:679c queryResp=None \:2192 parsed=None \:2192 NoProposal \:3068\:306a\:308a worker \:304c
+       \:5168\:6ec5\:3057\:3066\:3044\:305f\:3002Check \:3092\:9664\:53bb\:3057 Quiet \:306e\:307f\:306b\:3057\:3001\:623b\:308a\:5024\:304c
+       Association \:3067\:306a\:3044\:3068\:304d\:3060\:3051 fallback \:3092 If \:3067\:660e\:793a\:5224\:5b9a\:3059\:308b\:3002 *)
+    ctxPacket = Quiet[adapter["BuildContext"][input, <||>]];
+    If[!AssociationQ[ctxPacket], ctxPacket = <||>];
+    queryResp = Quiet[adapter["QueryProvider"][ctxPacket, <||>]];
+    parsed    = Quiet[adapter["ParseProposal"][queryResp]];
+    If[!AssociationQ[parsed], parsed = None];
     
     (* ValidateProposal: HeldExpr \:306e\:5b89\:5168\:6027\:691c\:67fb (DenyHead \:7b49) *)
     validation = If[AssociationQ[parsed],
@@ -2988,8 +3077,10 @@ iParseWorkerResult[task_Association, adapter_Association,
       "Attempts"  -> 1,
       "JSONValid" -> True|>;
     
-    parsed  = Quiet @ Check[
-      adapter["ParseProposal"][pseudoQueryResp], None];
+    (* \:7f60 #16 \:56de\:907f: Check \:3092\:9664\:53bb\:3057 Quiet \:306e\:307f\:3002ParseProposal \:304c
+       Association \:3092\:8fd4\:3057\:3066\:3082\:7121\:5bb3 Message \:3067 None \:306b\:843d\:3061\:308b\:306e\:3092\:9632\:3050\:3002 *)
+    parsed  = Quiet[adapter["ParseProposal"][pseudoQueryResp]];
+    If[!AssociationQ[parsed], parsed = None];
     payload = If[AssociationQ[parsed],
       Lookup[parsed, "ArtifactPayload", None], None];
     
@@ -3467,12 +3558,11 @@ ClaudeSpawnWorkers[tasksSpec_Association, opts:OptionsPattern[]] :=
             "Goal"   -> Lookup[t, "Goal", ""],
             "Role"   -> role,
             "TaskId" -> taskId|>;
-          ctxPacket = Quiet @ Check[
-            adapter["BuildContext"][fbInput, <||>], <||>];
-          queryResp = Quiet @ Check[
-            adapter["QueryProvider"][ctxPacket, <||>], None];
-          parsed = Quiet @ Check[
-            adapter["ParseProposal"][queryResp], None];
+          ctxPacket = Quiet[adapter["BuildContext"][fbInput, <||>]];
+          If[!AssociationQ[ctxPacket], ctxPacket = <||>];
+          queryResp = Quiet[adapter["QueryProvider"][ctxPacket, <||>]];
+          parsed = Quiet[adapter["ParseProposal"][queryResp]];
+          If[!AssociationQ[parsed], parsed = None];
           payload = If[AssociationQ[parsed],
             Lookup[parsed, "ArtifactPayload", None], None];
           fbArtifact = If[AssociationQ[payload],
@@ -3528,12 +3618,11 @@ ClaudeSpawnWorkers[tasksSpec_Association, opts:OptionsPattern[]] :=
          KeyExistsQ[adapter, "QueryProvider"] &&
          KeyExistsQ[adapter, "BuildContext"],
         Module[{ctxPacket, queryResp, parsed, payload},
-          ctxPacket = Quiet @ Check[
-            adapter["BuildContext"][input, <||>], <||>];
-          queryResp = Quiet @ Check[
-            adapter["QueryProvider"][ctxPacket, <||>], None];
-          parsed = Quiet @ Check[
-            adapter["ParseProposal"][queryResp], None];
+          ctxPacket = Quiet[adapter["BuildContext"][input, <||>]];
+          If[!AssociationQ[ctxPacket], ctxPacket = <||>];
+          queryResp = Quiet[adapter["QueryProvider"][ctxPacket, <||>]];
+          parsed = Quiet[adapter["ParseProposal"][queryResp]];
+          If[!AssociationQ[parsed], parsed = None];
           payload = If[AssociationQ[parsed],
             Lookup[parsed, "ArtifactPayload", None], None];
           If[AssociationQ[payload],
@@ -7467,12 +7556,16 @@ If[Length[Names["ClaudeCode`$ClaudeEvalHook"]] > 0,
     Module[{plan, tasks, threshold, targetNb, result, verbose, retval,
             refText, model},
       verbose = TrueQ[Quiet @ Check[ClaudeCode`$ClaudeEvalVerbose, False]];
-      (* T08: caller \:304c optsList \:3067 "ReferenceText" \:3092\:6e21\:3059\:3068
-         ClaudeRunOrchestration \:306b\:6e21\:3059\:3002 Slide \:4f5c\:6210\:6642\:306e\:30b5\:30f3\:30d7\:30eb\:672c\:6587\:6ce8\:5165\:306b\:4f7f\:3046\:3002 *)
-      refText = Quiet @ Check[
-        Module[{v}, v = OptionValue[optsList, {"ReferenceText"}, "ReferenceText"];
-          If[v === "ReferenceText", None, v]],
-        None];
+      (* T08 / 2026-06-01: caller (ClaudeEval) が optsList で ReferenceText を
+         渡すと ClaudeRunOrchestration に流す。ClaudeEval の Options は
+         シンボル ReferenceText だが、orchestrator 内部は文字列キー
+         "ReferenceText" で統一されているため、ここで両方を見て正規化する。
+         worker への本文 (レビュー対象 text 等) 注入に使う。 *)
+      refText = Module[{flat, v},
+        flat = Flatten[{optsList}];
+        v = Lookup[flat, ReferenceText,
+              Lookup[flat, "ReferenceText", None]];
+        If[v === None || MatchQ[v, _Missing], None, v]];
       (* v2026-04-20 T08: ClaudeEval \:306e Model \:30aa\:30d7\:30b7\:30e7\:30f3\:3092 orchestration \:306b\:4f1d\:9054\:3002
          ClaudeEval \:306f\:300cModel\:300d\:3092 Options \:306b\:6301\:3064\:306e\:3067 OptionValue[ClaudeEval, ...] \:3067\:53d6\:308a\:51fa\:3059\:3002 *)
       model = Quiet @ Check[
