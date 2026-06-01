@@ -550,9 +550,99 @@ StringContainsQ[loggedCode, "ClaudeQueryBgLogged"]
 
 ---
 
+## 例 A-19: Workflow API で直接 net を組む (proposePetriNet を使わない)
+
+Part A はここまで「自然文 → LLM が生成 → 実行」の流れでしたが、`WorkflowPlace` / `WorkflowTransition` / `WorkflowNet` を直接書いて net を組むこともできます。LLM を介さないので、決定的なテストや、構造が既に分かっているワークフローに向きます。
+
+```mathematica
+(* Place / Transition / Net を組み立て、WorkflowId を発行 *)
+src  = WorkflowPlace["Start"];
+mid  = WorkflowPlace["Mid"];
+dst  = WorkflowPlace["Done"];
+t1   = WorkflowTransition["T1",
+  "InputArcs"  -> {<|"Place" -> "Start", "Multiplicity" -> 1|>},
+  "OutputArcs" -> {<|"Place" -> "Mid",   "Multiplicity" -> 1|>},
+  "Executor"   -> "PureFunction",
+  "RuntimeSpec"-> <|"Handler" -> (# &)|>];
+t2   = WorkflowTransition["T2",
+  "InputArcs"  -> {<|"Place" -> "Mid",   "Multiplicity" -> 1|>},
+  "OutputArcs" -> {<|"Place" -> "Done",  "Multiplicity" -> 1|>},
+  "Executor"   -> "PureFunction",
+  "RuntimeSpec"-> <|"Handler" -> (# &)|>];
+net2 = WorkflowNet[
+  "SourcePlace" -> "Start",
+  "FinalPlaces" -> {"Done"},
+  "Places"      -> <|"Start" -> src, "Mid" -> mid, "Done" -> dst|>,
+  "Transitions" -> <|"T1" -> t1, "T2" -> t2|>];
+wid2 = ClaudeCreateWorkflowNet[net2];
+
+(* トークン投入と実行 *)
+ClaudeSubmitToken[wid2,
+  WorkflowToken["Kind" -> "Task", "Payload" -> <|"id" -> 1|>]];
+ClaudeRunWorkflow[wid2, "MaxSteps" -> 10][["Status"]]
+```
+
+**期待される出力例:** `"Done"`
+
+この net も `instrumentNetForObservation` で包めば例 A-13 / A-14 と同様にトレース・LLM ログを取れます。型ビルダーの全オプション(`Capacity` / `AcceptedKinds` / `Guard` / `RetryPolicy` / `AccessPolicy` / `Timeout` / `Priority` 等)は `api_workflow.md` を参照してください。
+
+---
+
+## 例 A-20: ChatGPT Codex を含む複数プロバイダの混在トレース
+
+`ClaudeOrchestrator_observability.wl` (2026-05-26 以降) は、応答に `ProviderResultMetadata` が含まれていれば自動的に provenance キーを `$LLMCallLog` に保存します。Codex 経由の呼び出しと Claude 経由の呼び出しを同じログから区別できます。
+
+```mathematica
+(* 観測ラッパ付きで workflow を実行(handler 内で複数プロバイダを呼ぶ前提) *)
+clearLLMCallLog[];
+clearObservedHandlerLog[];
+
+netObs = instrumentNetForObservation[net];   (* 例 A-3 の net *)
+widObs = ClaudeCreateWorkflowNet[netObs];
+ClaudeSubmitToken[widObs, WorkflowToken[]];
+ClaudeRunWorkflow[widObs];
+
+(* Provider カラムで区別できる *)
+showLLMCallLog[]
+(* "ChatGPT Codex" / "Claude" / "LM Studio" 等が Provider 列に表示される *)
+
+(* 個別 entry を詳細表示すると Provider / HarnessBundle /
+   DirectiveSnapshot / RuntimeEnvHash も確認できる *)
+showLLMCallLog[1]
+```
+
+**期待される出力例:** `$LLMCallLog` の各行に Provider 列が付いた Dataset。handler が LLM を呼ばない純計算 net の場合はログが空になるため、LLM 呼び出しを含む net(コードレビュー・要約など)で試してください。provenance フィールドの詳細は `api_observability.md` の `$LLMCallLog` を参照。
+
+---
+
 # Part B. オーケストレーション (Plan → Spawn → Reduce → Commit)
 
 DAG ベースのオーケストレーター本体の API を例で示します。Part A のペトリネットは下位の Workflow エンジンを直接使う流れですが、Part B は LLM が分解した DAG を `ClaudeRunOrchestrationAsync` で非同期実行する高水準ラッパです(オーケストレーションはフロントエンドをブロックしない非同期実行に統一されています)。
+
+---
+
+## 例 B-0: ClaudeEval がオーケストレーターに切り替わることの確認
+
+`ClaudeOrchestrator.wl` をロードすると、`ClaudeRuntime` 既定の `$ClaudeEvalHook` がオーケストレーター版に置き換わり、以降の `ClaudeEval` 呼び出しはすべてオーケストレーションパイプライン(非同期)を通るようになります。
+
+```mathematica
+(* ClaudeOrchestrator ロード前 — ClaudeRuntime ベースの ClaudeEval *)
+Needs["ClaudeRuntime`", "ClaudeRuntime.wl"];
+$ClaudeEvalHook   (* ClaudeRuntime 既定のフック *)
+
+(* ClaudeOrchestrator をロード *)
+Block[{$CharacterEncoding = "UTF-8"},
+  Needs["ClaudeOrchestrator`", "ClaudeOrchestrator.wl"]];
+
+(* ロード後 — $ClaudeEvalHook がオーケストレーターに置き換わる *)
+$ClaudeEvalHook   (* ClaudeOrchestrator ベースのフック関数が返る *)
+
+(* 以降の ClaudeEval はすべてオーケストレーターパイプラインを通る(非同期) *)
+ClaudeEval["フィボナッチ数列の最初の 10 項を求めて表示する"]
+(* → ClaudeRunOrchestrationAsync 経由で非同期実行され、orchJobId を即座に返す *)
+```
+
+**期待される動作:** ロード前後で `$ClaudeEvalHook` の中身が変わり、ロード後の `ClaudeEval` は同期的に結果を返さず orchJobId を即座に返す(`$ClaudeOrchestratorAsyncMode` が `True` の場合)。同期挙動に戻すには `$ClaudeOrchestratorAsyncMode = False`。
 
 ---
 
