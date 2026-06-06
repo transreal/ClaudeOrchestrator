@@ -407,6 +407,32 @@ ClaudeListWorkflowSnapshots::usage =
 ClaudeRuntime`ClaudeRuntimeExecuteTransition (新規 adapter API、ClaudeRuntime.wl 側)
 *)
 
+(* === External executor (WolframScript) connection: Phase 3 === *)
+
+ClaudeExternalJobPollTick::usage =
+  "ClaudeExternalJobPollTick[] は AwaitingLLMTransitions に登録された External WolframScript job を走査し、status を読んで完了/失敗/timeout を処理する。\nCompleted -> ClaudeCompleteHandlerOutput で output ref token を produce (slot も OutputArc 経由で返却)。\nFailed/Expired -> RetryPolicy に従い同一 JobDir で再起動 (slot 保持) または terminal failure。\nRunning -> no-op。timeout は poller が単独所有する (External では AwaitingLLMTimeout を使わない: v7 C1)。\n返り値: <|\"Polled\"->_Integer, \"Results\"->{...}|>。";
+
+$ClaudeExternalJobLauncher::usage =
+  "$ClaudeExternalJobLauncher は External job を起動する関数フック。引数 jobSpec (Association) を受け取り <|\"Status\"->\"Launched\"|\"Failed\", \"JobID\", \"JobDir\", \"PID\", \"Reason\"|> を返す。既定 (Automatic) は未設定 Failure であり、Phase 4 runner が実装する。テストで差し替え可能。";
+
+$ClaudeExternalJobStatusReader::usage =
+  "$ClaudeExternalJobStatusReader は External job の status を読む関数フック。引数 awaitMeta を受け取り <|\"Status\"->\"Running\"|\"Completed\"|\"Failed\", \"OutputRef\", \"SourceVaultRef\", \"SummaryRef\", \"ErrorRef\"|> を返す。既定 (Automatic) は JobDir/status.json を読む (無ければ Running)。テストで差し替え可能。";
+
+$ClaudeExternalJobKiller::usage =
+  "$ClaudeExternalJobKiller は External job を強制終了する関数フック。引数 awaitMeta を受け取り pid.json 同一性確認後に kill する。既定 (Automatic) は best-effort no-op (Phase 4 で実装)。";
+
+$ClaudeExternalCompletionHook::usage =
+  "$ClaudeExternalCompletionHook は External job 完了後に呼ばれる注入点 (既定 None)。引数 <|\"WorkflowId\",\"AwaitId\",\"AwaitMeta\",\"Status\"|>。live 統合で Notebook 反映 (final action -> FinalActionQueue) を行うため externalrunner 側が設定する。workflow 本体は疎結合のまま。";
+
+ClaudeSubkernelPollTick::usage =
+  "ClaudeSubkernelPollTick[] は AwaitingLLMTransitions の Subkernel job (AwaitKind=SubkernelTask) を走査し、future の非ブロッキング完了判定を行い、完了時に ClaudeCompleteHandlerOutput で結果を produce (slot は OutputArc で返却)。巨大結果は inline せず summary 化。";
+$ClaudeSubkernelSubmit::usage =
+  "$ClaudeSubkernelSubmit は Subkernel executor の submit 関数 (fn[HoldComplete[expr], accessSpec] -> <|\"Handle\"->_|> | None)。Automatic は ParallelSubmit[NBExecuteHeldExprSubkernelRaw[...]] (kernel/関数が利用可能なとき)。テストで mock 注入可。";
+$ClaudeSubkernelPoll::usage =
+  "$ClaudeSubkernelPoll は Subkernel job の非ブロッキング完了判定 (fn[handle] -> <|\"Done\"->_, \"Result\"->_|>)。Automatic は future の非ブロッキング poll。テストで mock 注入可。";
+$ClaudeSubkernelResultInlineLimit::usage =
+  "$ClaudeSubkernelResultInlineLimit は subkernel 結果を token payload に inline できる ByteCount 上限 (既定 64KB)。超過時は summary 化。";
+
 (* ::Subsection:: *)
 (* Private *)
 
@@ -696,7 +722,7 @@ iValidateWorkflowNet[wf_Association] :=
         (* 5. Executor の許容値 *)
         With[{exec = Lookup[trans, "Executor", "PureFunction"]},
           If[!MemberQ[
-              {"ClaudeRuntime", "PackageManager", "PureFunction", "External"}, exec],
+              {"ClaudeRuntime", "PackageManager", "PureFunction", "External", "Subkernel"}, exec],
             AppendTo[errors,
               "TransitionExecutorInvalid: " <> tname <> " -> " <> ToString[exec]]
           ]
@@ -1442,6 +1468,11 @@ ClaudeFireTransition[wid_String, transitionName_String,
               tmoWf    = Lookup[newWf, "DefaultAwaitingLLMTimeout", None]},
           Module[{effectiveTmo},
             effectiveTmo = Which[
+              (* v7 C1: External/Subkernel の async job は AwaitingLLM の成功扱い
+                 timeout を使わない (孤児/誤完了回避)。timeout は poller が単独所有。 *)
+              MemberQ[{"ExternalWolframScriptJob", "SubkernelTask"},
+                Lookup[If[AssociationQ[partialPayload], partialPayload, <||>],
+                  "AwaitKind", ""]], None,
               NumericQ[tmoTrans] && tmoTrans > 0, N[tmoTrans],
               NumericQ[tmoWf]    && tmoWf    > 0, N[tmoWf],
               True, None];
@@ -1508,9 +1539,11 @@ iExecuteTransition[trans_Association, binding_Association] :=
           "Reason"  -> "PackageManager executor: Stage B Week 2 で実装",
           "Output"  -> binding|>,
       "External",
-        <|"Status"  -> "Stub",
-          "Reason"  -> "External executor: 後続フェーズで実装",
-          "Output"  -> binding|>,
+        (* Phase 3: WolframScript backend を AwaitingLLM 機構へ接続 *)
+        iExecuteExternalBranch[trans, binding],
+      "Subkernel",
+        (* Phase 3.5: subkernel backend を AwaitingLLM 機構へ接続 *)
+        iExecuteSubkernelBranch[trans, binding],
       _,
         <|"Status"  -> "Failed",
           "Reason"  -> "UnknownExecutor: " <> ToString[executor]|>
@@ -2972,6 +3005,381 @@ ClaudeCancelWorkflow[wid_String] :=
    v1 -> v2 snapshot 自動変換
      iRestoreFromV1 / iConvertXSMSnapshotToMTP
 *)
+
+(* ::Subsection:: *)
+(* External executor (WolframScript) connection: Phase 3 *)
+
+(* ────────────────────────────────────────────────────────
+   設計 (v7 §3, §7, §8, M1):
+   - External transition は fire 時に runner を launch し AwaitingLLM を返す
+     (AwaitingLLMTimeout は設定しない; timeout は poller が単独所有)。
+   - resource-place slot は net 構築で External transition の InputArcs と
+     OutputArcs に WolframScriptSlots place を加えることで表現する。
+     fire 時に slot を consume、ClaudeCompleteHandlerOutput (terminal 完了) 時に
+     OutputArcs 経由で返却。retry 中は complete しないので slot は保持される。
+   - launcher / status reader / killer は差し替え可能なフック
+     (本体の実 runner は Phase 4)。
+   ──────────────────────────────────────────────────────── *)
+
+If[! ValueQ[$ClaudeExternalJobLauncher],      $ClaudeExternalJobLauncher = Automatic];
+If[! ValueQ[$ClaudeExternalJobStatusReader],  $ClaudeExternalJobStatusReader = Automatic];
+If[! ValueQ[$ClaudeExternalJobKiller],        $ClaudeExternalJobKiller = Automatic];
+If[! ValueQ[$ClaudeExternalCompletionHook],   $ClaudeExternalCompletionHook = None];
+
+(* 既定 launcher: Phase 4 runner 未配線時は安全に Failed (atomic rollback で
+   input/slot token は消費されない)。 *)
+iDefaultExternalLauncher[jobSpec_Association] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "ExternalRunnerNotConfigured: Phase 4 runner / $ClaudeExternalJobLauncher 未設定"|>;
+
+(* 既定 status reader: JobDir/status.json を読む。無ければ Running。 *)
+iDefaultExternalStatusReader[awaitMeta_Association] :=
+  Module[{dir, f, raw},
+    dir = Lookup[awaitMeta, "JobDir", None];
+    If[! StringQ[dir], Return[<|"Status" -> "Running"|>]];
+    f = FileNameJoin[{dir, "status.json"}];
+    If[! FileExistsQ[f], Return[<|"Status" -> "Running"|>]];
+    raw = Quiet @ Check[Import[f, "RawJSON"], $Failed];
+    If[AssociationQ[raw], raw, <|"Status" -> "Running"|>]
+  ];
+
+(* 既定 killer: best-effort no-op (Phase 4 で pid.json 同一性確認 + kill)。 *)
+iDefaultExternalKiller[awaitMeta_Association] := Null;
+
+iExternalResolveLauncher[]     := If[$ClaudeExternalJobLauncher === Automatic,
+                                     iDefaultExternalLauncher, $ClaudeExternalJobLauncher];
+iExternalResolveStatusReader[] := If[$ClaudeExternalJobStatusReader === Automatic,
+                                     iDefaultExternalStatusReader, $ClaudeExternalJobStatusReader];
+iExternalResolveKiller[]       := If[$ClaudeExternalJobKiller === Automatic,
+                                     iDefaultExternalKiller, $ClaudeExternalJobKiller];
+
+(* External executor branch: launch して AwaitingLLM を返す。
+   ClaudeFireTransition の Awaiting branch がこれを拾い、input(+slot) を consume し
+   AwaitingLLMTransitions に AwaitMeta (PartialPayload) を記録する。 *)
+iExecuteExternalBranch[trans_Association, binding_Association] :=
+  Module[{opts, backend, handler, wid, awaitId, timeout, jobSpec,
+          launcher, launched, awaitMeta},
+    (* ExecutorOptions は RuntimeSpec 配下を正とし、top-level も後方互換で見る
+       (WorkflowTransition の Options に ExecutorOptions は無いため RuntimeSpec に置く)。 *)
+    opts    = Lookup[Lookup[trans, "RuntimeSpec", <||>], "ExecutorOptions",
+                Lookup[trans, "ExecutorOptions", <||>]];
+    backend = Lookup[opts, "Backend", "WolframScript"];
+    handler = Lookup[opts, "Handler", Missing["NoHandler"]];
+    wid     = $ClaudeCurrentWid;
+    awaitId = If[StringQ[wid], iGenerateAwaitId[wid],
+                "await-ext-" <> ToString[UnixTime[]]];
+    (* Timeout は RuntimeSpec > transition top-level > ExecutorOptions の順で解決 *)
+    timeout = SelectFirst[
+      {Lookup[Lookup[trans, "RuntimeSpec", <||>], "Timeout", None],
+       Lookup[trans, "Timeout", None],
+       Lookup[opts, "Timeout", None]},
+      NumericQ, 3600];
+
+    jobSpec = <|
+      "WorkflowID"     -> wid,
+      "TransitionName" -> Lookup[trans, "Name", "?"],
+      "AwaitId"        -> awaitId,
+      "Backend"        -> backend,
+      "Handler"        -> handler,
+      "Binding"        -> binding,
+      "Inputs"         -> iFlattenBinding[binding],
+      "Timeout"        -> timeout,
+      "AccessSpec"     -> Lookup[trans[["RuntimeSpec"]], "AccessSpec", <||>]
+    |>;
+
+    launcher = iExternalResolveLauncher[];
+    launched = Quiet @ Check[launcher[jobSpec],
+      <|"Status" -> "Failed", "Reason" -> "LauncherException"|>];
+
+    If[! AssociationQ[launched] || Lookup[launched, "Status", ""] =!= "Launched",
+      Return[<|"Status" -> "Failed",
+        "Reason" -> "ExternalLaunchFailed: " <>
+          ToString[Lookup[launched, "Reason", "unknown"]]|>]];
+
+    awaitMeta = <|
+      "AwaitKind" -> "ExternalWolframScriptJob",
+      "JobID"     -> Lookup[launched, "JobID", awaitId],
+      "JobDir"    -> Lookup[launched, "JobDir", None],
+      "PID"       -> Lookup[launched, "PID", None],
+      "Handler"   -> handler,
+      "Backend"   -> backend,
+      "Timeout"   -> timeout,
+      "Attempt"   -> 0
+    |>;
+
+    (* PartialPayload に AwaitMeta を格納 -> AwaitingLLMTransitions entry に保存され、
+       poller / snapshot から参照可能。AwaitingLLMTimeout は設定しない (v7 C1)。 *)
+    <|"Status"         -> "Awaiting",
+      "AwaitId"        -> awaitId,
+      "Output"         -> <|"Payload" -> awaitMeta|>,
+      "PartialPayload" -> awaitMeta|>
+  ];
+
+(* ─── poller ─── *)
+
+ClaudeExternalJobPollTick[] :=
+  Module[{results = {}},
+    Scan[
+      Function[wid,
+        Module[{wf, awaiting},
+          wf = Lookup[$iWorkflowNets, wid, None];
+          If[AssociationQ[wf] &&
+             ! MemberQ[{"Cancelled", "Done", "Paused"}, Lookup[wf, "Status", ""]],
+            awaiting = Lookup[wf, "AwaitingLLMTransitions", <||>];
+            KeyValueMap[
+              Function[{aid, entry},
+                Module[{pp},
+                  pp = Lookup[entry, "PartialPayload", <||>];
+                  If[AssociationQ[pp] &&
+                     Lookup[pp, "AwaitKind", ""] === "ExternalWolframScriptJob",
+                    AppendTo[results, iExternalPollOne[wid, aid, entry, pp]]]
+                ]],
+              awaiting]
+          ]
+        ]],
+      Keys[$iWorkflowNets]];
+    <|"Polled" -> Length[results], "Results" -> results|>
+  ];
+
+iExternalPollOne[wid_String, aid_String, entry_Association, awaitMeta_Association] :=
+  Module[{reader, status, st, elapsed, timeout, startT},
+    startT  = Lookup[entry, "StartTime", iCurrentTime[]];
+    timeout = Lookup[awaitMeta, "Timeout", Infinity];
+    elapsed = iCurrentTime[] - startT;
+    (* timeout を最優先で判定 (poller が単独所有) *)
+    If[NumericQ[timeout] && timeout > 0 && elapsed > timeout,
+      Return[iExternalHandleTimeout[wid, aid, entry, awaitMeta]]];
+    reader = iExternalResolveStatusReader[];
+    status = Quiet @ Check[reader[awaitMeta], <|"Status" -> "Running"|>];
+    If[! AssociationQ[status], status = <|"Status" -> "Running"|>];
+    st = Lookup[status, "Status", "Running"];
+    Switch[st,
+      "Completed",          iExternalComplete[wid, aid, awaitMeta, status],
+      "Failed" | "Expired", iExternalFailOrRetry[wid, aid, entry, awaitMeta, status],
+      _,                    <|"AwaitId" -> aid, "Action" -> "NoOp", "Status" -> st|>
+    ]
+  ];
+
+(* Completed: output は ref のみ payload に載せる (v7 §7.3 / §10.1)。
+   ClaudeCompleteHandlerOutput が OutputArcs を produce -> result place に ref token、
+   slot place に slot token (= slot 返却)。 *)
+iExternalComplete[wid_String, aid_String, awaitMeta_Association, status_Association] :=
+  Module[{},
+    ClaudeCompleteHandlerOutput[wid, aid, <|"Payload" -> <|
+      "Status"         -> "Completed",
+      "JobID"          -> Lookup[awaitMeta, "JobID", aid],
+      "OutputRef"      -> Lookup[status, "OutputRef", None],
+      "SourceVaultRef" -> Lookup[status, "SourceVaultRef", None],
+      "SummaryRef"     -> Lookup[status, "SummaryRef", None]
+    |>|>];
+    (* completion hook (live 統合): 完了後に Notebook 反映等を行う注入点。
+       workflow は疎結合のまま; 反映ロジックは externalrunner 側が設定する
+       (final action 構築 -> FinalActionQueue enqueue)。 *)
+    If[$ClaudeExternalCompletionHook =!= None,
+      Quiet @ Check[
+        $ClaudeExternalCompletionHook[<|
+          "WorkflowId" -> wid, "AwaitId" -> aid,
+          "AwaitMeta" -> awaitMeta, "Status" -> status|>],
+        Null]];
+    <|"AwaitId" -> aid, "Action" -> "Completed"|>];
+
+(* Failed/Expired: RetryPolicy に従い retry (slot 保持) か terminal failure。 *)
+iExternalFailOrRetry[wid_String, aid_String, entry_Association,
+                     awaitMeta_Association, status_Association] :=
+  Module[{wf, trans, retryPolicy, maxRetries, attempt},
+    wf      = Lookup[$iWorkflowNets, wid, <||>];
+    trans   = Lookup[Lookup[wf, "Transitions", <||>],
+                Lookup[entry, "TransitionName", "?"], <||>];
+    retryPolicy = Lookup[Lookup[trans, "RuntimeSpec", <||>], "RetryPolicy",
+                    Lookup[trans, "RetryPolicy", <|"MaxRetries" -> 0|>]];
+    maxRetries  = Lookup[retryPolicy, "MaxRetries", 0];
+    attempt     = Lookup[awaitMeta, "Attempt", 0];
+    If[IntegerQ[maxRetries] && attempt < maxRetries,
+      iExternalRetry[wid, aid, entry, awaitMeta, attempt + 1],
+      (* terminal failure: ref のみの failure payload。slot は OutputArc で返却。 *)
+      ClaudeCompleteHandlerOutput[wid, aid, <|"Payload" -> <|
+        "Status"            -> "Failed",
+        "JobID"             -> Lookup[awaitMeta, "JobID", aid],
+        "ErrorRef"          -> Lookup[status, "ErrorRef", None],
+        "FailureSummaryRef" -> Lookup[status, "FailureSummaryRef", None]
+      |>|>];
+      <|"AwaitId" -> aid, "Action" -> "TerminalFailed", "Attempt" -> attempt|>
+    ]
+  ];
+
+(* retry: 同一 JobDir/checkpoint から再起動。complete しないので slot は保持
+   (awaiting entry を維持し Attempt++、StartTime をリセット)。input token は再消費しない。 *)
+iExternalRetry[wid_String, aid_String, entry_Association,
+               awaitMeta_Association, newAttempt_Integer] :=
+  Module[{launcher, jobSpec, launched, newMeta, newEntry, wf},
+    launcher = iExternalResolveLauncher[];
+    jobSpec  = <|
+      "WorkflowID" -> wid, "AwaitId" -> aid,
+      (* 同一 JobID -> launcher が同一 JobDir を再利用 -> checkpoint resume (v7 §7.5) *)
+      "JobID"      -> Lookup[awaitMeta, "JobID", None],
+      "Backend"    -> Lookup[awaitMeta, "Backend", "WolframScript"],
+      "Handler"    -> Lookup[awaitMeta, "Handler", Missing["NoHandler"]],
+      "JobDir"     -> Lookup[awaitMeta, "JobDir", None],
+      "Resume"     -> True,
+      "Attempt"    -> newAttempt,
+      "Timeout"    -> Lookup[awaitMeta, "Timeout", 3600]
+    |>;
+    launched = Quiet @ Check[launcher[jobSpec], <|"Status" -> "Failed"|>];
+    If[! AssociationQ[launched] || Lookup[launched, "Status", ""] =!= "Launched",
+      ClaudeCompleteHandlerOutput[wid, aid, <|"Payload" -> <|
+        "Status" -> "Failed", "JobID" -> Lookup[awaitMeta, "JobID", aid],
+        "ErrorRef" -> "RelaunchFailed"|>|>];
+      Return[<|"AwaitId" -> aid, "Action" -> "RetryLaunchFailed",
+        "Attempt" -> newAttempt|>]];
+    newMeta = Join[awaitMeta, <|
+      "Attempt" -> newAttempt,
+      "PID"     -> Lookup[launched, "PID", Lookup[awaitMeta, "PID", None]],
+      "JobDir"  -> Lookup[launched, "JobDir", Lookup[awaitMeta, "JobDir", None]]|>];
+    newEntry = Join[entry, <|"PartialPayload" -> newMeta, "StartTime" -> iCurrentTime[]|>];
+    wf = Lookup[$iWorkflowNets, wid, <||>];
+    If[AssociationQ[wf] && KeyExistsQ[wf, "AwaitingLLMTransitions"],
+      wf = ReplacePart[wf, {"AwaitingLLMTransitions", aid} -> newEntry];
+      AssociateTo[$iWorkflowNets, wid -> wf]];
+    <|"AwaitId" -> aid, "Action" -> "Retried", "Attempt" -> newAttempt|>
+  ];
+
+(* timeout: kill -> Expired として fail-or-retry へ。下流 token を成功 produce しない。 *)
+iExternalHandleTimeout[wid_String, aid_String, entry_Association,
+                       awaitMeta_Association] :=
+  Module[{killer},
+    killer = iExternalResolveKiller[];
+    Quiet @ Check[killer[awaitMeta], Null];
+    iExternalFailOrRetry[wid, aid, entry, awaitMeta,
+      <|"Status" -> "Expired", "ErrorRef" -> "Timeout"|>]
+  ];
+
+(* ════════════════════════════════════════════════════════
+   Subkernel executor (Phase 3.5): External と同じ AwaitingLLM + resource-place
+   (SubkernelSlots) 機構を再利用。submit/poll は seam (既定 = ParallelSubmit +
+   NBExecuteHeldExprSubkernelRaw / 非ブロッキング future poll、テストで mock 可)。
+   巨大結果は token payload に inline せず summary 化 (main へ raw 返却しない)。
+   ════════════════════════════════════════════════════════ *)
+
+If[! ValueQ[$ClaudeSubkernelSubmit], $ClaudeSubkernelSubmit = Automatic];
+If[! ValueQ[$ClaudeSubkernelPoll],   $ClaudeSubkernelPoll = Automatic];
+If[! IntegerQ[$ClaudeSubkernelResultInlineLimit],
+  $ClaudeSubkernelResultInlineLimit = 64*1024];
+
+(* 既定 submit: ParallelSubmit[NBExecuteHeldExprSubkernelRaw[heldExpr, accessSpec]]。
+   kernel 未起動 / 関数未ロードなら None (graceful fail)。 *)
+SetAttributes[iDefaultSubkernelSubmit, HoldAllComplete];
+iDefaultSubkernelSubmit[heldExpr_, accessSpec_] :=
+  Module[{he},
+    If[Length[DownValues[NBAccess`NBExecuteHeldExprSubkernelRaw]] === 0 ||
+       Length[Kernels[]] === 0,
+      Return[None]];
+    he = heldExpr;  (* HoldComplete[expr] *)
+    Quiet @ Check[
+      <|"Handle" -> ParallelSubmit[
+          NBAccess`NBExecuteHeldExprSubkernelRaw[he, accessSpec]]|>,
+      None]
+  ];
+
+(* 既定 poll: 非ブロッキング future 完了判定。ClaudeRuntime の iPollFutureComplete
+   が利用可能ならそれを使う。 *)
+iDefaultSubkernelPoll[handle_Association] :=
+  Module[{future, r},
+    future = Lookup[handle, "Handle", None];
+    If[future === None, Return[<|"Done" -> True, "Result" -> $Failed|>]];
+    If[Length[DownValues[ClaudeRuntime`Private`iPollFutureComplete]] > 0,
+      r = ClaudeRuntime`Private`iPollFutureComplete[future, 0.01];
+      <|"Done" -> TrueQ[Lookup[r, "Completed", False]],
+        "Result" -> Lookup[r, "Result", None]|>,
+      (* fallback: WaitAll を極短 timeout で *)
+      Module[{done},
+        done = Quiet @ Check[
+          TimeConstrained[WaitAll[future]; True, 0.01, False], False];
+        If[TrueQ[done],
+          <|"Done" -> True, "Result" -> Quiet[future]|>,
+          <|"Done" -> False, "Result" -> None|>]]]
+  ];
+
+iSubkernelResolveSubmit[] :=
+  If[$ClaudeSubkernelSubmit === Automatic, iDefaultSubkernelSubmit, $ClaudeSubkernelSubmit];
+iSubkernelResolvePoll[] :=
+  If[$ClaudeSubkernelPoll === Automatic, iDefaultSubkernelPoll, $ClaudeSubkernelPoll];
+
+(* Subkernel executor branch: held expr を subkernel へ submit し AwaitingLLM を返す。 *)
+iExecuteSubkernelBranch[trans_Association, binding_Association] :=
+  Module[{rt, heldExpr, accessSpec, submit, submitted, wid, awaitId, timeout},
+    rt = Lookup[trans, "RuntimeSpec", <||>];
+    heldExpr   = Lookup[rt, "SubkernelExpr", Lookup[rt, "HeldExpr", Missing["NoExpr"]]];
+    accessSpec = Lookup[rt, "AccessSpec", <||>];
+    If[! MatchQ[heldExpr, _HoldComplete],
+      Return[<|"Status" -> "Failed", "Reason" -> "NoSubkernelExpr (RuntimeSpec SubkernelExpr に HoldComplete[...] が必要)"|>]];
+    submit = iSubkernelResolveSubmit[];
+    submitted = Quiet @ Check[submit[heldExpr, accessSpec], None];
+    If[! AssociationQ[submitted] || ! KeyExistsQ[submitted, "Handle"],
+      Return[<|"Status" -> "Failed", "Reason" -> "SubkernelSubmitUnavailable"|>]];
+    wid     = $ClaudeCurrentWid;
+    awaitId = If[StringQ[wid], iGenerateAwaitId[wid], "await-sk-" <> ToString[UnixTime[]]];
+    timeout = SelectFirst[{Lookup[rt, "Timeout", None], Lookup[trans, "Timeout", None]},
+                NumericQ, None];
+    With[{meta = <|"AwaitKind" -> "SubkernelTask",
+                   "Handle" -> submitted["Handle"], "Timeout" -> timeout|>},
+      <|"Status" -> "Awaiting", "AwaitId" -> awaitId,
+        "Output" -> <|"Payload" -> <|"AwaitKind" -> "SubkernelTask"|>|>,
+        "PartialPayload" -> meta|>]
+  ];
+
+(* subkernel 結果を payload 化 (巨大は summary)。 *)
+iSubkernelResultPayload[result_] :=
+  Module[{bytes},
+    bytes = Quiet @ Check[ByteCount[result], "Unknown"];
+    If[IntegerQ[bytes] && bytes <= $ClaudeSubkernelResultInlineLimit,
+      <|"Status" -> "Completed", "Result" -> result, "ByteCount" -> bytes|>,
+      <|"Status" -> "Completed", "Inlined" -> False, "ByteCount" -> bytes,
+        "Head" -> Quiet @ Check[ToString[Head[result]], "?"]|>]
+  ];
+
+ClaudeSubkernelPollTick[] :=
+  Module[{results = {}},
+    Scan[
+      Function[wid,
+        Module[{wf, awaiting},
+          wf = Lookup[$iWorkflowNets, wid, None];
+          If[AssociationQ[wf] &&
+             ! MemberQ[{"Cancelled", "Done", "Paused"}, Lookup[wf, "Status", ""]],
+            awaiting = Lookup[wf, "AwaitingLLMTransitions", <||>];
+            KeyValueMap[
+              Function[{aid, entry},
+                Module[{pp},
+                  pp = Lookup[entry, "PartialPayload", <||>];
+                  If[AssociationQ[pp] &&
+                     Lookup[pp, "AwaitKind", ""] === "SubkernelTask",
+                    AppendTo[results, iSubkernelPollOne[wid, aid, entry, pp]]]]],
+              awaiting]]]],
+      Keys[$iWorkflowNets]];
+    <|"Polled" -> Length[results], "Results" -> results|>
+  ];
+
+iSubkernelPollOne[wid_String, aid_String, entry_Association, awaitMeta_Association] :=
+  Module[{poll, st, elapsed, timeout, startT, result},
+    startT  = Lookup[entry, "StartTime", iCurrentTime[]];
+    timeout = Lookup[awaitMeta, "Timeout", Infinity];
+    elapsed = iCurrentTime[] - startT;
+    If[NumericQ[timeout] && timeout > 0 && elapsed > timeout,
+      ClaudeCompleteHandlerOutput[wid, aid,
+        <|"Payload" -> <|"Status" -> "Failed", "ErrorRef" -> "SubkernelTimeout"|>|>];
+      Return[<|"AwaitId" -> aid, "Action" -> "Timeout"|>]];
+    poll = iSubkernelResolvePoll[];
+    st = Quiet @ Check[poll[awaitMeta], <|"Done" -> False|>];
+    If[! AssociationQ[st] || ! TrueQ[Lookup[st, "Done", False]],
+      Return[<|"AwaitId" -> aid, "Action" -> "NoOp"|>]];
+    result = Lookup[st, "Result", None];
+    If[result === $Failed,
+      ClaudeCompleteHandlerOutput[wid, aid,
+        <|"Payload" -> <|"Status" -> "Failed", "ErrorRef" -> "SubkernelEvalFailed"|>|>];
+      <|"AwaitId" -> aid, "Action" -> "Failed"|>,
+      ClaudeCompleteHandlerOutput[wid, aid,
+        <|"Payload" -> iSubkernelResultPayload[result]|>];
+      <|"AwaitId" -> aid, "Action" -> "Completed"|>]
+  ];
 
 (* ::Subsection:: *)
 (* End *)

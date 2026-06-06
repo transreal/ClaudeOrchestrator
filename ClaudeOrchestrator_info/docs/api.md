@@ -178,6 +178,5 @@ LLM-backed commit と iDeterministicSlideCommit がいずれも失敗/不十分�
 ## 自動ロードされるコンパニオンパッケージ
 ClaudeOrchestrator.wl ロード時に以下を自動ロード (失敗しても本体ロードは壊れない):
 - [ClaudeOrchestrator_workflow](https://github.com/transreal/ClaudeOrchestrator_workflow) (workflow engine + shim)
-- ClaudeOrchestrator_stategraph (ClaudeStateGraph` namespace)
 - [ClaudeOrchestrator_observability](https://github.com/transreal/ClaudeOrchestrator_observability) ($petriObservabilityVersion で重複回避。ClaudeQueryBgLogged / plotPetriNetDetail / traceTransitions / showLLMCallLog / withLLMLogging 等)
 - [ClaudeOrchestrator_promptworkflow](https://github.com/transreal/ClaudeOrchestrator_promptworkflow) ($ClaudePromptWorkflowVersion で重複回避。`Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` でロード前に無効化可)

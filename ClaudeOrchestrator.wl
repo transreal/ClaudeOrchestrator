@@ -117,6 +117,47 @@ ClaudeContinueBatch::usage =
   "opts: WaitBetween -> Quantity[1, \"Seconds\"]\n" <>
   "戻り値: {<|\"Index\"->i, \"Prompt\"->..., \"Result\"->...|>, ...}";
 
+(* ---- Step 4d: Orchestrator final node \:5206\:96e2 (spec \:00a711 / I11) ---- *)
+
+ClaudeOrchestratorClassifyArtifactActions::usage =
+  "ClaudeOrchestratorClassifyArtifactActions[artifacts, accessSpec] は\n" <>
+  "各 artifact の HeldExpr を NBValidateHeldExpr で判定し、\n" <>
+  "RequiresFinalNode で safe computation node と final action node に\n" <>
+  "振り分ける (spec I11)。artifacts は taskId -> artifact の Association\n" <>
+  "または artifact の List。HeldExpr / Payload[\"HeldExpr\"] を持たない\n" <>
+  "artifact は副作用なしとみなし Safe に分類する。\n" <>
+  "戻り値: <|\"Safe\"->{...}, \"Final\"->{...}, \"Diagnostics\"->{...}|>。\n" <>
+  "各 Final 要素は <|\"TaskId\", \"Artifact\", \"Validation\",\n" <>
+  "\"ExecutionPlacement\", \"BlockingRisk\", \"EffectClass\", \"Decision\"|>。";
+
+ClaudeOrchestratorExtractFinalActions::usage =
+  "ClaudeOrchestratorExtractFinalActions[orchestrationResult, accessSpec]\n" <>
+  "は ClaudeRunOrchestration の結果から RequiresFinalNode な action を\n" <>
+  "分離し、通常 step (safe) と final action node に整理する (spec I11)。\n" <>
+  "戻り値: 元の result に \"FinalActions\" / \"SafeArtifacts\" /\n" <>
+  "\"HasFinalActions\" を加えた Association。final action は自動実行せず、\n" <>
+  "承認後にメインカーネル評価で実行することを前提とする (罠 #30)。";
+
+ClaudeOrchestrationShowFinalActions::usage =
+  "ClaudeOrchestrationShowFinalActions[orchJobId] は async orchestration の\n" <>
+  "完了後に分離された final action (FrontEnd/desktop 操作) を承認ボタンセル\n" <>
+  "として notebook に提示する (§5.1)。この関数は必ずユーザーのメインカーネル\n" <>
+  "評価 (セル実行) で呼ぶこと。scheduled task から呼ぶと SystemOpen / notebook\n" <>
+  "書き込みが無反応になる (罠 #30)。ボタン本体 (Method->Queued) が押されたとき\n" <>
+  "に初めて SystemOpen を実行する。\n" <>
+  "戻り値: 提示した final action の件数。";
+
+ClaudeOrchestratorPresentFinalActions::usage =
+  "ClaudeOrchestratorPresentFinalActions[finalActions, accessSpec, opts]\n" <>
+  "は分離済み final action を承認 UI へ提示する形に整える (spec I11 /\n" <>
+  "案3-lite)。SystemOpen 等 desktop action は scheduled task では効かない\n" <>
+  "ため (罠 #30)、自動実行せずユーザーのメインカーネル評価 (ボタン押下)\n" <>
+  "で実行する想定。\n" <>
+  "opts: Mode -> \"Present\" (既定、UI 用 record を返すのみ) |\n" <>
+  "      \"Enqueue\" (NBEnqueueFinalAction で queue 化し AsyncActive 解除後\n" <>
+  "      の実行に委ねる)。\n" <>
+  "戻り値: <|\"Mode\", \"Items\"->{...}, \"Count\"|>。";
+
 $ClaudeOrchestratorRoles::usage =
   "$ClaudeOrchestratorRoles は許容 Role のリスト:\n" <>
   "{\"Explore\", \"Plan\", \"Draft\", \"Verify\", \"Reduce\", \"Commit\"}";
@@ -5418,7 +5459,8 @@ ClearAll[iAttemptDirectLLMCodeRescue];
 
 iAttemptDirectLLMCodeRescue[targetNb_, lastProviderResp_] :=
   Module[{rawStr, codeBlocks, codeBlocks2, code, heldExpr, rewritten,
-          execResult, nbwCount, nbwCountInHeld, diagExtra},
+          execResult, nbwCount, nbwCountInHeld, diagExtra,
+          committerSpec, execAssoc},
     
     diagExtra = <||>;
     
@@ -5536,36 +5578,59 @@ iAttemptDirectLLMCodeRescue[targetNb_, lastProviderResp_] :=
         Heads -> False]], 0];
     diagExtra["NbwCountInRewritten"] = nbwCount;
     
-    (* 6. ReleaseHold で実行
+    (* 6. 実行 (Phase D-3, 2026-06-03):
        
-       v2026-04-20 T18: ReleaseHold 直前に SelectionMove で Notebook 末尾に
-       insertion point を移す。
+       旧来は SelectionMove 後に直接 ReleaseHold[rewritten] していた (A 分類)。
+       spec 16.2 / I1 に従い、NBAccess`NBExecuteHeldExpr 経由に置換する。
+       rewritten は NotebookWrite を含むため通常は NeedsApproval だが、
+       Committer ロールの accessSpec + ApprovalMode -> "CommitterAutoApprove" で
+       自動 commit 互換を維持する (spec 4.8 挙動 6-7 / 17.6)。
+       昇格条件 (ExecutionRole=Committer / MayWriteNotebook / MainOnly /
+       TargetNotebook 一致 / 承認 head が全て書き込み系) を NBExecuteHeldExpr が
+       照合し、満たさなければ実行しない。
        
-       背景 (test20 で観察された症状):
-         ClaudeEval を評価した Input セルの Output 位置に NotebookWrite が
-         作用し、既存 Output セルと視覚的に融合する形で描画されていた
-         (Section / Text / Output の 3 セルが Input セルのグループに
-         押し込まれ、「1から200の和公式 : ...20100」のように連結して
-         見える)。
-       
-       SelectionMove[nb, After, Notebook] は Notebook の一番末尾に
-       insertion point を移し、以降の NotebookWrite はそこへ追加される。
-       既存のセルグループに割り込まないので、LLM 出力は独立した新規
-       セルとして末尾に並ぶ。
-       
-       NotebookWrite[nb, Cell[...]] は nb の current insertion point を
-       使うので、SelectionMove で移せば追記先が制御できる。*)
-    If[MatchQ[targetNb, _NotebookObject],
-      Quiet @ Check[
-        SelectionMove[targetNb, After, Notebook],
-        Null]];
-    
-    execResult = Quiet @ Check[
-      ReleaseHold[rewritten],
+       SelectionMove は PreExecutionNotebookActions ("MoveSelectionAfterNotebook")
+       として NBExecuteHeldExpr の ReleaseHold 直前に実行させる (spec 4.10)。
+       これにより直 SelectionMove + 直 ReleaseHold の 2 つの生副作用が消える。 *)
+    committerSpec = Quiet @ Check[
+      With[{base = NBAccess`NBMakeRuntimeAccessSpec[
+          <|"Caller" -> "DirectLLMRescue"|>, "Committer"]},
+        (* TargetNotebook は accessSpec に含まれないため明示注入 (pre-action 照合用)。 *)
+        Append[base, "TargetNotebook" -> targetNb]],
       $Failed];
+    If[! AssociationQ[committerSpec],
+      diagExtra["CommitterSpecFailed"] = True;
+      Return[<|"Used" -> "DirectLLM", "Status" -> "ExecFailed",
+               "CellsWritten" -> 0,
+               "RawCode" -> StringTake[code, UpTo[200]],
+               "Diag" -> diagExtra|>]];
+
+    execAssoc = Quiet @ Check[
+      NBAccess`NBExecuteHeldExpr[rewritten, committerSpec,
+        "TimeConstraint" -> Infinity,
+        "ApprovalMode" -> "CommitterAutoApprove",
+        "PreExecutionNotebookActions" -> {
+          <|"Action" -> "MoveSelectionAfterNotebook",
+            "Notebook" -> targetNb,
+            "Reason" -> "DirectLLMRescue: append at notebook end"|>}],
+      $Failed];
+
+    diagExtra["NBExecuteDecision"] =
+      If[AssociationQ[execAssoc], Lookup[execAssoc, "Decision", None], None];
+    diagExtra["CommitterAutoApproveExecuted"] =
+      If[AssociationQ[execAssoc],
+        TrueQ[Lookup[execAssoc, "CommitterAutoApproveExecuted", False]], False];
+    diagExtra["ExecutedPreActions"] =
+      If[AssociationQ[execAssoc], Lookup[execAssoc, "ExecutedPreActions", {}], {}];
+
+    execResult = If[AssociationQ[execAssoc] &&
+        TrueQ[Lookup[execAssoc, "Success", False]],
+      Lookup[execAssoc, "RawResult", $Failed], $Failed];
+    diagExtra["SelectionMoveApplied"] =
+      MemberQ[Lookup[diagExtra, "ExecutedPreActions", {}],
+        "MoveSelectionAfterNotebook"];
     
     diagExtra["ExecSucceeded"] = (execResult =!= $Failed);
-    diagExtra["SelectionMoveApplied"] = True;   (* T18 *)
     
     If[execResult === $Failed,
       Return[<|"Used" -> "DirectLLM", "Status" -> "ExecFailed",
@@ -5856,6 +5921,16 @@ Options[ClaudeRunOrchestration] = {
   "DeterministicFallback"    -> True   (* v2026-04-20 T10: deferred commit \:3067 LLM \:304c\:30bb\:30eb\:3092\:66f8\:304b\:306a\:304b\:3063\:305f\:3068\:304d\:3001
                                           iDeterministicSlideCommit / iGenericPayloadCommit \:3067\:6a5f\:68b0\:7684\:306b\:88dc\:5b8c\:3002
                                           \:540c\:671f\:7248 ClaudeCommitArtifacts \:306e\:540c\:540d option \:3068\:5bfe\:79f0\:3002 *)
+  ,
+  "SeparateFinalActions"     -> False   (* Step 4d (spec I11): True \:306e\:3068\:304d Commit \:524d\:306b
+                                           RequiresFinalNode \:306a action \:3092\:5206\:96e2\:3057\:3001result \:306b
+                                           FinalActions / SafeArtifacts / HasFinalActions \:3092\:4ed8\:3059\:3002
+                                           \:65e2\:5b9a False \:306f\:5f8c\:65b9\:4e92\:63db (\:5f93\:6765\:901a\:308a\:5168 artifact \:3092 Commit \:3078)\:3002 *)
+  ,
+  "OutputMode"               -> Automatic   (* \:5bfe\:7b562: Automatic=$ClaudeOutputMode \:306b\:5f93\:3046\:3002
+                                                "Streaming"=\:9038\:6b21 / "Batch"=\:96c6\:7d04\:3002Batch \:306e\:3068\:304d
+                                                committer \:51fa\:529b\:3092 NBBeginDeferredOutput \:3067\:96c6\:7d04\:3057\:3001
+                                                \:5b8c\:4e86\:6642\:306b NBFlushDeferredOutput \:3067\:307e\:3068\:3081\:3066\:51fa\:529b\:3059\:308b\:3002 *)
 };
 
 (* \:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500
@@ -5978,9 +6053,12 @@ iWaitForRuntimeDAG[runtimeId_String, jobId_String,
 
 ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
   Module[{planResult, spawnResult, reduceResult, commitResult,
-          verbose, skipCommit, targetNb, confirm, queryFn, model},
+          verbose, skipCommit, targetNb, confirm, queryFn, model,
+          separateFinal, outputMode},
     verbose    = TrueQ[OptionValue["Verbose"]];
     skipCommit = TrueQ[OptionValue["SkipCommit"]];
+    separateFinal = TrueQ[OptionValue["SeparateFinalActions"]];
+    outputMode = iOrchResolveOutputMode[{opts}];
     targetNb   = iResolveTargetNotebookAuto[OptionValue["TargetNotebook"]];
     confirm    = TrueQ[OptionValue["Confirm"]];
     model      = OptionValue["Model"];
@@ -6028,17 +6106,52 @@ ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
     commitResult = If[skipCommit || targetNb === None,
       <|"Status" -> "Skipped"|>,
       If[verbose, Print["[orchestration] Phase D: Commit"]];
-      ClaudeCommitArtifacts[targetNb, reduceResult,
-        "CommitterAdapterBuilder" -> OptionValue["CommitterAdapterBuilder"],
-        "Confirm"                 -> False,
-        "Verbose"                 -> verbose,
-        "Model"                   -> model]];  (* T08: Committer \:306b Model \:4f1d\:9054 *)
+      (* 対策2 + 6.3: 出力モードとブロックリスクから集約するか判定する。
+         NBResolveOutputMode が "Deferred" を返すのは:
+           - outputMode == "Batch" (ユーザー明示の集約) または
+           - commit 出力が FrontEnd をブロックしうる (MayBlockFrontEnd)
+         ブロック回避が最優先なので、Streaming でも大量出力なら自動集約。
+         同期版 ClaudeRunOrchestration はメイン評価なので Flush が効く (罠 #30 OK)。 *)
+      Module[{deferDecision, commitRisk},
+        commitRisk = iOrchEstimateCommitBlockingRisk[reduceResult];
+        deferDecision = If[iOrchDeferOutputAvailableQ[] &&
+            MatchQ[targetNb, _NotebookObject],
+          NBAccess`NBResolveOutputMode[outputMode, commitRisk],
+          "Immediate"];
+        If[verbose && deferDecision === "Deferred" && outputMode =!= "Batch",
+          Print["[orchestration] commit 出力に MayBlockFrontEnd リスク (artifact 多数)。",
+            "ブロック回避のため Streaming でも集約します。"]];
+        If[deferDecision === "Deferred",
+          (* 集約: バッファに溜めて最後にまとめて出す *)
+          Module[{cr},
+            NBAccess`NBBeginDeferredOutput[];
+            cr = Quiet @ Check[
+              ClaudeCommitArtifacts[targetNb, reduceResult,
+                "CommitterAdapterBuilder" -> OptionValue["CommitterAdapterBuilder"],
+                "Confirm"                 -> False,
+                "Verbose"                 -> verbose,
+                "Model"                   -> model],
+              (* commit 中に失敗してもバッファを必ず後始末する *)
+              NBAccess`NBEndDeferredOutput[];
+              NBAccess`NBFlushDeferredOutput[targetNb];
+              <|"Status" -> "CommitFailed"|>];
+            NBAccess`NBEndDeferredOutput[];
+            Quiet @ NBAccess`NBFlushDeferredOutput[targetNb];
+            If[verbose,
+              Print["[orchestration] 集約出力: commit をまとめて出力しました。"]];
+            cr],
+          (* 即出力: 従来通り *)
+          ClaudeCommitArtifacts[targetNb, reduceResult,
+            "CommitterAdapterBuilder" -> OptionValue["CommitterAdapterBuilder"],
+            "Confirm"                 -> False,
+            "Verbose"                 -> verbose,
+            "Model"                   -> model]]]];  (* T08: Committer \:306b Model \:4f1d\:9054 *)
     
     (* v2026-04-18T01: Status \:3092\:5b9f\:614b\:53cd\:6620\:3059\:308b (\:4ee5\:524d\:306f\:5e38\:306b "Done" \:3060\:3063\:305f)\:3002
        \:3053\:308c\:306b\:3088\:308a hook \:306f Status \\!= "Done" \:3092\:898b\:3066 Single \:306b\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3067\:304d\:308b\:3002
        Priority: Commit failure > Spawn failure > Spawn partial > Done\:3002
        \:4e92\:63db\:6027: Commit skip (targetNb==None) \:306f\:3053\:308c\:307e\:3067\:901a\:308a "Done" \:306e\:307e\:307e\:3002 *)
-    Module[{spawnStatus, commitStatus, orchestrationStatus},
+    Module[{spawnStatus, commitStatus, orchestrationStatus, baseResult},
       spawnStatus  = Lookup[spawnResult,  "Status", ""];
       commitStatus = Lookup[commitResult, "Status", ""];
       orchestrationStatus = Which[
@@ -6051,14 +6164,304 @@ ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
           "SpawnPartial",
         True,
           "Done"];
-      <|
+      baseResult = <|
         "Status"       -> orchestrationStatus,
         "PlanResult"   -> planResult,
         "SpawnResult"  -> spawnResult,
         "ReduceResult" -> reduceResult,
         "CommitResult" -> commitResult
-      |>
+      |>;
+      (* Step 4d (spec I11): SeparateFinalActions -> True \:306a\:3089
+         RequiresFinalNode \:306a action \:3092\:5206\:96e2\:3057\:3001result \:306b
+         FinalActions / SafeArtifacts / HasFinalActions \:3092\:4ed8\:3059\:3002
+         \:5224\:5b9a\:306f NBAccess \:306b\:59d4\:8b72\:3057\:3001Orchestrator \:306f\:632f\:308a\:5206\:3051\:306e\:307f\:3002
+         \:81ea\:52d5\:5b9f\:884c\:306f\:3057\:306a\:3044 (\:7f60 #30: desktop action \:306f\:30e1\:30a4\:30f3\:8a55\:4fa1\:5fc5\:9808)\:3002 *)
+      If[separateFinal,
+        If[verbose, Print["[orchestration] Step 4d: Final node separation"]];
+        baseResult = ClaudeOrchestratorExtractFinalActions[baseResult]];
+      baseResult
     ]
+  ];
+
+(* \:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550
+   10A. Step 4d: Orchestrator final node \:5206\:96e2 (spec \:00a711 / I11)
+
+   \:81ea\:52d5\:30ef\:30fc\:30af\:30d5\:30ed\:30fc (Plan -> Spawn -> Reduce -> Commit) \:304c\:751f\:6210\:3057\:305f
+   artifact \:306e\:3046\:3061\:3001RequiresFinalNode -> True \:306e action
+   (FrontEnd / desktop / FileSystemWrite / ExternalProcess) \:3092
+   \:901a\:5e38 step \:304b\:3089\:5206\:96e2\:3057\:3001final action node \:3078\:96c6\:7d04\:3059\:308b\:3002
+
+   \:8a2d\:8a08\:4e0a\:306e\:5236\:7d04 (handoff 2026-06-03 / \:7f60 #30):
+     SystemOpen \:7b49 desktop \:64cd\:4f5c\:306f SessionSubmit / ScheduledTask /
+     \:5171\:6709 polling tick \:306e\:8a55\:4fa1\:30b3\:30f3\:30c6\:30ad\:30b9\:30c8\:3067\:306f silent no-op \:306b\:306a\:308a\:3001
+     \:30e1\:30a4\:30f3\:30ab\:30fc\:30cd\:30eb\:306e\:30c8\:30c3\:30d7\:30ec\:30d9\:30eb\:8a55\:4fa1\:3067\:306e\:307f\:52b9\:304f\:3002Orchestrator \:306f
+     \:5b8c\:5168\:975e\:540c\:671f (DAG worker = scheduled task) \:306a\:306e\:3067\:3001desktop final
+     action \:306f\:81ea\:52d5\:5b9f\:884c\:3067\:304d\:306a\:3044\:3002\:3057\:305f\:304c\:3063\:3066\:672c\:5b9f\:88c5\:306f final action \:3092
+     \:300c\:5206\:96e2\:30fb\:4fdd\:7559\:300d\:3057\:3001\:627f\:8a8d UI \:7d4c\:7531\:3067\:30e6\:30fc\:30b6\:30fc\:306e\:30e1\:30a4\:30f3\:8a55\:4fa1 (\:30dc\:30bf\:30f3
+     \:62bc\:4e0b) \:307e\:305f\:306f AsyncActive \:89e3\:9664\:5f8c\:306e queue \:5b9f\:884c\:306b\:59d4\:306d\:308b\:3002
+
+   \:8cac\:52d9\:5883\:754c (skill runtime-orchestrator-boundary):
+     final node \:5206\:96e2 = approval gate + workflow state \:306e\:7ba1\:7406\:3067\:3042\:308a\:3001
+     Orchestrator \:306e\:9818\:5206\:3002\:5224\:5b9a (RequiresFinalNode \:7b49) \:306f NBAccess \:306e
+     NBValidateHeldExpr \:306b\:59d4\:8b72\:3057\:3001Orchestrator \:306f\:632f\:308a\:5206\:3051\:3068\:63d0\:793a\:306e\:307f
+     \:3092\:62c5\:3046 (\:81ea\:524d ReleaseHold \:3057\:306a\:3044\:3001\:00a79.2)\:3002
+   \:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550 *)
+
+(* iOrchExtractHeldFromArtifact: artifact \:304b\:3089 HeldComplete[...] \:3092\:53d6\:308a\:51fa\:3059\:3002
+   worker proposal \:306f "HeldExpr"\:3001reduce/payload \:7d4c\:7531\:306f Payload \:5185\:306b
+   \:5165\:308a\:3046\:308b\:306e\:3067\:8907\:6570\:7d4c\:8def\:3092\:63a2\:3059\:3002\:898b\:3064\:304b\:3089\:306a\:3051\:308c\:3070 None\:3002 *)
+iOrchExtractHeldFromArtifact[artifact_Association] :=
+  Module[{held, payload, ph},
+    held = Lookup[artifact, "HeldExpr", None];
+    If[MatchQ[held, _HoldComplete], Return[held, Module]];
+    payload = Lookup[artifact, "Payload", None];
+    If[AssociationQ[payload],
+      ph = Lookup[payload, "HeldExpr", None];
+      If[MatchQ[ph, _HoldComplete], Return[ph, Module]]];
+    None
+  ];
+
+iOrchExtractHeldFromArtifact[_] := None;
+
+(* iOrchArtifactPairs: artifacts (Association of taskId->artifact \:307e\:305f\:306f
+   artifact \:306e List) \:3092 {taskId, artifact} \:306e\:30ea\:30b9\:30c8\:306b\:6b63\:898f\:5316\:3059\:308b\:3002 *)
+iOrchArtifactPairs[artifacts_Association] :=
+  KeyValueMap[{#1, #2} &, artifacts];
+
+iOrchArtifactPairs[artifacts_List] :=
+  MapIndexed[
+    {Lookup[#1, "TaskId", "artifact-" <> ToString[First[#2]]], #1} &,
+    Select[artifacts, AssociationQ]];
+
+iOrchArtifactPairs[_] := {};
+
+(* iOrchValidateArtifactHeld: 1 artifact \:3092 NBValidateHeldExpr \:3067\:5224\:5b9a\:3057\:3001
+   final node \:5224\:5b9a\:306b\:5fc5\:8981\:306a metadata \:3092\:53d6\:308a\:51fa\:3059\:3002HeldExpr \:304c\:7121\:3044 artifact
+   \:306f\:526f\:4f5c\:7528\:306a\:3057 (Safe) \:3068\:307f\:306a\:3059\:3002 *)
+iOrchValidateArtifactHeld[taskId_, artifact_Association, accessSpec_Association] :=
+  Module[{held, val, requiresFinal},
+    held = iOrchExtractHeldFromArtifact[artifact];
+    If[held === None,
+      Return[
+        <|"TaskId"             -> taskId,
+          "Artifact"           -> artifact,
+          "HasHeldExpr"        -> False,
+          "RequiresFinalNode"  -> False,
+          "Validation"         -> None|>,
+        Module]];
+    (* NBAccess \:306b\:5224\:5b9a\:3092\:59d4\:8b72 (I10/I11)\:3002NBAccess \:672a\:30ed\:30fc\:30c9\:306a\:3089\:4fdd\:5b88\:7684\:306b
+       Safe \:6271\:3044\:306b\:305b\:305a\:3001metadata \:6b20\:843d\:3068\:3057\:3066 Safe \:306b\:5012\:3059\:3002 *)
+    val = If[
+      iOrchNBAccessLoadedQ[],
+      Quiet @ NBAccess`NBValidateHeldExpr[held, accessSpec],
+      None];
+    requiresFinal = If[AssociationQ[val],
+      TrueQ[Lookup[val, "RequiresFinalNode", False]],
+      False];
+    <|"TaskId"             -> taskId,
+      "Artifact"           -> artifact,
+      "HasHeldExpr"        -> True,
+      "HeldExpr"           -> held,
+      "RequiresFinalNode"  -> requiresFinal,
+      "Validation"         -> val,
+      "ExecutionPlacement" -> If[AssociationQ[val],
+                                Lookup[val, "ExecutionPlacement", "SubkernelSafe"],
+                                "Unknown"],
+      "BlockingRisk"       -> If[AssociationQ[val],
+                                Lookup[val, "BlockingRisk", "None"], "None"],
+      "EffectClass"        -> If[AssociationQ[val],
+                                Lookup[val, "EffectClass", "PureComputation"],
+                                "Unknown"],
+      "Decision"           -> If[AssociationQ[val],
+                                Lookup[val, "Decision", "Permit"], "Permit"],
+      (* ReviewOnly mode \:5bfe\:5fdc (spec 5B.4): \:5224\:5b9a\:306f NBAccess \:304c\:6e08\:307f\:3002
+         Orchestrator \:306f\:3053\:308c\:3092\:5c0a\:91cd\:3057\:3066 UI/\:5b9f\:884c\:3092\:6291\:5236\:3059\:308b\:3002 *)
+      "AllowApprovalUI"    -> If[AssociationQ[val],
+                                TrueQ[Lookup[val, "AllowApprovalUI", True]], True],
+      "MayExecute"         -> If[AssociationQ[val],
+                                TrueQ[Lookup[val, "MayExecute", True]], True],
+      "ExecutionDisposition" -> If[AssociationQ[val],
+                                Lookup[val, "ExecutionDisposition", "Execute"],
+                                "Execute"]|>
+  ];
+
+(* NBAccessLoadedQ: NBAccess \:30d1\:30c3\:30b1\:30fc\:30b8\:304c\:30ed\:30fc\:30c9\:6e08\:307f\:304b\:8efd\:91cf\:5224\:5b9a\:3002
+   \:5224\:5b9a\:65b9\:6cd5\:306b\:3088\:308a\:7d50\:679c\:304c\:5206\:304b\:308c\:308b (result33: $Packages \:3060\:3068 False)
+   \:306e\:3067\:3001\:8907\:6570\:306e\:898b\:65b9\:3092 OR \:3067\:7d44\:307f\:5408\:308f\:305b\:308b\:3002\:6700\:7d42\:7684\:306b\:306f
+   \"NBValidateHeldExpr \:304c\:5b9f\:884c\:53ef\:80fd\:304b\" = DownValues \:304c\:3042\:308b\:304b\:3067\:5224\:5b9a\:3002 *)
+iOrchNBAccessLoadedQ[] :=
+  (MemberQ[$Packages, "NBAccess`"] ||
+     MemberQ[Names["NBAccess`*"], "NBAccess`NBValidateHeldExpr"] ||
+     NameQ["NBAccess`NBValidateHeldExpr"]) &&
+    Length[DownValues[NBAccess`NBValidateHeldExpr]] > 0;
+
+(* iOrchResolveOutputMode: OutputMode オプション値を解決する (対策2)。
+   Automatic なら NBAccess の $ClaudeOutputMode を読み、無ければ "Streaming"。
+   明示値 ("Streaming"/"Batch") ならそれを使う。不正値は "Streaming"。 *)
+iOrchResolveOutputMode[optsList_List] :=
+  Module[{opt, glob},
+    opt = OptionValue[ClaudeRunOrchestration, optsList, "OutputMode"];
+    Which[
+      opt === "Streaming" || opt === "Batch", opt,
+      opt === Automatic,
+        glob = If[iOrchNBAccessLoadedQ[] &&
+            NameQ["NBAccess`$ClaudeOutputMode"] &&
+            StringQ[NBAccess`$ClaudeOutputMode],
+          NBAccess`$ClaudeOutputMode, "Streaming"];
+        If[glob === "Batch", "Batch", "Streaming"],
+      True, "Streaming"]
+  ];
+
+(* iOrchDeferOutputAvailableQ: NBAccess の遅延出力 API が使えるか。 *)
+iOrchDeferOutputAvailableQ[] :=
+  iOrchNBAccessLoadedQ[] &&
+    NameQ["NBAccess`NBBeginDeferredOutput"] &&
+    Length[DownValues[NBAccess`NBBeginDeferredOutput]] > 0;
+
+(* iOrchEstimateCommitBlockingRisk: commit 出力の FrontEnd ブロックリスクを
+   簡易見積もりする (対策2 / 6.3 BlockingRisk 連携)。
+   commit は reduceResult の artifact を notebook に書くので、書き込み量が
+   多い (artifact 数が閾値以上) ほどブロックリスクが高いと見なす。
+   閾値以上なら "MayBlockFrontEnd"、それ未満は "None"。
+   将来 reduceResult 内の held を NBValidateHeldExpr で検証して集約する
+   精密版に差し替え可能。 *)
+iOrchEstimateCommitBlockingRisk[reduceResult_] :=
+  Module[{artifacts, n, threshold = 8},
+    artifacts = Which[
+      AssociationQ[reduceResult] && KeyExistsQ[reduceResult, "Artifacts"],
+        Lookup[reduceResult, "Artifacts", <||>],
+      AssociationQ[reduceResult], reduceResult,
+      True, <||>];
+    n = Which[
+      AssociationQ[artifacts], Length[artifacts],
+      ListQ[artifacts], Length[artifacts],
+      True, 0];
+    If[n >= threshold, "MayBlockFrontEnd", "None"]
+  ];
+iOrchEstimateCommitBlockingRisk[_] := "None";
+
+(* \:516c\:958b: ClaudeOrchestratorClassifyArtifactActions *)
+ClaudeOrchestratorClassifyArtifactActions[artifacts_, accessSpec_Association] :=
+  Module[{pairs, classified, safe, final},
+    pairs = iOrchArtifactPairs[artifacts];
+    classified = (iOrchValidateArtifactHeld[#[[1]], #[[2]], accessSpec] & /@ pairs);
+    final = Select[classified, TrueQ[Lookup[#, "RequiresFinalNode", False]] &];
+    safe  = Select[classified, !TrueQ[Lookup[#, "RequiresFinalNode", False]] &];
+    <|"Safe"        -> safe,
+      "Final"       -> final,
+      "SafeCount"   -> Length[safe],
+      "FinalCount"  -> Length[final],
+      "Diagnostics" -> (<|"TaskId"            -> Lookup[#, "TaskId", "?"],
+                          "RequiresFinalNode" -> Lookup[#, "RequiresFinalNode", False],
+                          "ExecutionPlacement"-> Lookup[#, "ExecutionPlacement", "?"],
+                          "Decision"          -> Lookup[#, "Decision", "?"]|> & /@
+                        classified)|>
+  ];
+
+ClaudeOrchestratorClassifyArtifactActions[artifacts_] :=
+  ClaudeOrchestratorClassifyArtifactActions[artifacts,
+    iOrchDefaultFinalNodeAccessSpec[]];
+
+(* iOrchDefaultFinalNodeAccessSpec: accessSpec \:304c\:7701\:7565\:3055\:308c\:305f\:3068\:304d\:306e\:65e2\:5b9a\:3002
+   final action \:306f FrontEnd/desktop \:3092\:4f34\:3044\:3046\:308b\:306e\:3067 "Committer" role
+   (MainOnly, FE/\:66f8\:8fbc\:53ef) \:3092\:4f7f\:3046\:3002NBAccess \:672a\:30ed\:30fc\:30c9\:6642\:306f\:7a7a (\:5224\:5b9a\:306f Safe
+   \:5074\:306b\:5012\:308c\:308b)\:3002spec I12: PermissionMode \:306f accessSpec \:306b\:713c\:304d\:8fbc\:307e\:308c\:308b\:3002 *)
+iOrchDefaultFinalNodeAccessSpec[] :=
+  If[iOrchNBAccessLoadedQ[] &&
+       Length[DownValues[NBAccess`NBMakeRuntimeAccessSpec]] > 0,
+    Quiet @ NBAccess`NBMakeRuntimeAccessSpec[<||>, "Committer"],
+    <||>];
+
+(* \:516c\:958b: ClaudeOrchestratorExtractFinalActions
+   orchestration result \:304b\:3089 final action \:3092\:5206\:96e2\:3059\:308b\:3002SpawnResult \:306e
+   Artifacts \:3068 ReduceResult \:3092\:5206\:985e\:5bfe\:8c61\:306b\:3059\:308b\:3002 *)
+ClaudeOrchestratorExtractFinalActions[orchestrationResult_Association,
+    accessSpec_Association] :=
+  Module[{spawnArtifacts, reduceResult, classifySpawn, classifyReduce,
+          allFinal, allSafe, result},
+    spawnArtifacts = Lookup[
+      Lookup[orchestrationResult, "SpawnResult", <||>], "Artifacts", <||>];
+    reduceResult = Lookup[orchestrationResult, "ReduceResult", <||>];
+
+    classifySpawn = ClaudeOrchestratorClassifyArtifactActions[
+      spawnArtifacts, accessSpec];
+
+    (* ReduceResult \:5358\:4f53\:3082 artifact \:5f62\:306a\:306e\:3067 1 \:4ef6\:3068\:3057\:3066\:5206\:985e *)
+    classifyReduce = If[AssociationQ[reduceResult] && reduceResult =!= <||>,
+      ClaudeOrchestratorClassifyArtifactActions[
+        <|"__reduced__" -> reduceResult|>, accessSpec],
+      <|"Safe" -> {}, "Final" -> {}|>];
+
+    allFinal = Join[
+      Lookup[classifySpawn, "Final", {}],
+      Lookup[classifyReduce, "Final", {}]];
+    allSafe = Join[
+      Lookup[classifySpawn, "Safe", {}],
+      Lookup[classifyReduce, "Safe", {}]];
+
+    result = orchestrationResult;
+    result["FinalActions"]    = allFinal;
+    result["SafeArtifacts"]   = allSafe;
+    result["HasFinalActions"] = Length[allFinal] > 0;
+    result
+  ];
+
+ClaudeOrchestratorExtractFinalActions[orchestrationResult_Association] :=
+  ClaudeOrchestratorExtractFinalActions[orchestrationResult,
+    iOrchDefaultFinalNodeAccessSpec[]];
+
+(* \:516c\:958b: ClaudeOrchestratorPresentFinalActions
+   \:5206\:96e2\:6e08\:307f final action \:3092\:627f\:8a8d UI \:63d0\:793a\:7528 record \:306b\:6574\:3048\:308b\:3001\:307e\:305f\:306f
+   NBEnqueueFinalAction \:3067 queue \:5316\:3059\:308b\:3002
+
+   \:7f60 #30: SystemOpen \:306f scheduled task / \:5171\:6709 tick \:3067\:52b9\:304b\:306a\:3044\:3002
+   - Mode -> "Present" (\:65e2\:5b9a): UI record \:306e\:307f\:8fd4\:3059\:3002\:5b9f\:969b\:306e\:5b9f\:884c\:306f
+     \:547c\:3073\:51fa\:3057\:5074 (claudecode \:627f\:8a8d\:30dc\:30bf\:30f3\:672c\:4f53 = \:30e1\:30a4\:30f3\:8a55\:4fa1) \:304c\:884c\:3046\:3002
+   - Mode -> "Enqueue": NBEnqueueFinalAction \:3067 queue \:306b\:7a4d\:3080\:3002
+     AsyncActive \:89e3\:9664\:5f8c\:306b\:5171\:6709 tick \:304c\:5b89\:5168\:6761\:4ef6\:4e0b\:3067\:5b9f\:884c\:3092\:8a66\:307f\:308b\:304c\:3001
+     desktop action \:306f tick \:3067\:306f\:52b9\:304b\:306a\:3044\:305f\:3081\:3001queue \:5316\:306f notebook
+     write \:7b49 tick \:3067\:52b9\:304f final action \:5411\:3051\:3002desktop action \:306f
+     "Present" \:3092\:63a8\:5968\:3002 *)
+Options[ClaudeOrchestratorPresentFinalActions] = {
+  "Mode" -> "Present"
+};
+
+ClaudeOrchestratorPresentFinalActions[finalActions_List,
+    accessSpec_Association, opts:OptionsPattern[]] :=
+  Module[{mode, items},
+    mode = OptionValue["Mode"];
+    items = iOrchBuildFinalActionItem[#, accessSpec, mode] & /@ finalActions;
+    <|"Mode"  -> mode,
+      "Items" -> items,
+      "Count" -> Length[items]|>
+  ];
+
+ClaudeOrchestratorPresentFinalActions[finalActions_List,
+    opts:OptionsPattern[]] :=
+  ClaudeOrchestratorPresentFinalActions[finalActions,
+    iOrchDefaultFinalNodeAccessSpec[], opts];
+
+(* iOrchBuildFinalActionItem: final \:5206\:985e 1 \:4ef6\:3092 UI record / queue item \:306b\:3002 *)
+iOrchBuildFinalActionItem[entry_Association, accessSpec_Association, mode_] :=
+  Module[{held, base, actionID},
+    held = Lookup[entry, "HeldExpr", None];
+    base = <|
+      "TaskId"             -> Lookup[entry, "TaskId", "?"],
+      "ExecutionPlacement" -> Lookup[entry, "ExecutionPlacement", "Unknown"],
+      "BlockingRisk"       -> Lookup[entry, "BlockingRisk", "None"],
+      "EffectClass"        -> Lookup[entry, "EffectClass", "Unknown"],
+      "Decision"           -> Lookup[entry, "Decision", "NeedsApproval"],
+      "HeldExpr"           -> held|>;
+    Which[
+      mode === "Enqueue" && MatchQ[held, _HoldComplete] &&
+        iOrchNBAccessLoadedQ[] &&
+        Length[DownValues[NBAccess`NBEnqueueFinalAction]] > 0,
+        actionID = Quiet @ NBAccess`NBEnqueueFinalAction[held, accessSpec];
+        Append[base, "ActionID" -> actionID],
+      True,
+        (* Present: \:81ea\:52d5\:5b9f\:884c\:3057\:306a\:3044\:3002\:627f\:8a8d UI \:3067\:63d0\:793a\:3057\:3001\:30e6\:30fc\:30b6\:30fc\:306e
+           \:30e1\:30a4\:30f3\:8a55\:4fa1\:3067\:5b9f\:884c\:3059\:308b\:3053\:3068\:3092\:793a\:3059\:3002 *)
+        Append[base, "Disposition" -> "AwaitMainKernelApproval"]]
   ];
 
 (* ════════════════════════════════════════════════════════
@@ -7313,6 +7716,30 @@ iOnOrchestrationComplete[orchId_String] :=
       "FinalStatus" -> finalStatus,
       "Phase"       -> "Complete",
       "EndTime"     -> AbsoluteTime[]|>];
+
+    (* Step 4d / \:00a75.1: SeparateFinalActions \:6709\:52b9\:6642\:306f final action \:3092\:5206\:96e2\:3057
+       orch \:72b6\:614b\:306b\:4fdd\:5b58\:3059\:308b\:3002\:3053\:3053\:306f scheduled task \:5185\:306a\:306e\:3067
+       notebook \:66f8\:304d\:8fbc\:307f\:306f\:3057\:306a\:3044 (\:7f60 #30: FrontEnd \:64cd\:4f5c\:306f
+       scheduled task \:3067\:7121\:53cd\:5fdc)\:3002\:63d0\:793a\:306f\:30e6\:30fc\:30b6\:30fc\:304c\:30e1\:30a4\:30f3\:8a55\:4fa1\:3067
+       ClaudeOrchestrationShowFinalActions \:3092\:547c\:3076\:304b\:3001\:7d50\:679c\:53d6\:5f97\:6642\:306b\:78ba\:8a8d\:3059\:308b\:3002 *)
+    If[finalStatus === "Done" &&
+         TrueQ[OptionValue[ClaudeRunOrchestration, optsList, "SeparateFinalActions"]],
+      Module[{resForExtract, extracted},
+        resForExtract = <|
+          "Status"       -> finalStatus,
+          "SpawnResult"  -> spawnResult,
+          "ReduceResult" -> Lookup[state, "ReduceResult", <||>]|>;
+        extracted = Quiet @ Check[
+          ClaudeOrchestratorExtractFinalActions[resForExtract],
+          <|"FinalActions" -> {}, "HasFinalActions" -> False|>];
+        iOrchSet[orchId, <|
+          "FinalActions"    -> Lookup[extracted, "FinalActions", {}],
+          "HasFinalActions" -> TrueQ[Lookup[extracted, "HasFinalActions", False]]|>];
+        If[verbose && TrueQ[Lookup[extracted, "HasFinalActions", False]],
+          Print["[orchestration] Final actions separated: ",
+            Length[Lookup[extracted, "FinalActions", {}]],
+            " \:4ef6\:3002ClaudeOrchestrationShowFinalActions[\"", orchId,
+            "\"] \:3067\:627f\:8a8d UI \:3092\:8868\:793a\:3067\:304d\:307e\:3059\:3002"]]]];
     
     If[verbose,
       Print["[orchestration] Complete: ", finalStatus,
@@ -7324,6 +7751,164 @@ iOnOrchestrationComplete[orchId_String] :=
         "ClaudeOrchestration: " <> finalStatus]];
     Null
   ];
+
+(* ──────────────────────────────────────────────
+   Step 4d / §5.1: ClaudeOrchestrationShowFinalActions
+   分離済み final action を承認ボタンセルとして提示する。
+   必ずユーザーのメインカーネル評価 (セル実行) で呼ぶこと。
+   罠 #30: scheduled task から呼ぶと SystemOpen / notebook 書き込みが
+   無反応になる。ボタン本体 (Method->Queued = メイン評価) が押されたとき
+   に初めて SystemOpen を実行する。
+   ────────────────────────────────────────────── *)
+
+(* iOrchDesktopActionButton: final action 1 件を承認ボタン Row に。
+   path 検証は提示時 (メイン評価) に NBResolveDesktopActionPath で行い、
+   検証 OK のときだけ「開く」ボタンを出す。ボタン body では path を With で
+   静的に焼き込み (罠 #29 回避)、raw SystemOpen をメイン評価で直接実行する。 *)
+(* iOrchExtractWritableCell: held expr が notebook 出力系
+   (NotebookWrite[nb, cell, ...] / CellPrint[cell] / NBWriteCell[nb, cell, ...])
+   のとき、書き込む Cell 式を取り出す。評価せず構造マッチのみ (副作用なし)。
+   取り出せないときは None。Cell でないものは None。 *)
+iOrchExtractWritableCell[held_HoldComplete] :=
+  Module[{cell},
+    cell = Replace[held, {
+      HoldComplete[NotebookWrite[_, c_, ___]] :> HoldComplete[c],
+      HoldComplete[CellPrint[c_]] :> HoldComplete[c],
+      HoldComplete[NBAccess`NBWriteCell[_, c_, ___]] :> HoldComplete[c],
+      HoldComplete[NBAccess`NBCellPrint[c_]] :> HoldComplete[c],
+      _ :> None}];
+    (* HoldComplete[Cell[...]] なら Cell を取り出す (評価せず) *)
+    Replace[cell, {
+      HoldComplete[c_Cell] :> c,
+      _ :> None}]
+  ];
+iOrchExtractWritableCell[_] := None;
+
+(* iOrchFinalActionPreviewLabel: held expr から人間可読の短いラベルを作る。
+   ReviewOnly 等でボタンを出さず内容だけ見せるときに使う。
+   raw 評価はせず、最外 head 名だけ取り出す (副作用なし)。
+   held 内の式は評価しない (Extract で Heads -> True、head を取得)。 *)
+iOrchFinalActionPreviewLabel[held_HoldComplete] :=
+  Module[{inner, headSym, name},
+    (* HoldComplete[expr] の expr の head を、評価せずに取り出す *)
+    headSym = Quiet @ Check[
+      Extract[held, {1, 0}, HoldComplete],  (* expr の head を HoldComplete で包む *)
+      $Failed];
+    name = Replace[headSym, {
+      HoldComplete[s_Symbol] :> SymbolName[Unevaluated[s]],
+      _ :> $Failed}];
+    If[StringQ[name], name,
+      (* head が複合 (例: Symbol でない) のときは expr 全体の head 名を試す *)
+      Module[{h2},
+        h2 = Quiet @ Check[
+          Replace[held, HoldComplete[e_] :> SymbolName[Head[Unevaluated[e]]]],
+          "final action"];
+        If[StringQ[h2], h2, "final action"]]]
+  ];
+
+iOrchFinalActionPreviewLabel[_] := "final action";
+
+iOrchDesktopActionButton[entry_Association, accessSpec_Association] :=
+  Module[{held, resolved, isDesktop, validated, path, taskId, label},
+    taskId = Lookup[entry, "TaskId", "?"];
+    held = Lookup[entry, "HeldExpr", None];
+    If[!MatchQ[held, _HoldComplete],
+      Return[Row[{Style["[" <> ToString[taskId] <> "] ", Gray],
+        Style["final action (\:5b9f\:884c\:5f0f\:306a\:3057)", Italic, Gray]}], Module]];
+    (* ReviewOnly mode (spec 5B.4): MayExecute==False / AllowApprovalUI==False の
+       とき承認ボタンを出さず提案内容のみ表示する。判定は NBAccess 済み、
+       Orchestrator は尊重するだけ。 *)
+    If[!TrueQ[Lookup[entry, "MayExecute", True]] ||
+         !TrueQ[Lookup[entry, "AllowApprovalUI", True]],
+      Return[
+        Row[{Style["[" <> ToString[taskId] <> "] ", Gray],
+          Style[iOrchFinalActionPreviewLabel[held] <> "  ", FontSize -> 11],
+          Style["(ReviewOnly: \:63d0\:6848\:306e\:307f\:3001\:5b9f\:884c\:3057\:307e\:305b\:3093)",
+            Italic, Gray]}],
+        Module]];
+    resolved = If[iOrchNBAccessLoadedQ[] &&
+        Length[DownValues[NBAccess`NBResolveDesktopActionPath]] > 0,
+      Quiet @ NBAccess`NBResolveDesktopActionPath[held, accessSpec],
+      <||>];
+    isDesktop = TrueQ[Lookup[resolved, "IsDesktopAction", False]];
+    validated = TrueQ[Lookup[resolved, "Validated", False]];
+    path      = Lookup[resolved, "Path", None];
+    Which[
+      isDesktop && validated && StringQ[path],
+        With[{p = path, tid = taskId},
+          Row[{
+            Style["[" <> ToString[tid] <> "] ", Gray],
+            Style[p <> "  ", FontSize -> 11],
+            Button["\:958b\:304f / Open",
+              (* \:30dc\:30bf\:30f3\:672c\:4f53 = \:30e1\:30a4\:30f3\:30ab\:30fc\:30cd\:30eb\:8a55\:4fa1\:3002\:3053\:3053\:3067\:306e\:307f
+                 raw SystemOpen \:304c\:52b9\:304f (\:7f60 #30)\:3002 *)
+              Quiet @ Check[SystemOpen[p], Null],
+              Method -> "Queued", ImageSize -> {64, 24}]
+          }, Spacer[6]]],
+      isDesktop && !validated,
+        Row[{Style["[" <> ToString[taskId] <> "] ", Gray],
+          Style["desktop action \:306e\:30d1\:30b9\:691c\:8a3c\:306b\:5931\:6557 (\:5b9f\:884c\:4e0d\:53ef)",
+            Italic, Darker[Red]]}],
+      True,
+        (* desktop action でない final action。notebook 出力系
+           (NotebookWrite[nb, cell] / CellPrint[cell]) なら WriteNotebookCell
+           action に変換し、NBExecuteApprovedAction 経由で実行するボタンを出す。
+           それ以外 (file write 等) は従来通り手動実行表示。 *)
+        Module[{cellExtracted, asp},
+          cellExtracted = iOrchExtractWritableCell[held];
+          If[cellExtracted =!= None &&
+               iOrchNBAccessLoadedQ[] &&
+               Length[DownValues[NBAccess`NBExecuteApprovedAction]] > 0,
+            With[{cl = cellExtracted, tid = taskId, aspec = accessSpec},
+              Row[{
+                Style["[" <> ToString[tid] <> "] ", Gray],
+                Style["notebook \:51fa\:529b  ", FontSize -> 11],
+                Button["\:5b9f\:884c / Run",
+                  (* ボタン本体 = メイン評価。NBExecuteApprovedAction 経由で
+                     書き込む (registry の Executor が実行、罠 #30 OK)。 *)
+                  Quiet @ Check[
+                    NBAccess`NBExecuteApprovedAction[
+                      <|"Action" -> "WriteNotebookCell", "Cell" -> cl|>,
+                      aspec],
+                    Null],
+                  Method -> "Queued", ImageSize -> {64, 24}]
+              }, Spacer[6]]],
+            (* 出力系でない/NBAccess 不可: 手動実行表示 *)
+            Row[{Style["[" <> ToString[taskId] <> "] ", Gray],
+              Style[Lookup[entry, "ExecutionPlacement", "final action"] <>
+                " (\:624b\:52d5\:5b9f\:884c)", Italic, Gray]}]]]]
+  ];
+
+ClaudeOrchestrationShowFinalActions[orchId_String] :=
+  Module[{state, finalActions, accessSpec, buttons, targetNb, count},
+    state = iOrchGet[orchId];
+    If[!AssociationQ[state],
+      Print["[orchestration] orchId \:304c\:898b\:3064\:304b\:308a\:307e\:305b\:3093: ", orchId];
+      Return[0, Module]];
+    finalActions = Lookup[state, "FinalActions", {}];
+    If[finalActions === {} || !ListQ[finalActions],
+      Print["[orchestration] \:8868\:793a\:3059\:3079\:304d final action \:306f\:3042\:308a\:307e\:305b\:3093\:3002"];
+      Return[0, Module]];
+    accessSpec = iOrchDefaultFinalNodeAccessSpec[];
+    count = Length[finalActions];
+    buttons = iOrchDesktopActionButton[#, accessSpec] & /@ finalActions;
+    (* CellPrint = \:30e1\:30a4\:30f3\:8a55\:4fa1\:6642\:306a\:3089 notebook \:306b\:51fa\:529b\:30bb\:30eb\:3092\:633f\:5165\:3067\:304d\:308b\:3002 *)
+    CellPrint[Cell[BoxData[ToBoxes[
+      Column[{
+        Style["Orchestration \:5b8c\:4e86: \:627f\:8a8d\:5f85\:3061\:306e final action (" <>
+          ToString[count] <> " \:4ef6)", Bold],
+        Style["\:30dc\:30bf\:30f3\:3092\:62bc\:3059\:3068\:5b9f\:884c\:3055\:308c\:307e\:3059\:3002\:81ea\:52d5\:5b9f\:884c\:306f\:3055\:308c\:307e\:305b\:3093\:3002",
+          Italic, FontSize -> 11, Gray],
+        Sequence @@ buttons
+      }, Spacings -> 0.6]
+    ]], "Output"]];
+    iOrchSet[orchId, <|"FinalActionsPresented" -> True|>];
+    count
+  ];
+
+ClaudeOrchestrationShowFinalActions[___] := (
+  Print["[orchestration] ClaudeOrchestrationShowFinalActions[orchJobId] \:306e\:5f15\:6570\:304c\:4e0d\:6b63\:3067\:3059\:3002"];
+  0);
 
 (* ──────────────────────────────────────────────
    ClaudeRunOrchestrationAsync (公開エントリ)
