@@ -46,7 +46,7 @@ NBAccess → claudecode_base → ClaudeRuntime (単一エージェント実行�
 
 ## モジュール構成と自動ロード
 
-`ClaudeOrchestrator.wl` のロードは、**本体にインライン統合された旧サブモジュール**と、**自動ロードされる 3 つの外部サブモジュール**の二層に整理されています。
+`ClaudeOrchestrator.wl` のロードは、**本体にインライン統合された旧サブモジュール**と、**自動ロードされる外部サブモジュール**の二層に整理されています。
 
 **本体にインライン統合済み (Phase 36, 2026-04-28 以降)** — 別ファイルのロード不要。`Get["ClaudeOrchestrator.wl"]` ひとつで利用できます。
 
@@ -104,7 +104,7 @@ GitHubInstallPackage["ClaudeOrchestrator",
   "https://github.com/transreal/ClaudeOrchestrator"]
 ```
 
-   github パッケージを使わない場合は `git clone https://github.com/transreal/ClaudeOrchestrator`。依存パッケージ([ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) / [claudecode](https://github.com/transreal/claudecode))も同じ `$packageDirectory` 直下に置きます。3 つの外部サブモジュールも同梱・自動ロードされます。
+   github パッケージを使わない場合は `git clone https://github.com/transreal/ClaudeOrchestrator`。依存パッケージ([ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) / [claudecode](https://github.com/transreal/claudecode))も同じ `$packageDirectory` 直下に置きます。外部サブモジュールも同梱・自動ロードされます。
 
 3. **`$Path` の設定** — すべての `.wl` を `$packageDirectory` 直下に置き、サブディレクトリは `$Path` に追加しないでください。
 
@@ -142,7 +142,7 @@ ClaudeOrchestrationResult[jobId][["Status"]]
 
 ```mathematica
 Get[FileNameJoin[{Quiet @ Check[NotebookDirectory[], $packageDirectory],
-  "ClaudeOrchestrator", "docs", "examples", "petri_from_prompt.wl"}]]
+  "ClaudeOrchestrator_info", "docs", "examples", "petri_from_prompt.wl"}]]
 ```
 
 実 LLM を使う場合は `$ClaudeOrchestratorRealLLMEndpoint` を `"ClaudeCode"` / `"CLI"` / カスタム関数に設定します(環境変数 `CLAUDE_ORCH_REAL_LLM` / `CLAUDE_ORCH_CLI_PATH` でも設定可)。`ClaudeRealLLMAvailable[]` が `True` を返せば構成済みです。さらに踏み込んだ例は `example.md` を参照。
@@ -163,7 +163,7 @@ Get[FileNameJoin[{Quiet @ Check[NotebookDirectory[], $packageDirectory],
 
 ## 免責事項
 
-本ソフトウェアは "as is"(現状有姿)で提供されており、明示・黙示を問わずいかなる保証もありません。本ソフトウェアの使用または使用不能から生じるいかなる損害についても責任を負いません。今後の動作保証のための更新が行われるとは限りません。本ソフトウェアとドキュメントはほぼすべてが生成 AI によって生成されたものです。Windows 11 上での実行を想定しており、macOS, Linux の Mathematica での動作検証は一切していません(生成 AI の処理で対応可能と想定されます)。
+本ソフトウェアは "as is"（現状有姿）で提供されており、明示・黙示を問わずいかなる保証もありません。本ソフトウェアの使用または使用不能から生じるいかなる損害についても責任を負いません。今後の動作保証のための更新が行われるとは限りません。本ソフトウェアとドキュメントはほぼすべてが生成AIによって生成されたものです。Windows 11上での実行を想定しており、MacOS, LinuxのMathematicaでの動作検証は一切していません(生成AIの処理で対応可能と想定されます)。
 
 ## ライセンス
 
@@ -177,4 +177,3 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-```

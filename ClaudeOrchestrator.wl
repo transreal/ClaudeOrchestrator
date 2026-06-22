@@ -266,6 +266,33 @@ $ClaudeOrchestratorAsyncMode::usage =
 
 $ClaudeOrchestratorAsyncMode = True;
 
+ClaudeOrchestratorDepositArtifacts::usage =
+  "ClaudeOrchestratorDepositArtifacts[artifacts, opts] は worker 成果物 (taskId -> artifact の\n" <>
+  "Association) を、メインカーネル (=単一書き手) から SourceVault へ append-only deposit し、各々の\n" <>
+  "sv://artifact/.. URI を返す (案A: worker は producer のまま、orchestrator が代理 deposit)。\n" <>
+  "SourceVault`SourceVaultMCPDeposit を弱呼び出しし、未ロードなら Status -> Skipped。認可は\n" <>
+  "provider 'orchestrator-worker' の AccessProfile (AllowedOperations に DepositArtifact) 経由。\n" <>
+  "opts: \"Provider\"->\"orchestrator-worker\", \"ModelId\"->\"worker\", \"SessionId\"->Automatic,\n" <>
+  "      \"PrivacyLevel\"->Automatic, \"Mode\"->\"commit\"。\n" <>
+  "戻り値: <|Status, Deposits (taskId -> <|Status, URI, Detail|>), URIs|>。";
+
+ClaudeWorkflowRegisterHandler::usage =
+  "ClaudeWorkflowRegisterHandler[functionId, spec] は非SourceVault callable を Orchestrator 所有の\n" <>
+  "handler allowlist に登録する (SourceVault PromptRouter の SourceVaultCallableAllowlistView が\n" <>
+  "ClaudeOrchestrator`ClaudeWorkflowHandlerAllowlist を weak-call で取り込む拡張点)。\n" <>
+  "spec: \"Symbol\" (必須・評価しないシンボル), \"UseAsFunctionRoute\" (既定 True), \"UseAsHandlerRef\"\n" <>
+  "(既定 True), \"SideEffectClass\" (\"ReadOnly\"|\"SafeCreate\"|.. 既定 \"ReadOnly\"), \"OwnerPackage\" (String)。\n" <>
+  "同一 functionId は置換。戻り値: 登録エントリ。";
+
+ClaudeWorkflowHandlerAllowlist::usage =
+  "ClaudeWorkflowHandlerAllowlist[] は登録済み handler allowlist (FunctionId -> エントリ) を返す。\n" <>
+  "SourceVault PromptRouter の SourceVaultCallableAllowlistView がこの symbol を weak-call し、\n" <>
+  "FunctionRoute / HandlerRef 解決のマージビューに取り込む。空なら <||>。";
+
+$ClaudeWorkflowHandlerRegistry::usage =
+  "$ClaudeWorkflowHandlerRegistry は登録済み handler の Association (FunctionId -> エントリ)。\n" <>
+  "Get 再ロードでも保持される (未設定時のみ初期化)。";
+
 Begin["`Private`"];
 
 (* ── iL: $Language に基づく日英切替 ── *)
@@ -3738,6 +3765,106 @@ ClaudeCollectArtifacts[spawnResult_Association] :=
 
 ClaudeCollectArtifacts[_] := Dataset[{}];
 
+(* ════════════════════════════════════════════════════════
+   案A: orchestrator 側 deposit (worker 成果物を SourceVault へ)
+   worker は副作用を実行しない producer のまま。メインカーネルの orchestrator が
+   各 artifact を SourceVault へ append-only deposit し sv:// URI を得る。
+   書き手はメインカーネル (=単一書き手, spec §12.4) で、worker subkernel ではない。
+   SourceVault は弱依存 (rule 11 を尊重し、未ロードなら no-op)。
+   ════════════════════════════════════════════════════════ *)
+
+iOrchSourceVaultDepositReadyQ[] :=
+  MemberQ[$Packages, "SourceVault`"] &&
+    Length[DownValues[SourceVault`SourceVaultMCPDeposit]] > 0;
+
+(* 1 artifact を deposit。payload を JSON text 化し commit。idempotencyKey は content hash。 *)
+iOrchDepositOne[tid_, art_, provider_String, modelId_String, sid_String,
+    mode_String, privOpt_] :=
+  Module[{payload, jsonText, spec, res},
+    payload = If[AssociationQ[art], Lookup[art, "Payload", art], art];
+    jsonText = Quiet @ Check[ExportString[payload, "RawJSON", "Compact" -> True],
+      ToString[payload]];
+    If[! StringQ[jsonText], jsonText = ToString[payload]];
+    spec = <|
+      "mode" -> mode,
+      "title" -> "worker-artifact:" <> ToString[tid],
+      "content" -> <|"text" -> jsonText|>,
+      "mediaType" -> "application/json",
+      "provenance" -> <|"authoredBy" -> <|"provider" -> provider, "modelId" -> modelId|>|>,
+      "policy" -> If[NumericQ[privOpt], <|"privacyLevel" -> N[privOpt]|>, <||>],
+      "Principal" -> <|"Type" -> "OrchestratorWorker", "Provider" -> provider|>,
+      "SessionId" -> sid,
+      "idempotencyKey" ->
+        "orch-art-" <> ToLowerCase @ IntegerString[Hash[jsonText, "SHA256"], 16, 64]|>;
+    res = Quiet @ Check[SourceVault`SourceVaultMCPDeposit[spec], $Failed];
+    If[AssociationQ[res],
+      <|"Status" -> Lookup[res, "Status", "Unknown"],
+        "URI" -> Lookup[res, "ArtifactUri", Missing[]], "Detail" -> res|>,
+      <|"Status" -> "Failed", "URI" -> Missing[], "Detail" -> res|>]];
+
+Options[ClaudeOrchestratorDepositArtifacts] = {
+  "Provider" -> "orchestrator-worker", "ModelId" -> "worker",
+  "SessionId" -> Automatic, "PrivacyLevel" -> Automatic, "Mode" -> "commit"};
+
+ClaudeOrchestratorDepositArtifacts[artifacts_Association, opts:OptionsPattern[]] :=
+  Module[{provider, modelId, sid, mode, priv, results},
+    If[! iOrchSourceVaultDepositReadyQ[],
+      Return[<|"Status" -> "Skipped",
+        "Reason" -> "SourceVault`SourceVaultMCPDeposit unavailable",
+        "Deposits" -> <||>, "URIs" -> {}|>]];
+    provider = ToString @ OptionValue["Provider"];
+    modelId  = ToString @ OptionValue["ModelId"];
+    mode     = ToString @ OptionValue["Mode"];
+    priv     = OptionValue["PrivacyLevel"];
+    sid = With[{s = OptionValue["SessionId"]},
+      If[StringQ[s], s, "orch-" <> StringReplace[CreateUUID[], "-" -> ""]]];
+    results = Association @ KeyValueMap[
+      Function[{tid, art},
+        ToString[tid] -> iOrchDepositOne[tid, art, provider, modelId, sid, mode, priv]],
+      artifacts];
+    <|"Status" -> "OK", "SessionId" -> sid, "Deposits" -> results,
+      "URIs" -> DeleteMissing[Lookup[#, "URI", Missing[]] & /@ Values[results]]|>];
+
+ClaudeOrchestratorDepositArtifacts[_, ___] :=
+  <|"Status" -> "Failed", "Reason" -> "artifacts must be an Association.",
+    "Deposits" -> <||>, "URIs" -> {}|>;
+
+(* ════════════════════════════════════════════════════════
+   Workflow handler allowlist (SourceVault PromptRouter 拡張点)
+   router (SourceVault_promptrouter.wl iSVPROrchestratorHandlerAllowlist) は
+   "ClaudeOrchestrator`Workflow`ClaudeWorkflowHandlerAllowlist" と
+   "ClaudeOrchestrator`ClaudeWorkflowHandlerAllowlist" の 2 候補を weak-call する。
+   companion (Workflow context) は load-order quirk で確実には載らないため、
+   確実にロードされる main context (= 第2候補) に置く。
+   registry はコード常駐 (raw シンボル保持) なので JSON レジストリには書かない。再ロード保持。
+   ════════════════════════════════════════════════════════ *)
+
+If[! AssociationQ[$ClaudeWorkflowHandlerRegistry],
+  $ClaudeWorkflowHandlerRegistry = <||>];
+
+ClaudeWorkflowRegisterHandler[functionId_String, spec_Association] := Module[{sym, entry},
+  sym = Lookup[spec, "Symbol", Missing["NoSymbol"]];
+  If[MissingQ[sym],
+    Return[<|"Status" -> "Failed", "Reason" -> "spec \"Symbol\" 必須。",
+      "FunctionId" -> functionId|>]];
+  entry = <|
+    "FunctionId"         -> functionId,
+    "Symbol"             -> sym,
+    "UseAsFunctionRoute" -> TrueQ[Lookup[spec, "UseAsFunctionRoute", True]],
+    "UseAsHandlerRef"    -> TrueQ[Lookup[spec, "UseAsHandlerRef", True]],
+    "SideEffectClass"    -> ToString @ Lookup[spec, "SideEffectClass", "ReadOnly"],
+    "OwnerPackage"       -> ToString @ Lookup[spec, "OwnerPackage", "Unknown"]|>;
+  $ClaudeWorkflowHandlerRegistry[functionId] = entry;
+  entry];
+
+ClaudeWorkflowRegisterHandler[___] :=
+  <|"Status" -> "Failed",
+    "Reason" -> "ClaudeWorkflowRegisterHandler[functionId_String, spec_Association] を期待。"|>;
+
+ClaudeWorkflowHandlerAllowlist[] :=
+  With[{r = $ClaudeWorkflowHandlerRegistry}, If[AssociationQ[r], r, <||>]];
+ClaudeWorkflowHandlerAllowlist[___] := <||>;
+
 iArtifactShortSummary[a_Association] :=
   Module[{p = Lookup[a, "Payload", <||>], s},
     s = Which[
@@ -5916,6 +6043,8 @@ Options[ClaudeRunOrchestration] = {
   "Confirm"                  -> False,
   "Verbose"                  -> False,
   "SkipCommit"               -> False,
+  "DepositArtifacts"         -> False,   (* 案A: True で worker 成果物を SourceVault へ代理 deposit *)
+  "DepositProvider"          -> "orchestrator-worker",
   "ReferenceText"            -> None,   (* T08: slide \:4f5c\:6210\:3067\:306e\:8a9e\:8abf/\:8a00\:3044\:56de\:3057\:3092\:771f\:4f3c\:308b\:305f\:3081\:306e\:30b5\:30f3\:30d7\:30eb\:672c\:6587 *)
   "Model"                    -> Automatic,  (* v2026-04-20 T08: Planner/Worker/Reducer/Committer \:5168\:90e8\:306b\:4f1d\:64ad *)
   "DeterministicFallback"    -> True   (* v2026-04-20 T10: deferred commit \:3067 LLM \:304c\:30bb\:30eb\:3092\:66f8\:304b\:306a\:304b\:3063\:305f\:3068\:304d\:3001
@@ -6054,7 +6183,7 @@ iWaitForRuntimeDAG[runtimeId_String, jobId_String,
 ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
   Module[{planResult, spawnResult, reduceResult, commitResult,
           verbose, skipCommit, targetNb, confirm, queryFn, model,
-          separateFinal, outputMode},
+          separateFinal, outputMode, depositResult},
     verbose    = TrueQ[OptionValue["Verbose"]];
     skipCommit = TrueQ[OptionValue["SkipCommit"]];
     separateFinal = TrueQ[OptionValue["SeparateFinalActions"]];
@@ -6096,7 +6225,17 @@ ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
     
     If[verbose,
       Print["  Spawn status: ", Lookup[spawnResult, "Status", "?"]]];
-    
+
+    (* 案A: opt-in で worker 成果物を SourceVault へ代理 deposit し sv:// URI を得る。 *)
+    depositResult = If[TrueQ[OptionValue["DepositArtifacts"]],
+      If[verbose, Print["[orchestration] Phase B2: Deposit artifacts -> SourceVault"]];
+      ClaudeOrchestratorDepositArtifacts[Lookup[spawnResult, "Artifacts", <||>],
+        "Provider" -> OptionValue["DepositProvider"]],
+      <|"Status" -> "Disabled"|>];
+    If[verbose && TrueQ[OptionValue["DepositArtifacts"]],
+      Print["  Deposit status: ", Lookup[depositResult, "Status", "?"],
+        "  URIs: ", Length[Lookup[depositResult, "URIs", {}]]]];
+
     If[verbose, Print["[orchestration] Phase C: Reduction"]];
     reduceResult = ClaudeReduceArtifacts[
       Lookup[spawnResult, "Artifacts", <||>],
@@ -6165,11 +6304,12 @@ ClaudeRunOrchestration[input_, opts:OptionsPattern[]] :=
         True,
           "Done"];
       baseResult = <|
-        "Status"       -> orchestrationStatus,
-        "PlanResult"   -> planResult,
-        "SpawnResult"  -> spawnResult,
-        "ReduceResult" -> reduceResult,
-        "CommitResult" -> commitResult
+        "Status"        -> orchestrationStatus,
+        "PlanResult"    -> planResult,
+        "SpawnResult"   -> spawnResult,
+        "ReduceResult"  -> reduceResult,
+        "CommitResult"  -> commitResult,
+        "DepositResult" -> depositResult
       |>;
       (* Step 4d (spec I11): SeparateFinalActions -> True \:306a\:3089
          RequiresFinalNode \:306a action \:3092\:5206\:96e2\:3057\:3001result \:306b
@@ -10115,14 +10255,34 @@ If[Length[DownValues[
    Get["ClaudeOrchestrator.wl"] \:306e\:4e09\:672c\:67f1\:904b\:7528\:306b\:623b\:308b\:3002
    ============================================================ *)
 
+(* 2026-06-13: companion 解決をカレントディレクトリ非依存にする (rule 50)。
+   $InputFileName は本ファイルの Get 中のみ有効なのでここで捕捉する。 *)
+ClaudeOrchestrator`Private`$iOrchestratorDir =
+  Quiet @ Check[DirectoryName[$InputFileName], ""];
+
+ClaudeOrchestrator`Private`iCompanionPath[file_String] :=
+  Module[{d = ClaudeOrchestrator`Private`$iOrchestratorDir},
+    If[StringQ[d] && d =!= "" && FileExistsQ[FileNameJoin[{d, file}]],
+      FileNameJoin[{d, file}], file]];
+
 ClaudeOrchestrator`Private`iLoadCompanion[file_String, contextStr_String] :=
   Module[{loaded = False},
-    (* context \:304c\:65e2\:306b\:5b58\:5728\:3057\:4e2d\:8eab\:304c\:3042\:308c\:3070 skip *)
-    If[Length[Names[contextStr <> "*"]] > 0, Return[True]];
+    (* context が既にロード済みなら skip。
+       2026-06-20: 以前は Length[Names[contextStr<>"*"]]>0 で判定していたが、これは
+       「シンボルを参照しただけで作られる空シンボル」でも真になり (例: 利用者が
+       ClaudeOrchestrator`Workflow`ClaudeWorkflowList を先に評価する)、未ロードなのに
+       skip してエンジンが入らないバグの原因だった。実ロード判定は $Packages 登録
+       (BeginPackage 実行済み) で行う。参照だけでは $Packages には入らない。 *)
+    If[MemberQ[$Packages, contextStr], Return[True]];
     Quiet @ Check[
-      Block[{$CharacterEncoding = "UTF-8"}, Get[file]];
+      Block[{$CharacterEncoding = "UTF-8"},
+        Get[ClaudeOrchestrator`Private`iCompanionPath[file]]];
       loaded = True,
       loaded = False];
+    (* 2026-06-13: Check は Quiet 済みの無害メッセージ (General::shdw 等) でも
+       発火し「ロード成功なのに失敗(skip)表示」になる誤警報があった。
+       成否はメッセージの有無ではなく $Packages 登録で判定する。 *)
+    If[!loaded && MemberQ[$Packages, contextStr], loaded = True];
     If[!loaded,
       Print[Style[
         "ClaudeOrchestrator: " <> file <> " \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
@@ -10131,13 +10291,41 @@ ClaudeOrchestrator`Private`iLoadCompanion[file_String, contextStr_String] :=
   ];
 
 (* \:9806\:5e8f: engine \:672c\:4f53 -> shim -> \:4e92\:63db\:5c64 *)
-ClaudeOrchestrator`Private`iLoadCompanion[
-  "ClaudeOrchestrator_workflow.wl",
-  "ClaudeOrchestrator`Workflow`"];   (* 2026-05-06 \:7d71\:5408\:5f8c: shim \:3082\:540c\:30d5\:30a1\:30a4\:30eb\:5185\:306b\:542b\:307e\:308c\:308b *)
+(* workflow engine は本体と同時に eager ロードする。判定は実ロードマーカー
+   $WorkflowVersion (ファイル本体が走った時のみ設定) で行う。context/Names/$Packages
+   の存在では判定しない: ClaudeOrchestrator`Workflow` は autoload stub として
+   事前宣言されていたり、ClaudeWorkflowList 等を素で評価しただけで空シンボルが
+   作られたりして、context 判定だと未ロードなのに skip してしまうため
+   (2026-06-20 修正: これがエンジン未ロードの原因だった)。 *)
+If[! ValueQ[ClaudeOrchestrator`Workflow`$WorkflowVersion],
+  Quiet @ Check[
+    Block[{$CharacterEncoding = "UTF-8"},
+      Get[ClaudeOrchestrator`Private`iCompanionPath["ClaudeOrchestrator_workflow.wl"]]],
+    Null];
+  If[! ValueQ[ClaudeOrchestrator`Workflow`$WorkflowVersion],
+    Print[Style[
+      "ClaudeOrchestrator: ClaudeOrchestrator_workflow.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
+      Italic, RGBColor[0.6, 0.4, 0.2]]]]];
 
-ClaudeOrchestrator`Private`iLoadCompanion[
-  "ClaudeOrchestrator_stategraph.wl",
-  "ClaudeStateGraph`"];
+(* ClaudeOrchestrator_stategraph.wl (ClaudeStateGraph` 互換層) は deprecated。
+   2026-06-22: 実利用箇所が無いことを確認した上で、既定では自動ロードしない。
+     - 旧 LLMStateGraph* / RunStateGraph / StageNode 等の alias のみを提供する層で、
+       実ロジックは Workflow Migration Stage B で ClaudeOrchestrator`Workflow` に
+       吸収済み (Stage D で名前空間ごと削除予定)。
+     - 横断調査で notebook / パレット / 本番コードからの呼び出しは 0 件。
+       consumer は ClaudePackageManager`ClaudeRunPackageLifecycle と
+       ClaudeRuntime`RunStateGraph の薄いラッパーのみで、両者とも未ロード時は
+       graceful fallback (EngineNotLoaded / needstategraph) する。
+     - さらに本ファイルは $packageDirectory に配置されておらず ($Path 非対象の
+       test codes\ のみに存在)、これまでも自動ロードは失敗し続けていた。よって
+       自動ロードを止めても機能退行は無く、ロード時の誤警報的な警告だけが消える。
+   旧 API を意図的に使う場合のみ、ClaudeOrchestrator.wl ロード前に
+   Global`$ClaudeOrchestratorEnableStateGraphCompat = True を設定する
+   (その際 ClaudeOrchestrator_stategraph.wl を $packageDirectory に配置すること)。 *)
+If[TrueQ[Global`$ClaudeOrchestratorEnableStateGraphCompat],
+  ClaudeOrchestrator`Private`iLoadCompanion[
+    "ClaudeOrchestrator_stategraph.wl",
+    "ClaudeStateGraph`"]];
 
 (* ClaudeOrchestrator_observability.wl の自動ロード (2026-05-15 追加)。
    このファイルは BeginPackage を持たない読み込み型なので Names による
@@ -10147,9 +10335,21 @@ ClaudeOrchestrator`Private`iLoadCompanion[
             plotPetriNetDetail / checkPetriNetVertices / traceTransitions /
             showLLMCallLog / withLLMLogging ほか *)
 If[!ValueQ[Global`$petriObservabilityVersion],
+  (* 2026-06-17: \:5468\:56f2 $Context \:304c Global` \:4ee5\:5916\:306b\:6f0f\:308c\:3066\:3044\:308b\:5834\:5408
+     (\:4f8b: \:5148\:884c\:30d1\:30c3\:30b1\:30fc\:30b8\:306e\:30ed\:30fc\:30c9\:4e2d\:65ad\:3067 NotebookExtensions`Private` \:304c
+     \:6b8b\:7559) \:3067\:3082\:3001BeginPackage \:3092\:6301\:305f\:306a\:3044\:3053\:306e\:30d5\:30a1\:30a4\:30eb\:306e\:30b7\:30f3\:30dc\:30eb
+     ($petriObservabilityVersion / ClaudeQueryBgLogged \:7b49) \:304c\:5fc5\:305a Global` \:306b
+     \:7740\:5730\:3059\:308b\:3088\:3046 $Context \:3092 Global` \:306b\:56fa\:5b9a\:3057\:3066 Get \:3059\:308b\:3002
+     $ContextPath \:306f\:7d99\:627f\:3057\:3001\:4ed6\:30d1\:30c3\:30b1\:30fc\:30b8\:53c2\:7167\:306e\:89e3\:6c7a\:306f\:7dad\:6301\:3059\:308b\:3002 *)
   Quiet @ Check[
-    Block[{$CharacterEncoding = "UTF-8"},
-      Get["ClaudeOrchestrator_observability.wl"]],
+    Block[{$CharacterEncoding = "UTF-8",
+           $Context = "Global`", $ContextPath = $ContextPath},
+      Get[ClaudeOrchestrator`Private`iCompanionPath[
+        "ClaudeOrchestrator_observability.wl"]]],
+    Null];
+  (* 2026-06-13: 成否はマーカー変数で判定 (Quiet 済みメッセージによる
+     Check 発火 = 誤警報を排除)。 *)
+  If[!ValueQ[Global`$petriObservabilityVersion],
     Print[Style[
       "ClaudeOrchestrator: ClaudeOrchestrator_observability.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
       Italic, RGBColor[0.6, 0.4, 0.2]]]]];
@@ -10167,7 +10367,10 @@ If[!ValueQ[ClaudeOrchestrator`$ClaudePromptWorkflowVersion] &&
    !TrueQ[Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad],
   Quiet @ Check[
     Block[{$CharacterEncoding = "UTF-8"},
-      Get["ClaudeOrchestrator_promptworkflow.wl"]],
+      Get[ClaudeOrchestrator`Private`iCompanionPath[
+        "ClaudeOrchestrator_promptworkflow.wl"]]],
+    Null];
+  If[!ValueQ[ClaudeOrchestrator`$ClaudePromptWorkflowVersion],
     Print[Style[
       "ClaudeOrchestrator: ClaudeOrchestrator_promptworkflow.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
       Italic, RGBColor[0.6, 0.4, 0.2]]]]];

@@ -644,6 +644,8 @@ ClaudeEval["フィボナッチ数列の最初の 10 項を求めて表示する"
 
 **期待される動作:** ロード前後で `$ClaudeEvalHook` の中身が変わり、ロード後の `ClaudeEval` は同期的に結果を返さず orchJobId を即座に返す(`$ClaudeOrchestratorAsyncMode` が `True` の場合)。同期挙動に戻すには `$ClaudeOrchestratorAsyncMode = False`。
 
+> **メモ (Auto ゲート):** 短い factual query(例: パッケージ名・関数名・拡張子を含む 300 文字未満の質問)は、Orchestrator 経路を通らず従来の Single パスで直接処理されます。この振り分けは `$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings`(Single にフォールバックさせる語尾)/ `$ClaudeEvalAutoComplexMarkers`(短文でも Orchestrator を通す「複雑タスク」マーカー)で制御できます。ユーザーはこれらのリストにプロジェクト固有の語を追加できます。
+
 ---
 
 ## 例 B-1: タスク分解 (モック planner)
@@ -724,6 +726,8 @@ result[["Status"]]
 **期待される出力例:** `"Committed"` (この API は reduced の中身が失敗を示していても、エラー報告セルを書き出して `"Committed"` を返します)。
 
 成功状態と失敗状態を区別したい場合は `reduced["ArtifactType"]`(`"Reduced"` vs `"ReducedFailed"`)を併せて確認してください。
+
+> **メモ (commit の追記位置 / 罠 #30):** committer は実行前に `SelectionMove[targetNb, After, Notebook]` で insertion point を notebook 末尾へ移してから書き込むため、LLM 出力は既存のセルグループに割り込まず独立した新規セルとして末尾に並びます。また `SystemOpen` などフロントエンド操作を伴う成果物 (final action) は scheduled task / 非同期 worker からは実行できないため、自動実行されず分離されます(例 B-10 以降を参照)。
 
 ---
 
@@ -850,6 +854,91 @@ ClaudeOrchestrationCancel[jobId]
 ```
 
 **期待される出力例:** `Dataset[{<|"JobId"->..., "Status"->"Running", ...|>}]` / `True`
+
+---
+
+## 例 B-10: final action (FrontEnd/desktop 操作) の分離と承認実行
+
+オーケストレーションは完全非同期(DAG worker = scheduled task)で動くため、`SystemOpen` のようなデスクトップ操作や notebook 書き込みを伴う成果物は worker からは無反応になります(**罠 #30**: scheduled task / 共有 polling tick からの `SystemOpen` は効きません)。
+
+そこで Orchestrator は、成果物の `HeldExpr` を NBAccess の `NBValidateHeldExpr` で判定し、副作用のない「safe computation node」と、メインカーネル評価が必須な「final action node」に振り分けます。final action は**自動実行せず、承認後にユーザーのメインカーネル評価(ボタン押下)で実行する**のが前提です。
+
+async orchestration の完了後に、分離された final action を承認ボタンセルとして notebook に提示するには `ClaudeOrchestrationShowFinalActions` を使います。
+
+```mathematica
+(* 例 B-6 の async ジョブが Done になった後で。
+   この関数は必ずユーザーのメインカーネル評価 (セル実行) で呼ぶこと。 *)
+ClaudeOrchestrationShowFinalActions[jobId]
+```
+
+**期待される出力例:** 提示した final action の件数(整数)。final action がある場合は notebook に「○○ を開く (手動実行)」のような承認ボタンセルが書き出され、ボタン(`Method -> "Queued"`)を押したときに初めて `SystemOpen` 等が実行されます。final action が無い純計算ジョブでは `0` が返り、ボタンセルは追加されません。
+
+> **メモ:** scheduled task から `ClaudeOrchestrationShowFinalActions` を呼ぶと、`SystemOpen` / notebook 書き込みが無反応になります(罠 #30)。必ずセル実行(メインカーネル評価)で呼んでください。
+
+---
+
+## 例 B-11: ClaudeOrchestratorExtractFinalActions で結果から final action を取り出す
+
+`ClaudeRunOrchestration`(同期版)や `ClaudeOrchestrationResult` で得た結果から、final action とそれ以外(safe artifact)をプログラム的に取り出すには `ClaudeOrchestratorExtractFinalActions` を使います。元の結果に `"FinalActions"` / `"SafeArtifacts"` / `"HasFinalActions"` を加えた Association を返します。
+
+```mathematica
+res = ClaudeOrchestrationResult[jobId];
+
+(* accessSpec は PermissionMode を焼き込んだ access 仕様。
+   省略時は既定の accessSpec を使う実装に合わせて渡す。 *)
+extracted = ClaudeOrchestratorExtractFinalActions[res, accessSpec];
+
+<|"HasFinalActions" -> extracted["HasFinalActions"],
+  "NumFinal"        -> Length[extracted["FinalActions"]],
+  "NumSafe"         -> Length[extracted["SafeArtifacts"]]|>
+```
+
+**期待される出力例:**
+
+```
+<|"HasFinalActions" -> True, "NumFinal" -> 1, "NumSafe" -> 3|>
+```
+
+`extracted["FinalActions"]` の各要素は、承認 UI 提示用に整えられた record です。final action は自動実行されないため、`ClaudeOrchestrationShowFinalActions`(例 B-10)で承認 UI を表示するか、次の `ClaudeOrchestratorPresentFinalActions` で UI 用 record に整えます。
+
+---
+
+## 例 B-12: ClaudeOrchestratorClassifyArtifactActions / PresentFinalActions (低水準 API)
+
+成果物リストを直接受け取って safe / final に分類したい場合は `ClaudeOrchestratorClassifyArtifactActions` を使います。artifacts は `taskId -> artifact` の Association または artifact の List を受け付け、`HeldExpr` / `Payload["HeldExpr"]` を持たない artifact は副作用なし(Safe)とみなされます。
+
+```mathematica
+classified = ClaudeOrchestratorClassifyArtifactActions[artifacts, accessSpec];
+Keys[classified]
+(* {"Safe", "Final", "Diagnostics"} *)
+
+(* Final 要素の判定内訳を見る *)
+classified["Final"][[All,
+  {"TaskId", "ExecutionPlacement", "BlockingRisk", "EffectClass", "Decision"}]]
+```
+
+**期待される出力例:**
+
+```
+{<|"TaskId" -> "t2", "ExecutionPlacement" -> "MainKernel",
+   "BlockingRisk" -> "Low", "EffectClass" -> "DesktopAction",
+   "Decision" -> "RequiresFinalNode"|>}
+```
+
+分類済みの final action を承認 UI へ提示する形に整えるには `ClaudeOrchestratorPresentFinalActions` を使います。
+
+```mathematica
+(* 既定 (Mode -> "Present"): UI 用 record を返すのみ。実行はしない *)
+ClaudeOrchestratorPresentFinalActions[classified["Final"], accessSpec]
+(* → <|"Mode" -> "Present", "Items" -> {...}, "Count" -> 1|> *)
+
+(* Mode -> "Enqueue": NBEnqueueFinalAction で queue 化し、
+   AsyncActive 解除後の queue 実行 (またはボタン押下) に委ねる *)
+ClaudeOrchestratorPresentFinalActions[classified["Final"], accessSpec,
+  "Mode" -> "Enqueue"]
+```
+
+**期待される出力例:** `<|"Mode" -> "Present"|"Enqueue", "Items" -> {...}, "Count" -> ...|>`。`"Present"` は提示用 record を返すだけで副作用はなく、`"Enqueue"` は queue に積んで AsyncActive 解除後の実行に委ねます。いずれのモードでも `SystemOpen` 等の desktop action はその場では実行されず、メインカーネル評価のタイミング(承認ボタン押下 / queue 実行)に委ねられます(罠 #30)。
 
 ---
 

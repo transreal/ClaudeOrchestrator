@@ -9,11 +9,12 @@
 5. [アーティファクト統合フェーズ](#アーティファクト統合フェーズ)
 6. [コミットフェーズ](#コミットフェーズ)
 7. [非同期実行 API](#非同期実行-api)
-8. [バッチ実行](#バッチ実行)
-9. [ペトリネット拡張 (Workflow + Observability + PromptWorkflow)](#ペトリネット拡張-workflow--observability--promptworkflow)
-10. [Real LLM 統合](#real-llm-統合)
-11. [グローバル設定変数](#グローバル設定変数)
-12. [エラーと検証](#エラーと検証)
+8. [Final Action の分離と承認実行 (Step 4d / spec I11)](#final-action-の分離と承認実行-step-4d--spec-i11)
+9. [バッチ実行](#バッチ実行)
+10. [ペトリネット拡張 (Workflow + Observability + PromptWorkflow)](#ペトリネット拡張-workflow--observability--promptworkflow)
+11. [Real LLM 統合](#real-llm-統合)
+12. [グローバル設定変数](#グローバル設定変数)
+13. [エラーと検証](#エラーと検証)
 
 ---
 
@@ -61,6 +62,10 @@ NBAccess → claudecode_base → ClaudeRuntime → ClaudeOrchestrator → claude
 
 `$ClaudeEvalAutoSkipKeywords` / `$ClaudeEvalAutoFactualEndings` / `$ClaudeEvalAutoComplexMarkers` の 3 つのリストにより、Auto モードで短い factual query をオーケストレーション経路から除外し、Single パスに直送できます。詳細は[グローバル設定変数](#グローバル設定変数)を参照してください。
 
+**Final Action の分離 (Step 4d / spec I11, 罠 #30):**
+
+DAG ワーカーは完全非同期 (scheduled task) で動くため、`SystemOpen` などの desktop / FrontEnd 操作はワーカー側では実行できません(罠 #30)。そこで Orchestrator は、各アーティファクトの `HeldExpr` を **safe computation node** と **final action node** に振り分け、後者は自動実行せず承認 UI 経由でユーザーのメインカーネル評価に委ねます。詳細は[Final Action の分離と承認実行](#final-action-の分離と承認実行-step-4d--spec-i11)を参照してください。
+
 ---
 
 ## 基本的な使い方
@@ -85,6 +90,10 @@ ClaudeOrchestrationStatus[jobId][["Status"]]
 ClaudeOrchestrationWait[jobId, 120];
 ClaudeOrchestrationResult[jobId][["Status"]]
 (* "Complete" など *)
+
+(* 完了後、desktop 操作 (SystemOpen 等) が混じっていれば承認 UI で提示する。
+   必ずユーザーのメインカーネル評価 (セル実行) で呼ぶこと (罠 #30)。 *)
+ClaudeOrchestrationShowFinalActions[jobId]
 ```
 
 ---
@@ -230,6 +239,38 @@ ClaudeValidateArtifact[artifacts["t1"], schema]
 
 ---
 
+### ClaudeOrchestratorDepositArtifacts
+
+ワーカー成果物 (`taskId -> artifact` の Association) を、メインカーネル(=単一書き手)から SourceVault へ append-only で deposit し、各々の `sv://artifact/..` URI を返します(案A: ワーカーは producer のまま、Orchestrator が代理 deposit します)。
+
+各アーティファクトの payload を JSON テキスト化して commit し、`idempotencyKey` には content hash を用いるため、同一内容の再 deposit は冪等に扱われます。
+
+**シグネチャ:**
+```wolfram
+ClaudeOrchestratorDepositArtifacts[artifacts, opts]
+```
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `"Provider"` | `"orchestrator-worker"` | deposit 認可に使う provider 名 |
+| `"ModelId"` | `"worker"` | モデル識別子 |
+| `"SessionId"` | `Automatic` | セッション ID |
+| `"PrivacyLevel"` | `Automatic` | プライバシーレベル |
+| `"Mode"` | `"commit"` | deposit モード |
+
+内部では `SourceVault`SourceVaultMCPDeposit` を弱呼び出しします。SourceVault が未ロードのときは `"Status" -> "Skipped"` を返します。認可は provider `"orchestrator-worker"` の AccessProfile(`AllowedOperations` に `DepositArtifact` を含むもの)を経由します。
+
+**戻り値:**
+```wolfram
+<|
+  "Status"   -> ...,
+  "Deposits" -> <|"t1" -> <|"Status" -> ..., "URI" -> ..., "Detail" -> ...|>, ...|>,
+  "URIs"     -> {...}
+|>
+```
+
+---
+
 ## アーティファクト統合フェーズ
 
 ### ClaudeReduceArtifacts
@@ -298,6 +339,8 @@ ClaudeCommitArtifacts[targetNotebook, reducedArtifact, opts]
 
 `CommitResult["Diagnostics"]` には commit safety 経路を通った場合に `HeldExprFound` / `LastProviderResponseHead` などの診断情報が付属します。`"CommitRetryMax" -> N` で再試行回数を、`"DeterministicFallback" -> False` で決定論的フォールバックを無効化できます。なお commit safety のロジックは Phase 36 で本体にインライン統合されているため、追加ファイル (`claudecode_commit_safety.wl`) のロードは不要です。
 
+> **insertion point について (v2026-04-20 T18):** committer の `HeldExpr` を `ReleaseHold` で実行する直前に、`SelectionMove[targetNb, After, Notebook]` でノートブック末尾へ insertion point を移します。これにより `ClaudeEval` を評価した Input セルの Output 位置に `NotebookWrite` が押し込まれ、既存の Output セルと視覚的に融合する(例:「1から200の和公式 : ...20100」のように連結する)症状を避け、LLM 出力が独立した新規セルとして末尾に並ぶようにしています。
+
 **使用例:**
 ```wolfram
 nb = InputNotebook[];
@@ -340,6 +383,8 @@ ClaudeRunOrchestrationAsync[input, opts]
 **`$ClaudeEvalHook` との関係:**
 
 `$ClaudeEvalHook` は内部的にこの関数を呼び出します。ノートブックのセルを評価するとバックグラウンドでオーケストレーションが開始され、セルの評価は即座に完了します。結果は `ClaudeOrchestrationResult` で後から取得します。
+
+> **desktop final action は自動実行されません(罠 #30):** 自動ワークフロー(Plan → Spawn → Reduce → Commit)が生成した `SystemOpen` などの desktop action は、完全非同期(DAG worker = scheduled task)で動くため自動実行されません。完了後に `ClaudeOrchestrationShowFinalActions[orchJobId]` をメインカーネル評価で呼んで、承認 UI として提示してください([Final Action の分離と承認実行](#final-action-の分離と承認実行-step-4d--spec-i11)参照)。
 
 **使用例:**
 ```wolfram
@@ -439,6 +484,191 @@ ClaudeOrchestrationJobs[]
 ClaudeOrchestrationJobs[]
 (* Dataset[<|"orch-001" -> <|"Status" -> "Done", ...|>, ...|>] *)
 ```
+
+---
+
+## Final Action の分離と承認実行 (Step 4d / spec I11)
+
+### 背景: 罠 #30 と「分離・保留」原則
+
+DAG ワーカーや共有 polling tick は **scheduled task** として動くため、`SystemOpen` のような desktop / FrontEnd 操作や `NotebookWrite` による書き込みは、ワーカーや共有 tick の評価コンテキストでは silent no-op になります(罠 #30)。これは非同期化(完全非同期 DAG worker)の副作用です。
+
+そこで Orchestrator は、各アーティファクトに含まれる `HeldExpr`(保留された式)を次の 2 種類に**振り分け**ます。
+
+- **safe computation node** — 副作用がなく、通常 step としてそのまま処理してよいもの。
+- **final action node** — FrontEnd / desktop 操作(`SystemOpen` 等)を含み、scheduled task では効かないもの。これらは**自動実行せず**「分離・保留」し、**承認 UI 経由でユーザーのメインカーネル評価(ボタン押下)**に実行を委ねます。
+
+副作用の有無の判定(`NBValidateHeldExpr` / `RequiresFinalNode`)は NBAccess に委譲し、Orchestrator は**振り分けのみ**を担当します。`HeldExpr` / `Payload["HeldExpr"]` を持たないアーティファクトは副作用なし(Safe)とみなします。
+
+```
+全 artifact
+   ↓ ClaudeOrchestratorClassifyArtifactActions  (Safe / Final に振り分け)
+Safe artifacts ──→ 通常 step として処理
+Final actions  ──→ ClaudeOrchestratorPresentFinalActions / ClaudeOrchestrationShowFinalActions
+                    ↓ 承認 UI (ボタン)
+                  ユーザーのメインカーネル評価で SystemOpen 等を実行
+```
+
+---
+
+### ClaudeOrchestratorClassifyArtifactActions
+
+各アーティファクトの `HeldExpr` を `NBValidateHeldExpr` で判定し、`RequiresFinalNode` を手がかりに safe computation node と final action node に振り分けます(spec I11)。
+
+**シグネチャ:**
+```wolfram
+ClaudeOrchestratorClassifyArtifactActions[artifacts, accessSpec]
+```
+
+- `artifacts` — `taskId -> artifact` の Association、またはアーティファクトの List。
+- `accessSpec` — アクセス仕様。`PermissionMode` はこの `accessSpec` に焼き込まれます(spec I12)。
+
+`HeldExpr` / `Payload["HeldExpr"]` を持たないアーティファクトは副作用なしとみなして `Safe` に分類します。判定は複数の見方を OR で組み合わせて行います(例:先行パッケージのロード中断で `NotebookExtensions`Private`` が漏れている場合など、複数経路を探します。見つからなければ `None`)。
+
+**戻り値:**
+```wolfram
+<|
+  "Safe"        -> {...},
+  "Final"       -> {...},
+  "Diagnostics" -> {...}
+|>
+```
+
+各 `Final` 要素は以下のキーを持つ Association です。
+
+| キー | 説明 |
+|---|---|
+| `"TaskId"` | 由来タスク ID |
+| `"Artifact"` | 元のアーティファクト |
+| `"Validation"` | `NBValidateHeldExpr` の判定結果 |
+| `"ExecutionPlacement"` | 実行配置(メインカーネル評価が必要か等) |
+| `"BlockingRisk"` | ブロックリスク見積もり(出力モードとの連携で集約要否を判定) |
+| `"EffectClass"` | 副作用クラス |
+| `"Decision"` | 最終的な振り分け判断 |
+
+---
+
+### ClaudeOrchestratorExtractFinalActions
+
+`ClaudeRunOrchestration` の結果から `RequiresFinalNode` な action を分離し、通常 step(safe)と final action node に整理します(spec I11)。
+
+**シグネチャ:**
+```wolfram
+ClaudeOrchestratorExtractFinalActions[orchestrationResult, accessSpec]
+```
+
+**戻り値:** 元の `orchestrationResult` に次のキーを加えた Association。
+
+| 追加キー | 説明 |
+|---|---|
+| `"FinalActions"` | 分離された final action のリスト |
+| `"SafeArtifacts"` | 副作用のない safe アーティファクト |
+| `"HasFinalActions"` | final action が存在するか(True/False) |
+
+final action は**自動実行せず**、承認後にメインカーネル評価で実行することを前提とします(罠 #30)。
+
+**使用例:**
+```wolfram
+res  = ClaudeRunOrchestration["...", TargetNotebook -> nb];
+res2 = ClaudeOrchestratorExtractFinalActions[res, accessSpec];
+res2["HasFinalActions"]
+(* True なら承認 UI 提示へ進む *)
+```
+
+---
+
+### ClaudeOrchestratorPresentFinalActions
+
+分離済みの final action を承認 UI へ提示する形に整えます(spec I11 / 案3-lite)。`SystemOpen` 等の desktop action は scheduled task では効かないため(罠 #30)、自動実行せずユーザーのメインカーネル評価(ボタン押下)で実行する想定です。
+
+**シグネチャ:**
+```wolfram
+ClaudeOrchestratorPresentFinalActions[finalActions, accessSpec, opts]
+```
+
+| オプション | 既定値 | 説明 |
+|---|---|---|
+| `Mode` | `"Present"` | `"Present"`: 承認 UI 用 record を返すのみ。`"Enqueue"`: `NBEnqueueFinalAction` で queue 化し、AsyncActive 解除後の queue 実行に委ねる |
+
+**戻り値:**
+```wolfram
+<|
+  "Mode"  -> "Present" | "Enqueue",
+  "Items" -> {...},
+  "Count" -> ...
+|>
+```
+
+`"Enqueue"` モードは、ボタン押下(メインカーネル評価)あるいは AsyncActive 解除後の queue 実行に実行を委ねたい場合に使います。
+
+---
+
+### ClaudeOrchestrationShowFinalActions
+
+async orchestration の完了後に、分離された final action(FrontEnd / desktop 操作)を**承認ボタンセル**としてノートブックに提示します(§5.1)。
+
+**シグネチャ:**
+```wolfram
+ClaudeOrchestrationShowFinalActions[orchJobId]
+```
+
+**戻り値:** 提示した final action の件数。
+
+**重要な制約(罠 #30):**
+
+- この関数は**必ずユーザーのメインカーネル評価(セル実行)で呼ぶ**こと。scheduled task / 共有 tick から呼ぶと `SystemOpen` / notebook 書き込みが無反応になります。
+- ボタン本体は `Method -> Queued` で構築され、**ボタンが押されたときに初めて `SystemOpen` を実行**します(承認後にメインカーネル評価で実行する前提)。raw `SystemOpen` は静的に焼き込み(罠 #29 回避)、メイン評価で直接実行されます。
+
+**使用例:**
+```wolfram
+jobId = ClaudeRunOrchestrationAsync["資料を作って PDF を開く", MaxTasks -> 4];
+ClaudeOrchestrationWait[jobId, 180];
+
+(* 完了後、メインカーネル評価 (このセルの実行) で承認 UI を提示する *)
+n = ClaudeOrchestrationShowFinalActions[jobId];
+(* n 件の承認ボタンセルがノートブックに追加される。
+   ボタンを押すと SystemOpen 等がメインカーネルで実行される。 *)
+```
+
+> Status 報告に件数が必要な場合は、`ClaudeOrchestrationShowFinalActions["<orchId>"]` を案内する文言を提示できます。final action が 0 件のときはボタンセルを出さず、件数 0 を返します。
+
+---
+
+### Handler allowlist(SourceVault PromptRouter 連携)
+
+ペトリネット handler や非 SourceVault callable を SourceVault PromptRouter のマージビューに取り込むための拡張点です。
+
+#### ClaudeWorkflowRegisterHandler
+
+非 SourceVault callable を Orchestrator 所有の handler allowlist に登録します。SourceVault PromptRouter の `SourceVaultCallableAllowlistView` が、この allowlist を weak-call で取り込みます。
+
+**シグネチャ:**
+```wolfram
+ClaudeWorkflowRegisterHandler[functionId, spec]
+```
+
+`spec` のキー:
+
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `"Symbol"` | (必須) | 評価しないシンボル |
+| `"UseAsFunctionRoute"` | `True` | FunctionRoute として使うか |
+| `"UseAsHandlerRef"` | `True` | HandlerRef として使うか |
+| `"SideEffectClass"` | `"ReadOnly"` | `"ReadOnly"` / `"SafeCreate"` など |
+| `"OwnerPackage"` | (String) | 所有パッケージ名 |
+
+同一 `functionId` は置換されます。戻り値は登録エントリです。
+
+#### ClaudeWorkflowHandlerAllowlist
+
+登録済みの handler allowlist(`FunctionId -> エントリ`)を返します。SourceVault PromptRouter の `SourceVaultCallableAllowlistView` がこのシンボルを weak-call し、FunctionRoute / HandlerRef 解決のマージビューに取り込みます。空なら `<||>` を返します。
+
+```wolfram
+ClaudeWorkflowHandlerAllowlist[]
+(* <|"myHandler" -> <|...|>, ...|> *)
+```
+
+登録内容は `$ClaudeWorkflowHandlerRegistry`(`FunctionId -> エントリ` の Association)に保持され、`Get` での再ロードでも保持されます(未設定時のみ初期化)。
 
 ---
 
@@ -928,6 +1158,7 @@ pd["Status"]     (* "OK" / "Failed" *)
 | `$ClaudeEvalAutoSkipKeywords` | (リスト) | Auto モードで Single パスにフォールバックさせる技術名・拡張子等 |
 | `$ClaudeEvalAutoFactualEndings` | (リスト) | factual query を識別する語尾・フレーズ |
 | `$ClaudeEvalAutoComplexMarkers` | (リスト) | Orchestrator 経路を強制する複雑タスクのマーカー |
+| `$ClaudeWorkflowHandlerRegistry` | `Association` | 登録済み handler allowlist (`FunctionId -> エントリ`)。`Get` 再ロードでも保持 |
 | `$ClaudeOrchestratorDisablePromptWorkflowAutoLoad` (Global) | `False` | PromptWorkflow 拡張の autoload を抑止するフラグ (本体ロード前にセット) |
 
 ### `$ClaudeOrchestratorRealLLMEndpoint` の設定値
@@ -977,6 +1208,9 @@ AppendTo[$ClaudeEvalAutoComplexMarkers, "10ページ"];
 | `ClaudeRealLLMQuery` が `$Failed` を返す | エンドポイントの設定誤り | `ClaudeRealLLMDiagnose` で詳細を確認する |
 | `ClaudeOrchestrationResult[jobId]` が `Missing` を返す | ジョブが未完了 | `ClaudeOrchestrationStatus[jobId]["Status"]` で進捗を確認する |
 | 非同期ジョブが `"Failed"` 状態になる | バックグラウンド実行中のエラー | `ClaudeOrchestrationResult[jobId]["Failures"]` でエラー詳細を確認する |
+| `ClaudeOrchestrationShowFinalActions` を呼んでも `SystemOpen` が実行されない / 承認ボタンが出ない | scheduled task / 共有 tick から呼んでいる(罠 #30) | **必ずユーザーのメインカーネル評価(セル実行)で呼ぶ**。ボタン(`Method->Queued`)は押下時に初めて `SystemOpen` を実行する |
+| desktop 操作(PDF を開く等)が自動実行されない | 非同期 DAG worker は scheduled task のため final action を自動実行しない(設計上の制約 / 罠 #30) | 完了後に `ClaudeOrchestrationShowFinalActions[jobId]` を呼び、承認 UI のボタンを押して実行する |
+| final action と safe artifact の振り分け結果を確認したい | — | `ClaudeOrchestratorClassifyArtifactActions` の `"Diagnostics"`、または `ClaudeOrchestratorExtractFinalActions` の `"HasFinalActions"` / `"FinalActions"` を参照する |
 | ChatGPT Codex 応答が `showLLMCallLog[]` に文字列として残らない | Codex が Association 形式で返している | `ClaudeOrchestrator_observability.wl` を再ロードして `ClaudeQueryBgLogged` の Association 対応を有効化(C-6 節参照) |
 | `ClaudeOrchestrator`$ClaudePromptWorkflowVersion` が未定義 | PromptWorkflow 拡張の autoload に失敗、または `$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` が立っている | フラグを `False` に戻し、`Get["ClaudeOrchestrator_promptworkflow.wl"]` を手動実行する |
 | `ClaudeProposeWorkflowNetFromPrompt` が `"Rejected"` を返す | 禁止 API が検出された、または提案コードが parse できない | `prop["AttemptTrace"]` と `ClaudeWorkflowCheckForbidden` の出力を確認する |

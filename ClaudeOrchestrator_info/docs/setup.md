@@ -45,7 +45,7 @@ GitHubInstallPackage["ClaudeOrchestrator",
   "https://github.com/transreal/ClaudeOrchestrator"]
 ```
 
-PromptWorkflow 拡張 `ClaudeOrchestrator_promptworkflow.wl` は `ClaudeOrchestrator.wl` と同じディレクトリに必要です（本体ロード時に自動ロードされます）。リポジトリに同梱されている場合は同時に取得されます。
+サブモジュール（PromptWorkflow・Observability・Workflow）は PHASE 36（2026-04-28）以降、本体 `ClaudeOrchestrator.wl` に統合されています。別途ファイルを用意する必要はありません。
 
 依存パッケージも同様にインストールできます。
 

@@ -28,7 +28,7 @@ Options: "InputArcs" -> {} (List of <|"Place"->...,"Multiplicity"->1,"TokenKind"
 ### WorkflowNet[opts]
 WorkflowNet 全体 Association を生成する。
 → Association
-Options: "WorkflowId" -> Automatic, "SourcePlace" -> 必須 (String), "FinalPlaces" -> {"Done"} (List), "Places" -> <||> (Association), "Transitions" -> <||> (Association), "InitialMarking" -> <||> (Association), "Description" -> "" (String), "ParentRuntime" -> Missing[] (String|Missing[])
+Options: "WorkflowId" -> Automatic, "SourcePlace" -> 必須 (String), "FinalPlaces" -> {"Done"} (List), "Places" -> <||> (Association), "Transitions" -> <||> (Association), "InitialMarking" -> <||> (Association), "Description" -> "" (String), "ParentRuntime" -> Missing[] (String|Missing[]), "DefaultAwaitingLLMTimeout" -> None (2026-05-17; NumericQ かつ > 0 のとき全 transition のデフォルト AwaitingLLM timeout 秒数。trans.RuntimeSpec.AwaitingLLMTimeout が優先)
 
 ## ワークフロー作成・投入
 
@@ -206,6 +206,122 @@ AwaitingLLM エントリ: snapshot 時 Awaiting 状態だった transition は A
 ### ClaudeListWorkflowSnapshots[opts] → Dataset
 $ClaudeWorkflowSnapshotDir 配下の snapshot 一覧。各エントリ: <|"SnapshotDir", "WorkflowId", "FormatVersion", "Description", "SavedAt"|>。
 Options: "SnapshotDir" -> Automatic
+
+## External executor フック
+
+外部 WolframScript ジョブ (Phase 4.A) との接続ポーリング関数とフック変数。実体は `ClaudeRuntime_externalrunner.wl` が `ClaudeWireExternalRunner[]` 経由で差し込む。
+
+### ClaudeExternalJobPollTick[] → Association
+`AwaitingLLMTransitions` に登録された External WolframScript job を走査し、status を読んで完了/失敗/timeout を処理する。Completed → `ClaudeCompleteHandlerOutput` で output ref token を produce (slot も OutputArc 経由で返却)。Failed/Expired → `RetryPolicy` に従い再起動または terminal failure。Running → no-op。timeout は poller が単独所有 (External では `AwaitingLLMTimeout` を使わない: v7 C1)。
+返り値: `<|"Polled"->_Integer, "Results"->{...}|>`
+
+### $ClaudeExternalJobLauncher
+型: Function | Automatic, 初期値: Automatic (未設定 Failure)
+External job を起動する関数フック。`fn[jobSpec] → <|"Status"->"Launched"|"Failed", "JobID", "JobDir", "PID", "Reason"|>`。`ClaudeRuntime_externalrunner.wl` が `ClaudeWireExternalRunner[]` で差し込む。テストで mock 注入可。
+
+### $ClaudeExternalJobStatusReader
+型: Function | Automatic, 初期値: Automatic (JobDir/status.json 読み、無ければ Running)
+External job の status を読む関数フック。`fn[awaitMeta] → <|"Status"->"Running"|"Completed"|"Failed", "OutputRef", "SourceVaultRef", "SummaryRef", "ErrorRef"|>`。テストで mock 注入可。
+
+### $ClaudeExternalJobKiller
+型: Function | Automatic, 初期値: Automatic (best-effort no-op、Phase 4 で実装)
+External job を強制終了する関数フック。`fn[awaitMeta]`。pid.json 同一性確認後に kill。テストで mock 注入可。
+
+### $ClaudeExternalCompletionHook
+型: Function | None, 初期値: None
+External job 完了後に呼ばれる注入点。`fn[<|"WorkflowId","AwaitId","AwaitMeta","Status"|>]`。live 統合 (Notebook 反映 final action enqueue) のため `ClaudeRuntime_externalrunner.wl` 側が設定する。workflow 本体は疎結合のまま。
+
+## Subkernel executor フック
+
+サブカーネル並列実行 (`ParallelSubmit` 経由) との接続フック。`AwaitKind=SubkernelTask` の transition を走査・完了処理する。
+
+### ClaudeSubkernelPollTick[] → _
+`AwaitingLLMTransitions` の Subkernel job (`AwaitKind=SubkernelTask`) を走査し、future の非ブロッキング完了判定を行い、完了時に `ClaudeCompleteHandlerOutput` で結果を produce (slot は OutputArc で返却)。巨大結果 (`$ClaudeSubkernelResultInlineLimit` 超) は inline せず summary 化。
+
+### $ClaudeSubkernelSubmit
+型: Function | Automatic, 初期値: Automatic
+Subkernel executor の submit 関数。`fn[HoldComplete[expr], accessSpec] → <|"Handle"->_|> | None`。`Automatic` は `ParallelSubmit[NBExecuteHeldExprSubkernelRaw[...]]` (kernel/関数が利用可能なとき)。テストで mock 注入可。
+
+### $ClaudeSubkernelPoll
+型: Function | Automatic, 初期値: Automatic
+Subkernel job の非ブロッキング完了判定。`fn[handle] → <|"Done"->_, "Result"->_|>`。`Automatic` は future の非ブロッキング poll。テストで mock 注入可。
+
+### $ClaudeSubkernelResultInlineLimit
+型: Integer, 初期値: 65536 (64KB)
+subkernel 結果を token payload に inline できる `ByteCount` 上限。超過時は summary 化。
+
+## External held expr job 投入
+
+### ClaudeSubmitExternalHeldExprJob[HoldComplete[expr], opts] → Association
+承認済みの held expression を External executor (WolframScript ジョブ) へ 1 遷移 WorkflowNet として投入する (2026-06-12)。内部で 1 遷移 WorkflowNet を作成し `$ClaudeExternalJobLauncher` 経由で起動する。`ClaudeRuntime_externalrunner.wl` の `"ApprovedHeldExpr"` ハンドラと連携。
+Options:
+- `"Handler" -> "ApprovedHeldExpr"`
+- `"Timeout" -> 3600`
+- `"BootstrapFiles" -> {}` (子プロセスで先行ロードするパッケージリスト)
+- `"NotifyNotebook" -> None` (完了 summary の書込先 NotebookObject)
+- `"AccessSpec" -> Automatic` (Automatic = WolframScriptTask role)
+- `"MaxRetries" -> 0`
+
+返り値 (成功): `<|"Status"->"Submitted", "JobID", "JobDir", "WorkflowId", "Head"|>`
+返り値 (失敗): `<|"Status"->"Failed", "Reason"|>`
+
+## StateGraph Shim 互換層
+
+旧 `LLMStateGraph*` / `RunStateGraph` API を WorkflowNet engine 経由で動作させる forwarding 層 (Stage C-1, 2026-05-06)。新規コードは WorkflowNet API を直接使い、この shim を経由しないこと。
+
+### $UseLegacyStategraph
+型: Boolean, 初期値: False
+`False` (既定) なら新実装 (`ClaudeOrchestrator`Workflow`` 経由)、`True` なら legacy stategraph 実装を使う。旧名 `$UseWorkflowShim` とは逆の意味 (`$UseLegacyStategraph = !$UseWorkflowShim`)。Stage D で削除予定。
+
+### $UseWorkflowShim
+`$UseLegacyStategraph` の旧名 (deprecated alias)。意味が逆になるため新規コードでは使わないこと。
+
+### $WorkflowShimVersion
+型: String
+shim 互換層のバージョン文字列。
+
+### ClaudeWorkflowFromStateGraph[graph] → Association
+LLMStateGraph 形式の `graph` (Nodes/Edges/InitialNode/TerminalNodes) を WorkflowNet 構造に変換して返す (登録はしない)。対応 Node 型: Stage / Compute / Decision / Terminal / ParallelSubgraph。制約: nodeId に `"__"` (二重 underscore) を含めないこと。
+
+### ClaudeCreateWorkflowFromStateGraph[graph, opts] → String (WorkflowId)
+`ClaudeWorkflowFromStateGraph` + `ClaudeCreateWorkflowNet` を一括実行して WorkflowId を返す。Options: `"Description"->""`, `"ValidateStrict"->True`。
+
+### ShimLLMStateGraphCreate[graph, opts] → String (sgRid)
+`LLMStateGraphCreate` と等価。WorkflowNet を生成・登録し XSMSentinel token 投入後、`"sg-"` 接頭辞の runtimeId を返す。Options: `"InitialContext"-><||>`, `"MaxTotalIterations"->30`
+
+### ShimLLMStateGraphStatus[sgRid] → Association
+`LLMStateGraphStatus` と等価。返り値キー: RuntimeId / Status / CurrentNode / TotalIterations / MaxTotalIterations / Path / ActiveSubDAGId / FailureReason / StartTime / EndTime / ElapsedSec
+
+### ShimLLMStateGraphState[sgRid] → Association
+`LLMStateGraphState` と等価。GlobalState Association を返す (Stages[nodeId][Output] 構造も含む)。
+
+### ShimLLMStateGraphCancel[sgRid] → sgRid
+`LLMStateGraphCancel` と等価。`ClaudeCancelWorkflow` 経由でキャンセル。
+
+### ShimLLMStateGraphList[] → List
+`LLMStateGraphList` と等価。`ShimLLMStateGraphCreate` で登録された全 sgRid を返す。
+
+### ShimLLMStateGraphTrace[sgRid] → List
+`LLMStateGraphTrace` と等価。`ClaudeWorkflowTrace` の TransitionFired event を stategraph 形式 (NodeProcessed / DecisionMade / ParallelStarted / ParallelJoined / EdgeFired) に変換して返す。先頭に GraphCreated event を付加。
+
+### ShimLLMStateGraphRecordHistory[sgRid] → Association
+`LLMStateGraphRecordHistory` と等価。状態と trace を集約した Association を返す。返り値キー: RuntimeId, WorkflowId, Status, Path, Stages, Trace, TraceEventCount, Recorded, RecordedAt。
+
+### ShimRunStateGraph[graph, opts] → Association (Sync) | sgRid (Async)
+`RunStateGraph` と等価。`Async->False` (既定) は完了まで block して結果 Association を返す。`Async->True` は sgRid を即返却。OnGraphComplete callback は Sync/Async 両モードで発火。
+Options: `"Async"->False`, `"MaxTotalIterations"->30`, `"MaxWait"->600`, `"PollInterval"->0.5`, `"Profile"->"Generic"`, `"Notebook"->Automatic`, `"InitialContext"-><||>`, `"OnGraphComplete"->None`, `"Description"->""`
+Sync 返り値: `<|"RuntimeId", "Status", "GlobalState", "Path", "ElapsedSec", "FailureReason", "Trace", "WorkflowId", "WorkflowResult"|>`
+
+### ShimLLMStateGraphSnapshot[sgRid, opts] → Association
+`LLMStateGraphSnapshot` と等価。`ClaudeSnapshotWorkflow` 経由で FormatVersion 2 保存。Options: `"SnapshotDir"->Automatic`, `"Description"->""`
+返り値: `<|"RuntimeId", "WorkflowId", "SnapshotDir", "FormatVersion"->2, "SavedAt"|>`
+
+### ShimLLMStateGraphRestore[snapDir, opts] → Association
+`LLMStateGraphRestore` と等価。`ClaudeRestoreWorkflow` 経由で v2 復元。v1 ディレクトリは $Failed (Throw)。Options: `"AsNewWorkflowId"->True`
+返り値: `<|"RuntimeId", "WorkflowId", "OriginalWid", "OriginalRuntimeId", "Restored"->True, "FormatVersion"->2, "SnapshotDir"|>`
+
+### ShimLLMStateGraphListSnapshots[opts] → Dataset
+`LLMStateGraphListSnapshots` と等価。`$ClaudeWorkflowSnapshotDir` 配下の v2 snapshot を列挙 (stategraph v1 ディレクトリは対象外)。Options: `"SnapshotDir"->Automatic`
 
 ## 関連パッケージ
 

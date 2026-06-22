@@ -3084,7 +3084,13 @@ iExecuteExternalBranch[trans_Association, binding_Association] :=
       "Binding"        -> binding,
       "Inputs"         -> iFlattenBinding[binding],
       "Timeout"        -> timeout,
-      "AccessSpec"     -> Lookup[trans[["RuntimeSpec"]], "AccessSpec", <||>]
+      "AccessSpec"     -> Lookup[trans[["RuntimeSpec"]], "AccessSpec", <||>],
+      (* 2026-06-12 (external dispatch): ExecutorOptions から launcher へ渡す
+         追加 field (純加法)。BootstrapFiles は run.wls の子プロセス先行ロード、
+         ConfidentialHandling / CredentialRefs は manifest へ。 *)
+      "BootstrapFiles"       -> Lookup[opts, "BootstrapFiles", {}],
+      "ConfidentialHandling" -> Lookup[opts, "ConfidentialHandling", "ReferenceOnly"],
+      "CredentialRefs"       -> Lookup[opts, "CredentialRefs", {}]
     |>;
 
     launcher = iExternalResolveLauncher[];
@@ -3104,7 +3110,10 @@ iExecuteExternalBranch[trans_Association, binding_Association] :=
       "Handler"   -> handler,
       "Backend"   -> backend,
       "Timeout"   -> timeout,
-      "Attempt"   -> 0
+      "Attempt"   -> 0,
+      (* 2026-06-12 (external dispatch): 完了 summary の書込先 notebook。
+         親メモリ内 (awaitMeta) のみで保持し、manifest / 子プロセスへは渡さない。 *)
+      "NotifyNotebook" -> Lookup[opts, "NotifyNotebook", None]
     |>;
 
     (* PartialPayload に AwaitMeta を格納 -> AwaitingLLMTransitions entry に保存され、
@@ -3251,6 +3260,125 @@ iExternalHandleTimeout[wid_String, aid_String, entry_Association,
     Quiet @ Check[killer[awaitMeta], Null];
     iExternalFailOrRetry[wid, aid, entry, awaitMeta,
       <|"Status" -> "Expired", "ErrorRef" -> "Timeout"|>]
+  ];
+
+(* ════════════════════════════════════════════════════════
+   ClaudeSubmitExternalHeldExprJob (2026-06-12, ClaudeEval external dispatch)
+   承認済み held expr を 1 遷移 WorkflowNet (In + Slots -> External -> Out + Slots)
+   として External executor へ投入する公開 API。ジョブ lifecycle
+   (poll / timeout / retry / kill / 完了反映) は既存エンジンが所有する。
+   設計: ドキュメント/ClaudeEval_external_dispatch_design.md
+   ════════════════════════════════════════════════════════ *)
+
+ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob::usage =
+  "ClaudeSubmitExternalHeldExprJob[HoldComplete[expr], opts] は承認済み held expr を External executor (WolframScript ジョブ) へ 1 遷移 WorkflowNet として投入する。opts: \"Timeout\" (既定 3600 秒), \"BootstrapFiles\" (子プロセスで先行ロードするパッケージ), \"NotifyNotebook\" (完了 summary の書込先 NotebookObject), \"AccessSpec\" (Automatic = WolframScriptTask role), \"MaxRetries\" (既定 0), \"Handler\" (既定 \"ApprovedHeldExpr\")。返り値: <|\"Status\"->\"Submitted\", \"JobID\", \"JobDir\", \"WorkflowId\", \"Head\"|> または <|\"Status\"->\"Failed\", \"Reason\"|>。";
+
+If[! AssociationQ[$iExtHeldExprNets], $iExtHeldExprNets = <||>];
+
+(* HoldComplete[h[...]] / HoldComplete[h] の head 名 (非評価で取得) *)
+iExtJobHeadName[held_HoldComplete] :=
+  Replace[held, {
+    HoldComplete[(h_Symbol)[___]] :> SymbolName[Unevaluated[h]],
+    HoldComplete[h_Symbol]        :> SymbolName[Unevaluated[h]],
+    _ :> $Failed}];
+iExtJobHeadName[_] := $Failed;
+
+Options[ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob] = {
+  "Handler"        -> "ApprovedHeldExpr",
+  "Timeout"        -> 3600,
+  "BootstrapFiles" -> {},
+  "NotifyNotebook" -> None,
+  "AccessSpec"     -> Automatic,
+  "MaxRetries"     -> 0
+};
+
+ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob[
+    held_HoldComplete,
+    opts:OptionsPattern[
+      ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob]] :=
+  Module[{headName, accessSpec, timeout, maxRetries, wid, stepR, wf,
+          awaiting, meta, jobId, jobDir},
+    (* 0. 自前 GC: 本 API が作った terminal ネットを registry から除去
+       (engine に削除 API が無いため、自分が作ったネットだけ後始末する) *)
+    Scan[Function[w,
+      Module[{st = Lookup[Lookup[$iWorkflowNets, w, <||>], "Status", ""]},
+        If[MemberQ[{"Done", "Cancelled"}, st],
+          $iWorkflowNets    = KeyDrop[$iWorkflowNets, w];
+          $iExtHeldExprNets = KeyDrop[$iExtHeldExprNets, w]]]],
+      Keys[$iExtHeldExprNets]];
+
+    headName = iExtJobHeadName[held];
+    If[! StringQ[headName],
+      Return[<|"Status" -> "Failed", "Reason" -> "UnsupportedHeldExprShape"|>]];
+
+    timeout = OptionValue["Timeout"];
+    If[! NumericQ[timeout] || timeout <= 0, timeout = 3600];
+    maxRetries = OptionValue["MaxRetries"];
+    If[! IntegerQ[maxRetries] || maxRetries < 0, maxRetries = 0];
+
+    (* AccessSpec: 既定は WolframScriptTask role (v7 §13A.2)。
+       NBAccess 未ロード時は空 (runner 側 cooperative guard はスキップされる)。 *)
+    accessSpec = OptionValue["AccessSpec"];
+    If[accessSpec === Automatic,
+      accessSpec = If[Length[DownValues[NBAccess`NBMakeRuntimeAccessSpec]] > 0,
+        Quiet @ Check[
+          NBAccess`NBMakeRuntimeAccessSpec[
+            <|"Caller" -> "ClaudeSubmitExternalHeldExprJob"|>,
+            "WolframScriptTask"],
+          <||>],
+        <||>]];
+    If[! AssociationQ[accessSpec], accessSpec = <||>];
+
+    wid = Quiet @ Check[ClaudeCreateWorkflowNet[
+      WorkflowNet[
+        "SourcePlace" -> "In", "FinalPlaces" -> {"Out"},
+        "Places" -> <|
+          "In"    -> WorkflowPlace["In",    "AcceptedKinds" -> All],
+          "Slots" -> WorkflowPlace["Slots", "AcceptedKinds" -> All],
+          "Out"   -> WorkflowPlace["Out",   "AcceptedKinds" -> All]|>,
+        "Transitions" -> <|
+          "Run" -> WorkflowTransition["Run",
+            "InputArcs"  -> {<|"Place" -> "In",    "Multiplicity" -> 1|>,
+                             <|"Place" -> "Slots", "Multiplicity" -> 1|>},
+            (* M1 (v7 review): slot 返却は OutputArc。terminal 完了時のみ produce。 *)
+            "OutputArcs" -> {<|"Place" -> "Out",   "Multiplicity" -> 1|>,
+                             <|"Place" -> "Slots", "Multiplicity" -> 1|>},
+            "Executor"   -> "External",
+            "RuntimeSpec" -> <|
+              "Timeout"     -> timeout,
+              "AccessSpec"  -> accessSpec,
+              "RetryPolicy" -> <|"MaxRetries" -> maxRetries|>,
+              "ExecutorOptions" -> <|
+                "Backend"        -> "WolframScript",
+                "Handler"        -> OptionValue["Handler"],
+                "BootstrapFiles" -> OptionValue["BootstrapFiles"],
+                "NotifyNotebook" -> OptionValue["NotifyNotebook"]|>|>]|>]],
+      $Failed];
+    If[! StringQ[wid],
+      Return[<|"Status" -> "Failed", "Reason" -> "NetCreateFailed"|>]];
+
+    ClaudeSubmitToken[wid, WorkflowToken["Kind" -> "Task",
+      "Payload" -> <|
+        "HeldExpr"       -> held,
+        "AllowedHeads"   -> {headName},
+        "TimeConstraint" -> Max[60, timeout - 60]|>]];
+    ClaudeSubmitToken[wid, WorkflowToken["Kind" -> "Slot"], "Slots"];
+    stepR = Quiet @ Check[ClaudeStepWorkflow[wid], $Failed];
+
+    wf       = Lookup[$iWorkflowNets, wid, <||>];
+    awaiting = Lookup[wf, "AwaitingLLMTransitions", <||>];
+    If[! AssociationQ[awaiting] || Length[awaiting] === 0,
+      (* fire できなかった (launcher 未配線 / 起動失敗等)。atomic rollback 済みなので
+         ネットごと破棄する。 *)
+      $iWorkflowNets = KeyDrop[$iWorkflowNets, wid];
+      Return[<|"Status" -> "Failed", "Reason" -> "ExternalLaunchNotAwaiting",
+        "StepResult" -> stepR|>]];
+    meta   = Lookup[First[Values[awaiting]], "PartialPayload", <||>];
+    jobId  = Lookup[meta, "JobID", None];
+    jobDir = Lookup[meta, "JobDir", None];
+    $iExtHeldExprNets[wid] = <|"JobID" -> jobId, "SubmittedAt" -> AbsoluteTime[]|>;
+    <|"Status" -> "Submitted", "WorkflowId" -> wid, "JobID" -> jobId,
+      "JobDir" -> jobDir, "Head" -> headName|>
   ];
 
 (* ════════════════════════════════════════════════════════

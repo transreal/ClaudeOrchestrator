@@ -2496,7 +2496,7 @@ $petriNetGuideExtras :=
 
    生成コードでの使い方 (モデル名は placeholder 解決で実モデル名に変わる):
      review = checkLLMResponse @ ClaudeCode`ClaudeQueryBg[
-       prompt, Model -> {"openai", "<openai-heavy>"}];
+       prompt, "Model" -> {"openai", "<openai-heavy>"}];
      If[review === $Failed, Return[$Failed, Module]];
 
    エラー判定パターン:
