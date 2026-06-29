@@ -424,6 +424,15 @@ $ClaudeExternalJobKiller::usage =
 $ClaudeExternalCompletionHook::usage =
   "$ClaudeExternalCompletionHook は External job 完了後に呼ばれる注入点 (既定 None)。引数 <|\"WorkflowId\",\"AwaitId\",\"AwaitMeta\",\"Status\"|>。live 統合で Notebook 反映 (final action -> FinalActionQueue) を行うため externalrunner 側が設定する。workflow 本体は疎結合のまま。";
 
+$ClaudeExternalBackends::usage =
+  "$ClaudeExternalBackends は External job backend 別の launcher/status reader/killer registry (<|backend -> <|\"Launcher\",\"StatusReader\",\"Killer\"|>|>)。空 (未登録) のとき External executor は既存 WolframScript singleton hook ($ClaudeExternalJobLauncher 等) と完全に同一挙動になる (純加法)。ComfyUI など非 WolframScript backend を共存させるために使う。";
+
+ClaudeRegisterExternalBackend::usage =
+  "ClaudeRegisterExternalBackend[name_String, spec_Association] は External executor へ backend を登録する。spec は <|\"Launcher\"->fn[jobSpec], \"StatusReader\"->fn[awaitMeta], \"Killer\"->fn[awaitMeta]|> の一部または全部。jobSpec/awaitMeta の \"Backend\" がこの name に一致する job だけがこの backend に dispatch され、未登録 backend は既存 WolframScript フックへフォールバックする。返り <|\"Status\"->\"Registered\", \"Backend\"->name, \"Roles\"->{...}|>。";
+
+ClaudeExternalBackends::usage =
+  "ClaudeExternalBackends[] は登録済み External backend 名のリストを返す。";
+
 ClaudeSubkernelPollTick::usage =
   "ClaudeSubkernelPollTick[] は AwaitingLLMTransitions の Subkernel job (AwaitKind=SubkernelTask) を走査し、future の非ブロッキング完了判定を行い、完了時に ClaudeCompleteHandlerOutput で結果を produce (slot は OutputArc で返却)。巨大結果は inline せず summary 化。";
 $ClaudeSubkernelSubmit::usage =
@@ -3046,12 +3055,50 @@ iDefaultExternalStatusReader[awaitMeta_Association] :=
 (* 既定 killer: best-effort no-op (Phase 4 で pid.json 同一性確認 + kill)。 *)
 iDefaultExternalKiller[awaitMeta_Association] := Null;
 
-iExternalResolveLauncher[]     := If[$ClaudeExternalJobLauncher === Automatic,
+(* ── backend dispatch registry (純加法) ──
+   $ClaudeExternalBackends が空のときは下のフォールバック (= 従来の singleton hook 挙動)
+   と完全に同一。jobSpec/awaitMeta の "Backend" が登録 backend に一致したときだけ、
+   その backend の launcher/reader/killer へ dispatch する。
+   これにより WolframScript external dispatch (ClaudeEval) を壊さず ComfyUI 等を共存させる。 *)
+If[! AssociationQ[$ClaudeExternalBackends], $ClaudeExternalBackends = <||>];
+
+iExternalFallbackLauncher[]     := If[$ClaudeExternalJobLauncher === Automatic,
                                      iDefaultExternalLauncher, $ClaudeExternalJobLauncher];
-iExternalResolveStatusReader[] := If[$ClaudeExternalJobStatusReader === Automatic,
+iExternalFallbackStatusReader[] := If[$ClaudeExternalJobStatusReader === Automatic,
                                      iDefaultExternalStatusReader, $ClaudeExternalJobStatusReader];
-iExternalResolveKiller[]       := If[$ClaudeExternalJobKiller === Automatic,
+iExternalFallbackKiller[]       := If[$ClaudeExternalJobKiller === Automatic,
                                      iDefaultExternalKiller, $ClaudeExternalJobKiller];
+
+(* spec/awaitMeta の Backend (既定 WolframScript) に対応する role 関数。無ければ Missing。 *)
+iExternalBackendFn[spec_Association, role_String] :=
+  Module[{b = Lookup[spec, "Backend", "WolframScript"], be},
+    be = If[AssociationQ[$ClaudeExternalBackends], Lookup[$ClaudeExternalBackends, b, Missing[]], Missing[]];
+    If[AssociationQ[be] && KeyExistsQ[be, role] && be[role] =!= Automatic, be[role], Missing[]]];
+iExternalBackendFn[_, _] := Missing[];
+
+(* resolve は dispatcher 関数を返す。引数 (jobSpec/awaitMeta) の Backend で分岐し、
+   未登録なら従来フォールバックへ委譲する。呼び出し側 (launcher[jobSpec] 等) は不変。 *)
+iExternalResolveLauncher[] := Function[js,
+  With[{fn = iExternalBackendFn[If[AssociationQ[js], js, <||>], "Launcher"]},
+    If[MissingQ[fn], iExternalFallbackLauncher[][js], fn[js]]]];
+iExternalResolveStatusReader[] := Function[am,
+  With[{fn = iExternalBackendFn[If[AssociationQ[am], am, <||>], "StatusReader"]},
+    If[MissingQ[fn], iExternalFallbackStatusReader[][am], fn[am]]]];
+iExternalResolveKiller[] := Function[am,
+  With[{fn = iExternalBackendFn[If[AssociationQ[am], am, <||>], "Killer"]},
+    If[MissingQ[fn], iExternalFallbackKiller[][am], fn[am]]]];
+
+ClaudeRegisterExternalBackend[name_String, spec_Association] :=
+  Module[{cur = If[AssociationQ[$ClaudeExternalBackends], $ClaudeExternalBackends, <||>],
+          entry},
+    entry = KeyTake[spec, {"Launcher", "StatusReader", "Killer"}];
+    $ClaudeExternalBackends = Append[cur, name -> Join[Lookup[cur, name, <||>], entry]];
+    <|"Status" -> "Registered", "Backend" -> name, "Roles" -> Keys[entry]|>];
+ClaudeRegisterExternalBackend[___] :=
+  <|"Status" -> "Error", "Reason" -> "BadArguments"|>;
+
+ClaudeExternalBackends[] :=
+  If[AssociationQ[$ClaudeExternalBackends], Keys[$ClaudeExternalBackends], {}];
 
 (* External executor branch: launch して AwaitingLLM を返す。
    ClaudeFireTransition の Awaiting branch がこれを拾い、input(+slot) を consume し

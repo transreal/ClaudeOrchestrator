@@ -231,6 +231,17 @@ External job を強制終了する関数フック。`fn[awaitMeta]`。pid.json �
 型: Function | None, 初期値: None
 External job 完了後に呼ばれる注入点。`fn[<|"WorkflowId","AwaitId","AwaitMeta","Status"|>]`。live 統合 (Notebook 反映 final action enqueue) のため `ClaudeRuntime_externalrunner.wl` 側が設定する。workflow 本体は疎結合のまま。
 
+### $ClaudeExternalBackends
+型: Association, 初期値: <||>
+External job backend 別の launcher/status reader/killer registry (`<|backend -> <|"Launcher","StatusReader","Killer"|>|>`)。空 (未登録) のとき External executor は既存 WolframScript singleton フック ($ClaudeExternalJobLauncher 等) と完全に同一挙動になる (純加法)。ComfyUI など非 WolframScript backend を共存させるために使う。
+
+### ClaudeRegisterExternalBackend[name_String, spec_Association] → Association
+External executor へ backend を登録する。spec は `<|"Launcher"->fn[jobSpec], "StatusReader"->fn[awaitMeta], "Killer"->fn[awaitMeta]|>` の一部または全部。jobSpec/awaitMeta の "Backend" がこの name に一致する job だけがこの backend に dispatch され、未登録 backend は既存 WolframScript フックへフォールバックする。
+→ <|"Status"->"Registered", "Backend"->name, "Roles"->{...}|>
+
+### ClaudeExternalBackends[] → List
+登録済み External backend 名のリストを返す。
+
 ## Subkernel executor フック
 
 サブカーネル並列実行 (`ParallelSubmit` 経由) との接続フック。`AwaitKind=SubkernelTask` の transition を走査・完了処理する。
