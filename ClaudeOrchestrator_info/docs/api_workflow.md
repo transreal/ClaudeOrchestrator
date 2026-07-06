@@ -116,7 +116,7 @@ Status を "Paused" にする。Pause 中は Step/Run が "Skipped" を返す。
 "Paused" を "Running" に戻す。Paused でないときは何もせず現在 Status を返す。
 
 ### ClaudeCancelWorkflow[wid] → Association
-Status を "Cancelled" にする。再開不可。Async 実行中にも効き polling task entry もクリーンアップ。
+Status を "Cancelled" にする。再開不可。Async 実行中にも効き polling task entry もクリーンアップする。
 
 ## 非同期 (Async)
 

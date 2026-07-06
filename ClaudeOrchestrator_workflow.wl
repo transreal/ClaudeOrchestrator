@@ -3335,6 +3335,7 @@ Options[ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob] = {
   "Timeout"        -> 3600,
   "BootstrapFiles" -> {},
   "NotifyNotebook" -> None,
+  "ResultRetriever"-> None,
   "AccessSpec"     -> Automatic,
   "MaxRetries"     -> 0
 };
@@ -3399,7 +3400,8 @@ ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob[
                 "Backend"        -> "WolframScript",
                 "Handler"        -> OptionValue["Handler"],
                 "BootstrapFiles" -> OptionValue["BootstrapFiles"],
-                "NotifyNotebook" -> OptionValue["NotifyNotebook"]|>|>]|>]],
+                "NotifyNotebook" -> OptionValue["NotifyNotebook"],
+                "ResultRetriever"-> OptionValue["ResultRetriever"]|>|>]|>]],
       $Failed];
     If[! StringQ[wid],
       Return[<|"Status" -> "Failed", "Reason" -> "NetCreateFailed"|>]];
