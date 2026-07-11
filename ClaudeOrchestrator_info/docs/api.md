@@ -172,7 +172,7 @@ CLI または API の少なくとも一方が呼び出し可能なら True。
 role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み model spec。引数省略時 role:"", model:Automatic。
 
 ### ClaudeOrchestrator`RoutingGetInfo[role, model] → Association
-→ `<|"Source"->str, "Path"->"CLI"|"API"|"Explicit"|"Empty", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
+→ `<|"Source"->str, "Path"->"CLI"|"API"|"Default", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
 
 ### ClaudeOrchestrator`RoutingListPaths[] → Association
 利用可能な routing path。→ `<|"CLI"->bool, "API"->bool, "PrivateModel"->bool, "RoleDefaults"->bool|>`

@@ -91,6 +91,44 @@ WorkflowToken::usage =
   "\"Approval\"|\"PackageTransaction\"|\"XSMSentinel\"), \"Payload\" (Association),\n" <>
   "\"PrivacyLabel\" (Real, 既定 0.0), \"ParentIds\" (List), \"CreatedBy\" (String).";
 
+$ConservativePrivacyDefault::usage =
+  "$ConservativePrivacyDefault は、output token の PrivacyLabel 伝播\n" <>
+  "(Inc0A engine invariant) において、親 token の PrivacyLabel が欠落・\n" <>
+  "非数値だった場合に用いる保守既定値。既定 0.0 (既存 net と完全互換。\n" <>
+  "engine 生成 token は常に数値 label を持つため通常は使われない)。\n" <>
+  "session/conductor 系 net はロード後により厳格な値 (例 1.0) を設定できる。\n" <>
+  "output label = Max[親 label の最大値, executorResult[\"OutputPrivacyFloor\"]]。";
+
+$ClaudeRuntimeSessionExecutor::usage =
+  "$ClaudeRuntimeSessionExecutor は Executor = \"RuntimeSession\" transition の\n" <>
+  "実装 seam (session episode spec §10.1)。ClaudeOrchestrator_session.wl が\n" <>
+  "ロード時に注入する。未注入で RuntimeSession transition を fire すると\n" <>
+  "Failed(RuntimeSessionExecutorUnavailable)。engine は session module に\n" <>
+  "依存しない (依存方向: session -> workflow)。";
+
+$ClaudeWorkflowExternalPendingQ::usage =
+  "$ClaudeWorkflowExternalPendingQ は Stuck 判定時に AwaitingLLMTransitions\n" <>
+  "以外の legitimate wait (session episode 等) を問い合わせる seam\n" <>
+  "(session episode spec §10.5)。Function[wid, ...] を設定すると、True を\n" <>
+  "返す間は enabled transition が無くても Stuck 終端にしない。";
+
+ClaudeWorkflowWaitingExternalQ::usage =
+  "ClaudeWorkflowWaitingExternalQ[wid] は workflow が外部完了待ち\n" <>
+  "(AwaitingLLMTransitions または session episode 等の external pending) の\n" <>
+  "間 True を返す。この間の enabled 無しは Stuck ではなく legitimate wait。";
+
+$ClaudeWorkflowSnapshotAuxFn::usage =
+  "$ClaudeWorkflowSnapshotAuxFn は snapshot 時に aux.wl へ書く内容を\n" <>
+  "提供する seam (session episode spec §10.4)。Function[wid] が本文を\n" <>
+  "含まない Association (SessionAttachmentManifest 等) を返す。\n" <>
+  "未設定なら従来どおり空 Association。";
+
+$ClaudeWorkflowRestoreAuxFn::usage =
+  "$ClaudeWorkflowRestoreAuxFn は restore 直後に aux.wl の内容で宣言的\n" <>
+  "再登録を行う seam (session episode spec §15.2)。\n" <>
+  "Function[{newWid, aux}]。Function closure は復元せず、backend 名と\n" <>
+  "record から poller/bridge を再構築する (I12)。";
+
 WorkflowPlace::usage =
   "WorkflowPlace[name, opts] は place Association を生成する。\n" <>
   "オプション: \"Capacity\" (Infinity), \"Visibility\" (\"Internal\"|\n" <>
@@ -533,6 +571,11 @@ iCurrentTime[] := AbsoluteTime[];
 (* ::Subsubsection:: *)
 (* 型ビルダー *)
 
+(* Inc0A (conductor v0.2 §13.1 / session episode spec §10.4):
+   privacy taint 伝播の保守既定値。再ロードでユーザー設定を潰さない。 *)
+If[!NumericQ[$ConservativePrivacyDefault],
+  $ConservativePrivacyDefault = 0.0];
+
 Options[WorkflowToken] = {
   "TokenId"      -> Automatic,
   "Kind"         -> "Task",
@@ -728,10 +771,11 @@ iValidateWorkflowNet[wf_Association] :=
           Lookup[trans, "OutputArcs", {}]
         ];
         
-        (* 5. Executor の許容値 *)
+        (* 5. Executor の許容値 (Inc2: RuntimeSession を追加 §10.1) *)
         With[{exec = Lookup[trans, "Executor", "PureFunction"]},
           If[!MemberQ[
-              {"ClaudeRuntime", "PackageManager", "PureFunction", "External", "Subkernel"}, exec],
+              {"ClaudeRuntime", "PackageManager", "PureFunction",
+               "External", "Subkernel", "RuntimeSession"}, exec],
             AppendTo[errors,
               "TransitionExecutorInvalid: " <> tname <> " -> " <> ToString[exec]]
           ]
@@ -829,7 +873,20 @@ ClaudeSubmitToken[wid_String, token_Association, place_:Automatic] :=
     
     (* 1. token に TokenId が無ければ生成 *)
     tid = Lookup[token, "TokenId", iGenerateTokenId[]];
-    
+
+    (* 1b. Inc2 (session episode spec §10.3): 安定 TokenId の重複検査。
+       同じ TokenId が現在の Tokens registry (= marking 上の全 token) に
+       存在する間は marking を変更せず Duplicate を返す。consume 済み token の
+       永続 dedup は Inc3 の attempt-local delivery-index が正本であり、
+       workflow trace 全走査は通常経路にしない。 *)
+    If[KeyExistsQ[wf[["Tokens"]], tid],
+      Return[<|"WorkflowId" -> wid,
+               "TokenId"    -> tid,
+               "Place"      -> target,
+               "Status"     -> "Duplicate",
+               "Marking"    -> iComputeCurrentMarking[wid]|>]
+    ];
+
     (* 2. capacity check *)
     capacity = wf[["Places", target, "Capacity"]];
     currentTokens = wf[["Places", target, "TokenIds"]];
@@ -1553,6 +1610,27 @@ iExecuteTransition[trans_Association, binding_Association] :=
       "Subkernel",
         (* Phase 3.5: subkernel backend を AwaitingLLM 機構へ接続 *)
         iExecuteSubkernelBranch[trans, binding],
+      "RuntimeSession",
+        (* session episode spec §10.1: StartEpisode 専用 executor。
+           実装は ClaudeOrchestrator_session.wl が seam
+           $ClaudeRuntimeSessionExecutor へ注入する (依存方向
+           session -> workflow を保つため engine 側からは参照しない)。
+           既存 "ClaudeRuntime" executor (単発 turn) は維持し deprecate
+           しない。 *)
+        (* 注意: seam の値を一度取り出してから判定する。
+           DownValues[$seam] は HoldAll のため seam 変数自体を見てしまい、
+           DownValues 持ち Symbol を代入したケースを見逃す。 *)
+        Module[{iSessionExecFn = $ClaudeRuntimeSessionExecutor},
+          If[Head[iSessionExecFn] === Function ||
+             (Head[iSessionExecFn] === Symbol &&
+              iSessionExecFn =!= None &&
+              Length[DownValues[iSessionExecFn]] > 0),
+            iSessionExecFn[trans, binding],
+            <|"Status" -> "Failed",
+              "Reason" -> "RuntimeSessionExecutorUnavailable: " <>
+                          "ClaudeOrchestrator_session.wl を先にロードすること"|>
+          ]
+        ],
       _,
         <|"Status"  -> "Failed",
           "Reason"  -> "UnknownExecutor: " <> ToString[executor]|>
@@ -1571,6 +1649,33 @@ If[!ValueQ[$ClaudeCurrentAwaitId],
   $ClaudeCurrentAwaitId = Missing["NotInHandler"]];
 If[!ValueQ[$ClaudeCurrentBinding],
   $ClaudeCurrentBinding = Missing["NotInHandler"]];
+
+(* === session episode (Inc2) seam 初期値 === *)
+If[!ValueQ[$ClaudeRuntimeSessionExecutor],
+  $ClaudeRuntimeSessionExecutor = None];
+If[!ValueQ[$ClaudeWorkflowExternalPendingQ],
+  $ClaudeWorkflowExternalPendingQ = None];
+(* Inc6b (§10.4/§15.2) *)
+If[!ValueQ[$ClaudeWorkflowSnapshotAuxFn],
+  $ClaudeWorkflowSnapshotAuxFn = None];
+If[!ValueQ[$ClaudeWorkflowRestoreAuxFn],
+  $ClaudeWorkflowRestoreAuxFn = None];
+
+(* Inc2 (session episode spec §10.5): Stuck 判定用の pending 集約。
+   AwaitingLLMTransitions に加え、外部 seam (session episode の
+   ActiveSessionEpisodes 等) が True の間は legitimate wait とする。 *)
+iHasPendingAsyncWorkQ[wid_String] :=
+  Module[{wfNow, hasAw, hasExternal},
+    wfNow = If[KeyExistsQ[$iWorkflowNets, wid],
+      iEnsureAwaitingLLMField[$iWorkflowNets[wid]], <||>];
+    hasAw = AssociationQ[wfNow] &&
+      Length[Lookup[wfNow, "AwaitingLLMTransitions", <||>]] > 0;
+    hasExternal = Head[$ClaudeWorkflowExternalPendingQ] === Function &&
+      TrueQ[Quiet @ $ClaudeWorkflowExternalPendingQ[wid]];
+    hasAw || hasExternal
+  ];
+
+ClaudeWorkflowWaitingExternalQ[wid_String] := iHasPendingAsyncWorkQ[wid];
 
 (* === Z\:6848 helper: AwaitingLLM \:30bb\:30f3\:30c1\:30cd\:30eb\:691c\:51fa === *)
 
@@ -1739,20 +1844,63 @@ iExecuteClaudeRuntimeBranch[trans_Association, binding_Association] :=
   ];
 
 (* ::Subsubsection:: *)
+(* iComputeOutputPrivacyLabel (Inc0A engine invariant) *)
+
+(* conductor v0.2 §13.1 / session episode spec §10.4:
+     output label = Max[ 親 token label の最大値
+                           (欠落・非数値は $ConservativePrivacyDefault),
+                         executorResult["OutputPrivacyFloor"] (欠落は 0.0) ]
+   既存 net (全親 0.0・floor 無し) では 0.0 のままで従来挙動と互換。
+   範囲外の数値はここでは clamp しない (単調性を優先。[0,1] の範囲検査は
+   session/schema 層が fail-closed で行う)。 *)
+
+iComputeOutputPrivacyLabel[parentTokens_List,
+                           executorResult_Association] :=
+  Module[{labels, floor, out},
+    labels = Map[
+      Function[tok,
+        Module[{v = Lookup[tok, "PrivacyLabel", Missing["NoLabel"]]},
+          If[NumericQ[v], N[v], N[$ConservativePrivacyDefault]]
+        ]
+      ],
+      parentTokens
+    ];
+    (* floor は executorResult 直下 (AwaitingLLM callback / engine 内部) と
+       executorResult["Output"] 直下 (PureFunction handler の戻り値) の両方
+       から拾う。両方あれば大きい方。 *)
+    out   = Lookup[executorResult, "Output", <||>];
+    floor = Max[
+      iNumericOrElse[Lookup[executorResult, "OutputPrivacyFloor", 0.0]],
+      If[AssociationQ[out],
+        iNumericOrElse[Lookup[out, "OutputPrivacyFloor", 0.0]],
+        0.0]
+    ];
+    N @ Max[Append[labels, floor]]
+  ];
+
+(* 非数値 (壊れた floor 指定) は保守既定値へ倒す *)
+iNumericOrElse[v_] := If[NumericQ[v], N[v], N[$ConservativePrivacyDefault]];
+
+(* ::Subsubsection:: *)
 (* iProduceOutputTokens *)
 
 iProduceOutputTokens[trans_Association, binding_Association,
                      executorResult_Association] :=
-  Module[{outputArcs, parentIds, baseOutput},
-    outputArcs = Lookup[trans, "OutputArcs", {}];
-    parentIds  = Map[#[["TokenId"]] &, iFlattenBinding[binding]];
-    baseOutput = Lookup[executorResult, "Output", <||>];
-    
+  Module[{outputArcs, parentTokens, parentIds, baseOutput, outputPrivacy},
+    outputArcs   = Lookup[trans, "OutputArcs", {}];
+    parentTokens = iFlattenBinding[binding];
+    parentIds    = Map[#[["TokenId"]] &, parentTokens];
+    baseOutput   = Lookup[executorResult, "Output", <||>];
+
+    (* Inc0A: privacy taint の単調伝播 (engine invariant)。
+       AwaitingLLM callback 経路も本関数を通るため一箇所で保証される。 *)
+    outputPrivacy = iComputeOutputPrivacyLabel[parentTokens, executorResult];
+
     Map[
       Function[arc,
         Module[{kind, payload},
           kind = Lookup[arc, "TokenKind", "Artifact"];
-          
+
           (* output payload は executor 結果を継承、ただし binding 由来でも OK *)
           payload = Which[
             AssociationQ[baseOutput] && KeyExistsQ[baseOutput, "Payload"],
@@ -1762,12 +1910,13 @@ iProduceOutputTokens[trans_Association, binding_Association,
             True,
               <||>
           ];
-          
+
           WorkflowToken[
-            "Kind"      -> kind,
-            "Payload"   -> payload,
-            "ParentIds" -> parentIds,
-            "CreatedBy" -> trans[["Name"]]
+            "Kind"         -> kind,
+            "Payload"      -> payload,
+            "PrivacyLabel" -> outputPrivacy,
+            "ParentIds"    -> parentIds,
+            "CreatedBy"    -> trans[["Name"]]
           ]
         ]
       ],
@@ -1918,9 +2067,12 @@ iApplyCompletedHandlerOutput[wf_Association, trans_Association,
     ];
 
     (* synthetic executorResult \:3092 iProduceOutputTokens \:7d4c\:7531\:3067\:6e21\:3057
-       \:30d1\:30b9\:3092\:63c3\:3048\:308b\:3002 *)
+       \:30d1\:30b9\:3092\:63c3\:3048\:308b\:3002Inc0A: callback \:5074 handler \:304c
+       "OutputPrivacyFloor" \:3092\:8fd4\:3057\:305f\:5834\:5408\:306f privacy \:4f1d\:64ad\:306b\:901a\:3059\:3002 *)
     synthetic = <|"Status" -> "Completed", "Output" ->
-      <|"Payload" -> basePayload|>|>;
+      <|"Payload" -> basePayload|>,
+      "OutputPrivacyFloor" ->
+        Lookup[finalOutput, "OutputPrivacyFloor", 0.0]|>;
 
     producedTokens = iProduceOutputTokens[trans, binding, synthetic];
 
@@ -2202,11 +2354,10 @@ iRunWorkflowSync[wid_String, opts:OptionsPattern[ClaudeRunWorkflow]] :=
            \:6b8b\:3063\:3066\:3044\:308b\:306a\:3089 callback \:3092\:5f85\:3064\:3002Pause[0.2] \:3057\:3066\:30eb\:30fc\:30d7\:3092\:7d99\:7d9a\:3002 *)
         Switch[stepResult[["Status"]],
           "Stuck",
-            Module[{wfNow, hasAw},
-              wfNow = If[KeyExistsQ[$iWorkflowNets, wid],
-                iEnsureAwaitingLLMField[$iWorkflowNets[wid]], <||>];
-              hasAw = AssociationQ[wfNow] &&
-                Length[Lookup[wfNow, "AwaitingLLMTransitions", <||>]] > 0;
+            Module[{hasAw},
+              (* Inc2/§10.5: AwaitingLLM に加え session episode 等の
+                 external pending (seam) も legitimate wait とする *)
+              hasAw = iHasPendingAsyncWorkQ[wid];
               If[hasAw,
                 (* callback \:5230\:7740\:3092\:5f85\:3064 idle wait *)
                 Pause[0.2],
@@ -2555,8 +2706,10 @@ iWorkflowAsyncTick[wid_String] :=
       stepStatus  = Lookup[stepResult, "Status", "?"];
       wfAfter     = If[KeyExistsQ[$iWorkflowNets, wid],
         iEnsureAwaitingLLMField[$iWorkflowNets[wid]], <||>];
-      hasAwaiting = AssociationQ[wfAfter] &&
-        Length[Lookup[wfAfter, "AwaitingLLMTransitions", <||>]] > 0;
+      (* Inc2/§10.5: session episode 等の external pending も含める *)
+      hasAwaiting = (AssociationQ[wfAfter] &&
+        Length[Lookup[wfAfter, "AwaitingLLMTransitions", <||>]] > 0) ||
+        iHasPendingAsyncWorkQ[wid];
 
       Switch[stepStatus,
         "Stuck",
@@ -2712,9 +2865,16 @@ ClaudeSnapshotWorkflow[wid_String, opts:OptionsPattern[]] :=
     Block[{$CharacterEncoding = "UTF-8"},
       Put[meta, FileNameJoin[{snapDir, "meta.wl"}]];
       Put[wf,   FileNameJoin[{snapDir, "workflow.wl"}]];
-      (* Day 4b: llmgraph.wl と aux.wl は空の Association として保存 *)
+      (* Day 4b: llmgraph.wl は空の Association として保存 *)
       Put[<||>, FileNameJoin[{snapDir, "llmgraph.wl"}]];
-      Put[<||>, FileNameJoin[{snapDir, "aux.wl"}]]
+      (* Inc6b (§10.4): aux sidecar は seam から取得
+         (SessionAttachmentManifest 等、本文なしの ref のみ) *)
+      Module[{iAuxContent = <||>},
+        If[Head[$ClaudeWorkflowSnapshotAuxFn] === Function,
+          iAuxContent = Quiet @ Check[
+            Catch[Catch[$ClaudeWorkflowSnapshotAuxFn[wid]], _], <||>];
+          If[!AssociationQ[iAuxContent], iAuxContent = <||>]];
+        Put[iAuxContent, FileNameJoin[{snapDir, "aux.wl"}]]]
     ];
     
     <|"WorkflowId"    -> wid,
@@ -2772,6 +2932,21 @@ ClaudeRestoreWorkflow[snapDir_String, opts:OptionsPattern[]] :=
        明示する (debug 用途、衝突時は上書きされる) *)
     restoredWf = ReplacePart[wf, "WorkflowId" -> newWid];
     AssociateTo[$iWorkflowNets, newWid -> restoredWf];
+
+    (* Inc6b (§15.2): aux sidecar を読み、session 層の宣言的再登録 seam を
+       呼ぶ (Function closure は復元しない I12) *)
+    Module[{iAuxPath, iAux},
+      iAuxPath = FileNameJoin[{snapDir, "aux.wl"}];
+      iAux = If[FileExistsQ[iAuxPath],
+        Quiet @ Check[
+          Block[{$CharacterEncoding = "UTF-8"}, Get[iAuxPath]], <||>],
+        <||>];
+      If[!AssociationQ[iAux], iAux = <||>];
+      If[Head[$ClaudeWorkflowRestoreAuxFn] === Function &&
+         iAux =!= <||>,
+        Quiet @ Check[
+          Catch[Catch[$ClaudeWorkflowRestoreAuxFn[newWid, iAux]], _],
+          Null]]];
 
     (* === D (2026-05-17): AwaitingLLMTransitions の timer 再仕掛け ===
        Snapshot 時に存在した AwaitingLLM 状態の transition は、
@@ -3137,7 +3312,9 @@ iExecuteExternalBranch[trans_Association, binding_Association] :=
          ConfidentialHandling / CredentialRefs は manifest へ。 *)
       "BootstrapFiles"       -> Lookup[opts, "BootstrapFiles", {}],
       "ConfidentialHandling" -> Lookup[opts, "ConfidentialHandling", "ReferenceOnly"],
-      "CredentialRefs"       -> Lookup[opts, "CredentialRefs", {}]
+      "CredentialRefs"       -> Lookup[opts, "CredentialRefs", {}],
+      (* 席優先度 (Automatic = launcher 既定 40; >=90 は Reserve 食い込み可) *)
+      "SeatPriority"         -> Lookup[opts, "SeatPriority", Automatic]
     |>;
 
     launcher = iExternalResolveLauncher[];
@@ -3318,7 +3495,7 @@ iExternalHandleTimeout[wid_String, aid_String, entry_Association,
    ════════════════════════════════════════════════════════ *)
 
 ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob::usage =
-  "ClaudeSubmitExternalHeldExprJob[HoldComplete[expr], opts] は承認済み held expr を External executor (WolframScript ジョブ) へ 1 遷移 WorkflowNet として投入する。opts: \"Timeout\" (既定 3600 秒), \"BootstrapFiles\" (子プロセスで先行ロードするパッケージ), \"NotifyNotebook\" (完了 summary の書込先 NotebookObject), \"AccessSpec\" (Automatic = WolframScriptTask role), \"MaxRetries\" (既定 0), \"Handler\" (既定 \"ApprovedHeldExpr\")。返り値: <|\"Status\"->\"Submitted\", \"JobID\", \"JobDir\", \"WorkflowId\", \"Head\"|> または <|\"Status\"->\"Failed\", \"Reason\"|>。";
+  "ClaudeSubmitExternalHeldExprJob[HoldComplete[expr], opts] は承認済み held expr を External executor (WolframScript ジョブ) へ 1 遷移 WorkflowNet として投入する。opts: \"Timeout\" (既定 3600 秒), \"BootstrapFiles\" (子プロセスで先行ロードするパッケージ), \"NotifyNotebook\" (完了 summary の書込先 NotebookObject), \"AccessSpec\" (Automatic = WolframScriptTask role), \"MaxRetries\" (既定 0), \"Handler\" (既定 \"ApprovedHeldExpr\"), \"SeatPriority\" (席取得優先度; Automatic = 40, >=90 で FE 対話用 Reserve へ食い込み可 -- ユーザー操作起点のジョブ用)。返り値: <|\"Status\"->\"Submitted\", \"JobID\", \"JobDir\", \"WorkflowId\", \"Head\"|> または <|\"Status\"->\"Failed\", \"Reason\"|>。";
 
 If[! AssociationQ[$iExtHeldExprNets], $iExtHeldExprNets = <||>];
 
@@ -3337,7 +3514,10 @@ Options[ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob] = {
   "NotifyNotebook" -> None,
   "ResultRetriever"-> None,
   "AccessSpec"     -> Automatic,
-  "MaxRetries"     -> 0
+  "MaxRetries"     -> 0,
+  (* 席取得の優先度 (ClaudeRuntime_seatbroker)。Automatic = launcher 既定 (40)。
+     >= 90 で FE 対話用 Reserve へ食い込み可 -- ユーザー操作起点のジョブ用。 *)
+  "SeatPriority"   -> Automatic
 };
 
 ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob[
@@ -3401,7 +3581,8 @@ ClaudeOrchestrator`Workflow`ClaudeSubmitExternalHeldExprJob[
                 "Handler"        -> OptionValue["Handler"],
                 "BootstrapFiles" -> OptionValue["BootstrapFiles"],
                 "NotifyNotebook" -> OptionValue["NotifyNotebook"],
-                "ResultRetriever"-> OptionValue["ResultRetriever"]|>|>]|>]],
+                "ResultRetriever"-> OptionValue["ResultRetriever"],
+                "SeatPriority"   -> OptionValue["SeatPriority"]|>|>]|>]],
       $Failed];
     If[! StringQ[wid],
       Return[<|"Status" -> "Failed", "Reason" -> "NetCreateFailed"|>]];

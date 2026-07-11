@@ -4,7 +4,8 @@
 		"ClaudeOrchestrator.wl",
 		"ClaudeOrchestrator_observability.wl",
 		"ClaudeOrchestrator_workflow.wl",
-		"ClaudeOrchestrator_promptworkflow.wl"
+		"ClaudeOrchestrator_promptworkflow.wl",
+		"ClaudeOrchestrator_session.wl"
 	],
 	"directories":[
 		"ClaudeOrchestrator_info"

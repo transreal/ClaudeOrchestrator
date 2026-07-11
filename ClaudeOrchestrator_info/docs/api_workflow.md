@@ -15,6 +15,10 @@ immutable な token Association を生成する。
 → Association
 Options: "TokenId" -> Automatic, "Kind" -> "Task" ("Task"|"Worker"|"Artifact"|"Approval"|"PackageTransaction"|"XSMSentinel"), "Payload" -> <||> (Association), "PrivacyLabel" -> 0.0 (Real), "ParentIds" -> {} (List), "CreatedBy" -> "" (String)
 
+### $ConservativePrivacyDefault
+型: Real, 初期値: 0.0
+output token の PrivacyLabel 伝播 (Inc0A engine invariant) で、親 token の PrivacyLabel が欠落・非数値のときに使う保守既定値。既存 net とは完全互換 (engine 生成 token は常に数値 label を持つため通常は使われない)。output label = Max[親 label の最大値, executorResult["OutputPrivacyFloor"]]。session/conductor 系 net はロード後により厳格な値 (例 1.0) を設定できる。
+
 ### WorkflowPlace[name, opts]
 place Association を生成する。
 → Association
@@ -23,7 +27,9 @@ Options: "Capacity" -> Infinity, "Visibility" -> "Internal" ("Internal"|"UserVis
 ### WorkflowTransition[name, opts]
 transition Association を生成する。
 → Association
-Options: "InputArcs" -> {} (List of <|"Place"->...,"Multiplicity"->1,"TokenKind"->...|>), "OutputArcs" -> {} (同形式), "Guard" -> None (Function|None), "Executor" -> "PureFunction" ("ClaudeRuntime"|"PackageManager"|"PureFunction"|"External"), "RuntimeSpec" -> <||> (Association), "RetryPolicy" -> <||> (Association), "AccessPolicy" -> <||> (Association), "Timeout" -> None (Quantity|None), "Priority" -> 0 (Integer)
+Options: "InputArcs" -> {} (List of <|"Place"->...,"Multiplicity"->1,"TokenKind"->...|>), "OutputArcs" -> {} (同形式), "Guard" -> None (Function|None), "Executor" -> "PureFunction" ("ClaudeRuntime"|"PackageManager"|"PureFunction"|"External"|"RuntimeSession"), "RuntimeSpec" -> <||> (Association), "RetryPolicy" -> <||> (Association), "AccessPolicy" -> <||> (Association), "Timeout" -> None (Quantity|None), "Priority" -> 0 (Integer)
+
+"RuntimeSession" executor は [[$ClaudeRuntimeSessionExecutor]] seam 経由で実行される。
 
 ### WorkflowNet[opts]
 WorkflowNet 全体 Association を生成する。
@@ -91,6 +97,13 @@ ClaudeRunWorkflow[wid, "Async" -> False]
 ### ClaudeEnabledTransitions[wid] → List
 現在 fire 可能な transition と binding の組合せを Priority 降順で返す。{<|"Name", "Binding" -> <|place -> token|>, "Priority"|>, ...}
 
+### ClaudeWorkflowWaitingExternalQ[wid] → True | False
+workflow が外部完了待ち (AwaitingLLMTransitions が存在する、または [[$ClaudeWorkflowExternalPendingQ]] seam が True を返す session episode 等の external pending) の間 True を返す。この間は enabled transition が無くても Stuck 終端にしない。
+
+### $ClaudeWorkflowExternalPendingQ
+型: Function[wid, ...] | Automatic
+Stuck 判定時に AwaitingLLMTransitions 以外の legitimate wait (session episode 等) を問い合わせる seam。設定すると、True を返す間は enabled transition が無くても Stuck 終端にしない。[[ClaudeWorkflowWaitingExternalQ]] が内部で参照する。
+
 ## 実行
 
 ### ClaudeFireTransition[wid, transitionName, binding, opts]
@@ -106,6 +119,12 @@ sink 到達 / enabled が空 / MaxSteps 到達まで Step 反復。
 → Sync: <|"Status", "TerminationReason", "Steps", "ElapsedSec", "FinalMarking", "StepLog"|>
 → Async: <|"WorkflowId", "Status" -> "Async-Started", "PollKey", "StartTime"|>
 Options: "Async" -> False (True で ClaudeCode`$iSharedPollingTask に寄生し非同期実行), "MaxSteps" -> 1000, "MaxWait" -> Quantity[600, "Seconds"], "ForceAllow" -> False
+
+## Executor 拡張 (RuntimeSession)
+
+### $ClaudeRuntimeSessionExecutor
+型: Function | Automatic (未注入時は Failed)
+Executor = "RuntimeSession" transition の実装 seam (session episode spec §10.1)。ClaudeOrchestrator_session.wl がロード時に注入する。未注入で RuntimeSession transition を fire すると Failed(RuntimeSessionExecutorUnavailable)。engine は session module に依存しない (依存方向: session -> workflow)。
 
 ## 制御 (Pause / Resume / Cancel)
 
@@ -196,12 +215,20 @@ WorkflowNet を FormatVersion 2 でディレクトリ保存。保存内容: meta
 → <|"WorkflowId", "SnapshotDir", "FormatVersion" -> 2, "SavedAt"|>
 Options: "SnapshotDir" -> Automatic (= $ClaudeWorkflowSnapshotDir), "Description" -> ""
 
+### $ClaudeWorkflowSnapshotAuxFn
+型: Function[wid, ...] | Automatic
+snapshot 時に aux.wl へ書く内容を提供する seam (session episode spec §10.4)。本文を含まない Association (SessionAttachmentManifest 等) を返す。未設定なら従来どおり空 Association。
+
 ### ClaudeRestoreWorkflow[snapDir_String, opts]
 ClaudeSnapshotWorkflow で保存された workflow を復元。FormatVersion 2 のみ対応。
 → <|"WorkflowId", "OriginalWid", "Restored" -> True, "FormatVersion", "SnapshotDir"|>
 Options: "AsNewWorkflowId" -> True (新 wid 発行、元 wid は OriginalWid に保持)
 
 AwaitingLLM エントリ: snapshot 時 Awaiting 状態だった transition は AwaitingLLMTransitions[awaitId] として復元されるが、元の callback closure と SessionSubmit タスクはカーネル再起動を跨げない。Restore は engine 側 timer を再仕掛けし、timeout 経過で自動的に ClaudeCompleteHandlerOutput を発火。fallback Payload に `"_timeout" -> True`, `"_handler" -> tname`, `"_restored" -> True` を付与。Timeout 解決順: `trans.RuntimeSpec.AwaitingLLMTimeout` > `wf.DefaultAwaitingLLMTimeout` > `$iRestoreFallbackTimeout` (デフォルト 0.1 秒)。
+
+### $ClaudeWorkflowRestoreAuxFn
+型: Function[{newWid, aux}] | Automatic
+restore 直後に aux.wl の内容で宣言的再登録を行う seam (session episode spec §15.2)。Function closure は復元せず、backend 名と record から poller/bridge を再構築する (I12)。
 
 ### ClaudeListWorkflowSnapshots[opts] → Dataset
 $ClaudeWorkflowSnapshotDir 配下の snapshot 一覧。各エントリ: <|"SnapshotDir", "WorkflowId", "FormatVersion", "Description", "SavedAt"|>。
@@ -340,3 +367,5 @@ Sync 返り値: `<|"RuntimeId", "Status", "GlobalState", "Path", "ElapsedSec", "
 - [claudecode](https://github.com/transreal/claudecode) — LLMGraphDAGCreate, $iSharedPollingTask 提供
 - [NBAccess](https://github.com/transreal/NBAccess) — NBDirectiveDerivedPolicy (hard policy check)
 - [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) — ClaudeRuntimeExecuteTransition adapter (Stage C)
+- [ClaudeOrchestrator_session](https://github.com/transreal/ClaudeOrchestrator_session) — $ClaudeRuntimeSessionExecutor / external pending / snapshot aux seam の注入元
+- [ClaudeRuntime_externalrunner](https://github.com/transreal/ClaudeRuntime_externalrunner) — External executor フック ($ClaudeExternalJobLauncher 等) の実装元
