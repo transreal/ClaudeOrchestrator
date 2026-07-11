@@ -6,14 +6,15 @@
 
 依存規則 (§22): `ClaudeOrchestrator_session` は `ClaudeOrchestrator_workflow` に依存する。ロード順は workflow → session。`ClaudeRuntime` には依存しない (public backend spec のみ将来受け取る)。
 
-現行スコープは Inc1 + Inc2 + Inc3 + Inc0 (conductor v0.2 の episode 層 primitive)。
+現行スコープは Inc1 + Inc2 + Inc3 + Inc0 + Inc8 (conductor v0.2 の episode 層 primitive、§17 artifact validation/commit を含む)。
 
 - Inc1: schema validator (fail-closed)、canonical hash (§7.9)、ID generator、SyntheticControlEvent (§7.7/§11.2.1)、RuntimeSession backend registry (§8.1)、MockRuntimeSession backend
 - Inc2 (§9/§10): episode supervisor net builder、pairing Guard (§9.4)、StartEpisode executor、event bridge lite (`ClaudeRuntimeSessionPumpOnce`)、ActiveSessionEpisodes registry (§10.5)、watchdog 用 SyntheticControlEvent 注入 API
 - Inc3 (§11): durable inbox/outbox spool、poll tick、outbox dispatch、recovery scan
+- Inc8 (§17): ArtifactCandidate 検証、single commit の CommitReceipt 取得
 - Inc0 (conductor v0.2 §13.2/§16.4/§19.3/§25.3): InferenceTrustDomain 解決、trust gate、CallContext、call ledger
 
-バージョン: v0.2 (Inc1+Inc2+Inc3+Inc0, 2026-07-11)
+バージョン: v0.2 (Inc1+Inc2+Inc3+Inc0+Inc8, 2026-07-11)
 
 ## canonical hash (§7.9)
 
@@ -124,6 +125,14 @@ ActiveSessionEpisodes 導出 index (poll/recovery 対象)。正本は EpisodeAct
 
 ### ClaudeSessionQuarantine[] → {record...}
 schema/hash 違反等で隔離した event の記録一覧 (§11.4 の in-memory 版 + spool quarantine 記録)。
+
+## artifact validation / single commit (Inc8, §17)
+
+### ClaudeSessionValidateArtifactCandidate[candidate, contract, sessionLabel] → Association
+ArtifactCandidate を ArtifactContract に対して検証する (§17.1)。schema / type 一致 / staging root 包含 / byte 上限 / privacy 単調 / provenance / RequiredChecks / (Files の) base revision を検査し `<|"Valid", "Errors", "Repairable"|>` を返す。fail-closed。
+
+### ClaudeRuntimeSessionArtifactReceipt[wid, episodeId] → Association|None
+commit 済み artifact の CommitReceipt (§17.3: CommitId/TargetRef/NewRevision/ContentHash 等)。未 commit なら None。
 
 ## durable event bridge / command outbox (Inc3, §11)
 

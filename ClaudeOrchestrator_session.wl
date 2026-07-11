@@ -228,6 +228,20 @@ ClaudeSessionQuarantine::usage =
   "ClaudeSessionQuarantine[] は schema/hash 違反等で隔離した event の\n" <>
   "記録一覧を返す (§11.4 の in-memory 版 + spool quarantine 記録)。";
 
+(* ── Inc8: artifact validation / single commit (§17) ── *)
+
+ClaudeSessionValidateArtifactCandidate::usage =
+  "ClaudeSessionValidateArtifactCandidate[candidate, contract, sessionLabel]\n" <>
+  "は ArtifactCandidate を ArtifactContract に対して検証する (§17.1)。\n" <>
+  "schema / type 一致 / staging root 包含 / byte 上限 / privacy 単調 / \n" <>
+  "provenance / RequiredChecks / (Files の) base revision を検査し\n" <>
+  "<|\"Valid\", \"Errors\", \"Repairable\"|> を返す。fail-closed。";
+
+ClaudeRuntimeSessionArtifactReceipt::usage =
+  "ClaudeRuntimeSessionArtifactReceipt[wid, episodeId] は commit 済み\n" <>
+  "artifact の CommitReceipt (§17.3: CommitId/TargetRef/NewRevision/\n" <>
+  "ContentHash 等) を返す。未 commit なら None。";
+
 (* ── Inc3: durable event bridge / command outbox (§11) ── *)
 
 $ClaudeSessionSpoolRoot::usage =
@@ -1749,6 +1763,251 @@ iSesCleanupHandler = Function[binding,
     <|"Payload" -> Append[lease, "ControlState" -> "Closed"]|>
   ]];
 
+(* ── Inc8: artifact validation / single commit (§17) ── *)
+
+(* ArtifactCandidate 検証 (§17.1)。deterministic。sessionLabel は privacy
+   単調検査用 (candidate は session label 以上 §16.4)。 *)
+ClaudeSessionValidateArtifactCandidate[candidate_Association,
+    contract_Association, sessionLabel_:0.0] :=
+  Module[{errs = {}, sv, root, ref, refPath, checks, self},
+    sv = ClaudeSessionValidate["ArtifactCandidate", candidate];
+    If[!sv[["Valid"]],
+      errs = Join[errs, Map["schema: " <> # &, sv[["Errors"]]]]];
+    (* type 一致 *)
+    If[Lookup[candidate, "ArtifactType", None] =!=
+       Lookup[contract, "ExpectedArtifactType", None],
+      AppendTo[errs, "ArtifactType mismatch"]];
+    (* staging root 包含 (ArtifactRef が String path のとき) *)
+    root = Lookup[contract, "AllowedStagingRoot", None];
+    ref = Lookup[candidate, "ArtifactRef", None];
+    If[StringQ[ref] && StringQ[root],
+      refPath = ExpandFileName[ref];
+      If[!StringStartsQ[
+           If[$OperatingSystem === "Windows", ToLowerCase[refPath],
+             refPath],
+           If[$OperatingSystem === "Windows",
+             ToLowerCase[ExpandFileName[root]],
+             ExpandFileName[root]]],
+        AppendTo[errs, "ArtifactRef outside AllowedStagingRoot"]]];
+    (* byte 上限 *)
+    If[IntegerQ[Lookup[contract, "MaxArtifactBytes", None]] &&
+       Lookup[candidate, "ByteCount", Infinity] >
+         contract[["MaxArtifactBytes"]],
+      AppendTo[errs, "ByteCount exceeds MaxArtifactBytes"]];
+    (* privacy 単調: candidate label >= session label (§16.4) *)
+    If[NumericQ[Lookup[candidate, "PrivacyLabel", None]] &&
+       NumericQ[sessionLabel] &&
+       candidate[["PrivacyLabel"]] < sessionLabel,
+      AppendTo[errs, "PrivacyLabel below session label (taint)"]];
+    (* provenance *)
+    If[TrueQ[Lookup[contract, "RequireProvenance", False]] &&
+       !AssociationQ[Lookup[candidate, "Provenance", None]],
+      AppendTo[errs, "Provenance required"]];
+    (* RequiredChecks が SelfChecks で True *)
+    checks = Lookup[contract, "RequiredChecks", {}];
+    self = Lookup[candidate, "SelfChecks", <||>];
+    If[ListQ[checks],
+      Scan[
+        Function[c,
+          If[Lookup[self, c, False] =!= True,
+            AppendTo[errs, "RequiredCheck not satisfied: " <> c]]],
+        checks]];
+    <|"Valid" -> errs === {}, "Errors" -> errs,
+      (* schema/type/staging/privacy 違反は hard、それ以外は repair 可 *)
+      "Repairable" ->
+        errs =!= {} &&
+        !AnyTrue[errs,
+          StringContainsQ[#,
+            "schema" | "mismatch" | "outside" | "taint"] &]|>
+  ];
+
+(* HandleArtifactProposed 用: candidate を lease に格納して ArtifactReview へ *)
+iSesArtifactProposedHandler = Function[binding,
+  Module[{lease = iSesLeaseOf[binding], ev = iSesEventOf[binding], l2,
+          cand, wid = $ClaudeCurrentWid},
+    cand = Lookup[Lookup[ev, "PayloadRefs", <||>],
+      "ArtifactCandidate", <||>];
+    l2 = Append[iSesApplyEvent[lease, ev, "ArtifactReview"],
+      "ArtifactCandidate" -> cand];
+    If[StringQ[wid],
+      iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+        "Suspended"]];
+    <|"Payload" -> l2|>
+  ]];
+
+(* validation verdict (guard から呼ぶ。純関数) *)
+iSesArtifactVerdict[lease_Association] :=
+  Module[{ss = Lookup[lease, "StartSpec", <||>]},
+    ClaudeSessionValidateArtifactCandidate[
+      Lookup[lease, "ArtifactCandidate", <||>],
+      Lookup[ss, "ArtifactContract", <||>],
+      Lookup[Lookup[ss, "Access", <||>], "PrivacyLabel", 0.0]]
+  ];
+
+(* pass: CommitReady + CommitPermit *)
+iSesArtifactPassHandler = Function[binding,
+  Module[{lease = iSesLeaseOf[binding], wid = $ClaudeCurrentWid},
+    If[StringQ[wid],
+      iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+        "Suspended"]];
+    (* CommitReady lease と CommitPermit token は同一 payload を共有する
+       (permit は EpisodeId で pair される)。 *)
+    <|"Payload" -> Append[lease, {
+      "ControlState" -> "CommitReady",
+      "ArtifactValidation" -> <|"Valid" -> True|>}]|>
+  ]];
+
+iSesArtifactRepairHandler = Function[binding,
+  Module[{lease = iSesLeaseOf[binding], v = iSesArtifactVerdict[
+            iSesLeaseOf[binding]], wid = $ClaudeCurrentWid},
+    If[StringQ[wid],
+      iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+        "Running"]];
+    <|"Payload" -> Append[lease, {
+      "ControlState" -> "Running",
+      "ArtifactCandidate" -> None,
+      "LastArtifactRepairFeedback" -> Lookup[v, "Errors", {}]}]|>
+  ]];
+
+iSesArtifactRejectHandler = Function[binding,
+  Module[{lease = iSesLeaseOf[binding], v = iSesArtifactVerdict[
+            iSesLeaseOf[binding]], wid = $ClaudeCurrentWid},
+    If[StringQ[wid],
+      iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+        "Closing"]];
+    <|"Payload" -> Append[lease, {
+      "ControlState" -> "Failed",
+      "StatusDetail" -> "ArtifactInvalid",
+      "ArtifactErrors" -> Lookup[v, "Errors", {}]}]|>
+  ]];
+
+(* commit 実体 (§17.3)。ArtifactStore = content-addressed deposit (冪等)、
+   Files = atomic rename + base revision CAS、Notebook = capability gate。
+   commit target/artifact 本文は staging から読む。receipt を durable 保存。 *)
+iSesArtifactContentPath[wid_, episodeId_] :=
+  FileNameJoin[{iSesSpoolRoot[], "commit-receipts",
+    ToString[episodeId] <> ".wxf"}];
+
+iSesReadArtifactRefContent[ref_] :=
+  Which[
+    StringQ[ref] && FileExistsQ[ref],
+      Quiet @ Check[Import[ref, "WXF"], $Failed],
+    True, ref];   (* inline (小さい public) はそのまま *)
+
+iSesDoCommit[lease_Association, cand_Association, contract_Association] :=
+  Module[{mode, target, content, chash, receipt, path, prev},
+    mode = Lookup[contract, "CommitMode", "ArtifactStore"];
+    target = Lookup[contract, "CommitTargetRef", None];
+    chash = Lookup[cand, "ContentHash", None];
+    content = iSesReadArtifactRefContent[Lookup[cand, "ArtifactRef", None]];
+    Switch[mode,
+      "ArtifactStore",
+        (* content-addressed: <target>/<ContentHash>.wxf。既存なら冪等 skip *)
+        If[!StringQ[target],
+          Return[<|"Status" -> "Failed",
+            "Reason" -> "NoCommitTargetRef"|>]];
+        path = FileNameJoin[{target, ToString[chash] <> ".wxf"}];
+        If[!FileExistsQ[path],
+          Quiet @ Check[
+            iSesAtomicExport[path, content], Return[<|"Status" -> "Failed",
+              "Reason" -> "DepositFailed"|>]]];
+        receipt = <|"CommitId" -> ClaudeSessionNewId["Command"] <> "-commit",
+          "ArtifactId" -> Lookup[cand, "ArtifactId", None],
+          "TargetRef" -> path,
+          "PreviousRevision" -> None,
+          "NewRevision" -> chash,
+          "CommittedAt" -> DateObject[],
+          "ContentHash" -> chash|>;
+        <|"Status" -> "Committed", "Receipt" -> receipt|>,
+      "Files",
+        (* base revision CAS: 現 target の hash が BaseRevision と一致する
+           場合のみ atomic rename。不一致は conflict (上書きしない §17.3) *)
+        If[!StringQ[target],
+          Return[<|"Status" -> "Failed",
+            "Reason" -> "NoCommitTargetRef"|>]];
+        prev = If[FileExistsQ[target],
+          iRtCanonicalHashSes[
+            Quiet @ Check[Import[target, "WXF"], $Failed]], None];
+        If[Lookup[contract, "BaseRevision", None] =!= None &&
+           prev =!= Lookup[contract, "BaseRevision", None],
+          Return[<|"Status" -> "Conflict",
+            "Reason" -> "BaseRevisionConflict",
+            "Expected" -> Lookup[contract, "BaseRevision", None],
+            "Actual" -> prev|>]];
+        Quiet @ Check[iSesAtomicExport[target, content],
+          Return[<|"Status" -> "Failed", "Reason" -> "WriteFailed"|>]];
+        receipt = <|"CommitId" -> ClaudeSessionNewId["Command"] <> "-commit",
+          "ArtifactId" -> Lookup[cand, "ArtifactId", None],
+          "TargetRef" -> target,
+          "PreviousRevision" -> prev,
+          "NewRevision" -> chash,
+          "CommittedAt" -> DateObject[],
+          "ContentHash" -> chash|>;
+        <|"Status" -> "Committed", "Receipt" -> receipt|>,
+      "Notebook",
+        (* headless では NotebookCommit capability が無いと拒否 (§8.2/§17.3) *)
+        <|"Status" -> "Failed",
+          "Reason" -> "NotebookCommitRequiresCapableCommitter"|>,
+      _,
+        <|"Status" -> "Failed", "Reason" -> "UnknownCommitMode"|>
+    ]
+  ];
+
+(* commit target 内 canonical hash (Files CAS 用) *)
+iRtCanonicalHashSes[expr_] :=
+  If[expr === $Failed, None, iSesEventHashBase[expr]];
+iSesEventHashBase[expr_] :=
+  IntegerString[
+    Hash[BaseEncode[BinarySerialize[iCanon[expr]], "Base64"], "SHA256"],
+    16, 64];
+
+iSesCommitArtifactHandler = Function[binding,
+  Module[{lease = iSesLeaseOf[binding], cand, ss, contract, res,
+          receipt, l2, wid = $ClaudeCurrentWid, rpath},
+    cand = Lookup[lease, "ArtifactCandidate", <||>];
+    ss = Lookup[lease, "StartSpec", <||>];
+    contract = Lookup[ss, "ArtifactContract", <||>];
+    res = iSesDoCommit[lease, cand, contract];
+    If[Lookup[res, "Status", None] === "Committed",
+      receipt = Lookup[res, "Receipt", <||>];
+      (* receipt を durable に保存してから terminal へ (§17.3:
+         receipt 永続化成功後にのみ Completed) *)
+      rpath = iSesArtifactContentPath[wid,
+        Lookup[lease, "EpisodeId", None]];
+      Quiet @ Check[iSesAtomicExport[rpath, receipt], Null];
+      If[StringQ[wid],
+        iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+          "Closing"]];
+      (* 成功: ControlState=Committed で EpisodeActive に留め、
+         FinalizeCommittedArtifact が terminal 化する (失敗時に terminal へ
+         落とさないための二段構え §17.3) *)
+      l2 = Append[lease, {
+        "ControlState" -> "Committed",
+        "CommitReceipt" -> receipt,
+        "CommitReceiptRef" -> rpath}],
+      (* commit 失敗/conflict → repair へ戻す (target は不変) *)
+      If[StringQ[wid],
+        iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+          "Running"]];
+      l2 = Append[lease, {
+        "ControlState" -> "Running",
+        "ArtifactCandidate" -> None,
+        "LastCommitFailure" -> res}]];
+    <|"Payload" -> l2|>
+  ]];
+
+ClaudeRuntimeSessionArtifactReceipt[wid_String, episodeId_String] :=
+  Module[{leaseTok, outTok, payload},
+    leaseTok = iSesFindLeaseToken[wid, episodeId];
+    outTok = If[MissingQ[leaseTok],
+      iSesFindOutcomeToken[wid, episodeId], Missing[]];
+    payload = Which[
+      !MissingQ[leaseTok], Lookup[leaseTok, "Payload", <||>],
+      !MissingQ[outTok], Lookup[outTok, "Payload", <||>],
+      True, <||>];
+    Lookup[payload, "CommitReceipt", None]
+  ];
+
 (* ── transitions ── *)
 
 iSesBuildEpisodeTransitions[] := <|
@@ -1840,8 +2099,95 @@ iSesBuildEpisodeTransitions[] := <|
       <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
     "Executor" -> "PureFunction",
     "Guard" -> iSesMakeEventGuard[{"ArtifactProposed"}, {"Running"}, None],
+    "RuntimeSpec" -> <|"Handler" -> iSesArtifactProposedHandler|>],
+
+  (* Inc8: validation → 分岐 (pass/repair/reject)。validation は guard で
+     評価 (純関数)。EpisodeActive lease のみを入力とする内部 transition。 *)
+  "ValidateArtifact" -> WorkflowTransition["ValidateArtifact",
+    "InputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "OutputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>,
+      <|"Place" -> "CommitPermits", "TokenKind" -> "CommitPermit"|>},
+    "Executor" -> "PureFunction",
+    "Guard" -> Function[b,
+      Lookup[iSesLeaseOf[b], "ControlState", None] === "ArtifactReview" &&
+      TrueQ[iSesArtifactVerdict[iSesLeaseOf[b]][["Valid"]]]],
+    "RuntimeSpec" -> <|"Handler" -> iSesArtifactPassHandler|>,
+    "Priority" -> 7],
+
+  "RepairArtifactRequest" -> WorkflowTransition["RepairArtifactRequest",
+    "InputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "OutputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "Executor" -> "PureFunction",
+    "Guard" -> Function[b,
+      Module[{v = iSesArtifactVerdict[iSesLeaseOf[b]]},
+        Lookup[iSesLeaseOf[b], "ControlState", None] ===
+          "ArtifactReview" &&
+        !TrueQ[v[["Valid"]]] && TrueQ[v[["Repairable"]]]]],
+    "RuntimeSpec" -> <|"Handler" -> iSesArtifactRepairHandler|>,
+    "Priority" -> 6],
+
+  "RejectArtifact" -> WorkflowTransition["RejectArtifact",
+    "InputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "OutputArcs" -> {
+      <|"Place" -> "EpisodeFailed", "TokenKind" -> "Failure"|>,
+      <|"Place" -> "CleanupPending", "TokenKind" -> "SessionLease"|>},
+    "Executor" -> "PureFunction",
+    "Guard" -> Function[b,
+      Module[{v = iSesArtifactVerdict[iSesLeaseOf[b]]},
+        Lookup[iSesLeaseOf[b], "ControlState", None] ===
+          "ArtifactReview" &&
+        !TrueQ[v[["Valid"]]] && !TrueQ[v[["Repairable"]]]]],
+    "RuntimeSpec" -> <|"Handler" -> iSesArtifactRejectHandler|>,
+    "Priority" -> 8],
+
+  (* single committer: CommitPermit token を消費 (一個のみ→一度だけ commit)。
+     CommitReady lease と EpisodeId で pair する。commit 結果に関わらず
+     出力は EpisodeActive lease のみ (成功=Committed / 失敗=Running)。
+     失敗時に terminal へ落とさないため、terminal 化は別 transition。 *)
+  "CommitArtifact" -> WorkflowTransition["CommitArtifact",
+    "InputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>,
+      <|"Place" -> "CommitPermits", "TokenKind" -> "CommitPermit"|>},
+    "OutputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "Executor" -> "PureFunction",
+    "Guard" -> Function[b,
+      Module[{lease, permit},
+        lease = iSesLeaseOf[b];
+        permit = Lookup[Lookup[b, "CommitPermits", <||>],
+          "Payload", <||>];
+        Lookup[lease, "ControlState", None] === "CommitReady" &&
+        Lookup[lease, "EpisodeId", "?l"] ===
+          Lookup[permit, "EpisodeId", "?p"]]],
+    "RuntimeSpec" -> <|"Handler" -> iSesCommitArtifactHandler|>,
+    "Priority" -> 9],
+
+  (* commit 成功 (ControlState=Committed) の episode を terminal 化。
+     receipt durable 保存後にのみ Completed になる (§17.3)。 *)
+  "FinalizeCommittedArtifact" ->
+    WorkflowTransition["FinalizeCommittedArtifact",
+    "InputArcs" -> {
+      <|"Place" -> "EpisodeActive", "TokenKind" -> "SessionLease"|>},
+    "OutputArcs" -> {
+      <|"Place" -> "EpisodeCompleted", "TokenKind" -> "Artifact"|>,
+      <|"Place" -> "CleanupPending", "TokenKind" -> "SessionLease"|>},
+    "Executor" -> "PureFunction",
+    "Guard" -> Function[b,
+      Lookup[iSesLeaseOf[b], "ControlState", None] === "Committed" &&
+      AssociationQ[Lookup[iSesLeaseOf[b], "CommitReceipt", None]]],
     "RuntimeSpec" -> <|"Handler" ->
-      iSesMakeEventHandler[Function[{l, e}, "ArtifactReview"]]|>],
+      Function[binding,
+        Module[{lease = iSesLeaseOf[binding], wid = $ClaudeCurrentWid},
+          If[StringQ[wid],
+            iSesSetEpisodeState[wid, Lookup[lease, "EpisodeId", None],
+              "Closing"]];
+          <|"Payload" -> Append[lease, "ControlState" -> "Completed"]|>]]|>,
+    "Priority" -> 10],
 
   "AcknowledgeSessionCommand" -> WorkflowTransition[
     "AcknowledgeSessionCommand",
@@ -2000,6 +2346,8 @@ ClaudeCreateRuntimeSessionEpisodeNet[startSpec_Association,
         "AcceptedKinds" -> {"CommandRequest"}],
       "CleanupPending" -> WorkflowPlace["CleanupPending",
         "AcceptedKinds" -> {"SessionLease"}],
+      "CommitPermits" -> WorkflowPlace["CommitPermits",
+        "AcceptedKinds" -> {"CommitPermit"}],
       "EpisodeCompleted" -> WorkflowPlace["EpisodeCompleted",
         "AcceptedKinds" -> {"Artifact"}],
       "EpisodeFailed" -> WorkflowPlace["EpisodeFailed",
