@@ -45,6 +45,8 @@ single committer runtime を起動し reducedArtifact を target notebook に反
 → `<|"Status"->"Committed"|"Failed"|"RolledBack", "Mode"->..., "Details"->...|>`
 Options: CommitterAdapterBuilder -> Automatic, CommitMode -> "Direct" ("Transactional" は shadow buffer に書いて verify/flush、失敗時 target 無変更で rollback), Verifier -> Automatic (fn[buffer, cells] -> True/False)
 
+失敗/不十分時は CommitSafety 統合 (下記) が 3rd-tier fallback として payload を Markdown 解析し Cell list を生成、target notebook へ書込む。
+
 ## オーケストレーション (同期)
 ### ClaudeRunOrchestration[input, opts]
 Planning -> Spawn -> Reduce -> (optional) Commit の全フェーズを直列実行。
@@ -163,7 +165,7 @@ repository 読込を再試行 (path 指定可)。auto-load フラグをリセッ
 True で directive prefix 構築のたびに診断出力。
 
 ## Routing 統合 (ClaudeOrchestrator` 名前空間)
-queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default。
+queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI (Model オプションは渡さず常に CLI 既定モデル)、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default ($ClaudeRoleDefaultModels、既定 "claude-opus-4.7")。API 経路が使えない場合は CLI 素呼びへ fallback。
 
 ### ClaudeOrchestrator`RoutingEnabledQ[] → True/False
 CLI または API の少なくとも一方が呼び出し可能なら True。
@@ -172,7 +174,7 @@ CLI または API の少なくとも一方が呼び出し可能なら True。
 role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み model spec。引数省略時 role:"", model:Automatic。
 
 ### ClaudeOrchestrator`RoutingGetInfo[role, model] → Association
-→ `<|"Source"->str, "Path"->"CLI"|"API"|"Default", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
+→ `<|"Source"->str, "Path"->"CLI"|"API"|"Explicit"|"Empty", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
 
 ### ClaudeOrchestrator`RoutingListPaths[] → Association
 利用可能な routing path。→ `<|"CLI"->bool, "API"->bool, "PrivateModel"->bool, "RoleDefaults"->bool|>`
@@ -194,7 +196,7 @@ queryFn が明示なら respect、Automatic なら role/model から CLI/API clo
 role に応じた model 解決 (iResolveModelInternal)。
 
 ## CommitSafety 統合
-LLM-backed commit と iDeterministicSlideCommit がいずれも失敗/不十分時の 3rd-tier fallback。payload を Markdown 解析して Cell list を生成し target notebook へ書込む (Title->Section, Summary/Description->Text, Code->Input, KeyPoints->ItemParagraph, heading->Section/Subsection, bullet->ItemParagraph)。
+LLM-backed commit と iDeterministicSlideCommit がいずれも失敗/不十分時の 3rd-tier fallback。payload を Markdown 解析して Cell list を生成し target notebook へ書込む (Title->Section, Summary/Description/Body等のテキスト系キー->Text, Code/Source等のコード系キー->Input, KeyPoints/Bullets等のリスト系キー->ItemParagraph, heading (#/##/###)->Section/Subsection, bullet (-/*)->ItemParagraph)。ClaudeOrchestrator.wl の Private context に直接定義され独立した BeginPackage は持たない。
 
 ### ClaudeOrchestrator`$ClaudeCommitSafetyVersion
 型: String。commit safety パッチのバージョン文字列。
@@ -239,3 +241,4 @@ Orchestrator 経路を通すべき複雑タスクを識別するマーカー (�
 型: True/False, 初期値: いずれも True
 `$ClaudeOrchestratorEnableDirectives`, `$ClaudeOrchestratorEnableRouting`, `$ClaudeOrchestratorEnableCommitSafety`, `$ClaudeOrchestratorEnableA4Stub` — 対応する統合サブモジュールの読込を制御。
 `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` でロード前に設定すると promptworkflow 自動ロードを抑止。
+`Global`$ClaudeOrchestratorEnableStateGraphCompat = True` でロード前に設定すると deprecated な ClaudeOrchestrator_stategraph.wl (ClaudeStateGraph` 互換層) を自動ロードする (既定は不読込)。

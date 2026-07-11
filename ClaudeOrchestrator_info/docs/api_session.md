@@ -6,15 +6,16 @@
 
 依存規則 (§22): `ClaudeOrchestrator_session` は `ClaudeOrchestrator_workflow` に依存する。ロード順は workflow → session。`ClaudeRuntime` には依存しない (public backend spec のみ将来受け取る)。
 
-現行スコープは Inc1 + Inc2 + Inc3 + Inc0 + Inc8 (conductor v0.2 の episode 層 primitive、§17 artifact validation/commit を含む)。
+現行スコープは Inc1 + Inc2 + Inc3 + Inc0 + Inc8 + IncC (conductor v0.2 の episode 層 primitive、§17 artifact validation/commit、§20/§21 TaskSpec 統合を含む)。
 
 - Inc1: schema validator (fail-closed)、canonical hash (§7.9)、ID generator、SyntheticControlEvent (§7.7/§11.2.1)、RuntimeSession backend registry (§8.1)、MockRuntimeSession backend
 - Inc2 (§9/§10): episode supervisor net builder、pairing Guard (§9.4)、StartEpisode executor、event bridge lite (`ClaudeRuntimeSessionPumpOnce`)、ActiveSessionEpisodes registry (§10.5)、watchdog 用 SyntheticControlEvent 注入 API
 - Inc3 (§11): durable inbox/outbox spool、poll tick、outbox dispatch、recovery scan
 - Inc8 (§17): ArtifactCandidate 検証、single commit の CommitReceipt 取得
+- IncC (§20/§21): multi-agent TaskSpec role → conductor role 正規化、heterogeneous backend 選択、TaskNodeSpec → episode net compile、episode 終端まで駆動する driver、DAG plan runner、reuse-aware chain runner
 - Inc0 (conductor v0.2 §13.2/§16.4/§19.3/§25.3): InferenceTrustDomain 解決、trust gate、CallContext、call ledger
 
-バージョン: v0.2 (Inc1+Inc2+Inc3+Inc0+Inc8, 2026-07-11)
+バージョン: v0.2 (Inc1+Inc2+Inc3+Inc0+Inc8+IncC, 2026-07-11)
 
 ## canonical hash (§7.9)
 
@@ -133,6 +134,40 @@ ArtifactCandidate を ArtifactContract に対して検証する (§17.1)。schem
 
 ### ClaudeRuntimeSessionArtifactReceipt[wid, episodeId] → Association|None
 commit 済み artifact の CommitReceipt (§17.3: CommitId/TargetRef/NewRevision/ContentHash 等)。未 commit なら None。
+
+## conductor task node integration (IncC, §20/§21)
+
+### ClaudeSessionMapRole[role] → "solve"|"plan"|"verify"|"synthesize"|"__SingleCommitter__"|Failure
+multi-agent TaskSpec role を conductor role へ正規化する (§20.2)。Explore/Draft->solve, Plan->plan, Verify->verify, Reduce->synthesize, Commit->"__SingleCommitter__" (session にしない)。既に conductor role ならそのまま。未知は Failure (silent 縮退しない)。
+
+### ClaudeSessionResolveBackend[requirement] → String|Failure
+登録済み backend から §20.3 の heterogeneous binding で 1 つ選ぶ。requirement: `<|"PreferredBackend"->_, "RequiredCapabilities"->{..}, "IsolationRequired"->_, "SeatProbe"->fn|>`。capability/isolation で filter し、seat 可用性で rank。無ければ Failure (§20.3 silent に起動しない)。
+
+### ClaudeSessionCompileTaskNode[taskNodeSpec, opts] → Association|Failure
+WorkerKind="RuntimeSession" の TaskNodeSpec を episode supervisor net に compile する (§20.1)。role mapping・SessionProfile 正規化・SessionStartSpec 構築 (iCondBuildSessionStartSpec)・backend resolve を行い `ClaudeCreateRuntimeSessionEpisodeNet` を呼ぶ。WorkerKind="LLMCall" は本経路の対象外 (Failure["NotRuntimeSession"]、既存 atomic 経路が担当)。
+→ `<|WorkflowId, EpisodeId, SessionId, Backend, Role, StartSpec|>`
+
+### ClaudeSessionBuildStartSpecFromTaskNode[taskNodeSpec, binding] → Association (SessionStartSpec)
+TaskNodeSpec + binding から検証済み SessionStartSpec を構築する (§21.2 iCondBuildSessionStartSpec)。net を作らず spec だけ返す。
+
+### ClaudeSessionRunEpisodeToCompletion[wid, episodeId, opts] → Association
+compile + start 済みの episode net を、pump (§11.2 一個ずつ) + engine step で終端まで駆動する Conductor 向け driver。WorkflowStatus=="Done" もしくは進展が止まる (NoNewEvents/NoActiveLease 等) まで bounded に回す。搬送層しか触らない (model/tool/NotebookWrite なし、§11.5)。
+→ `<|Status(Completed|Failed|Incomplete), WorkflowStatus, ControlState, Pumps, LastPump, Receipt|>`
+Options: "MaxPumps" -> 200
+
+### ClaudeSessionConductTaskNode[taskNodeSpec, opts] → Association
+RuntimeSession TaskNode を compile → start → 終端まで駆動する end-to-end 配線。`ClaudeSessionCompileTaskNode` + `ClaudeStartRuntimeSessionEpisode` + `ClaudeSessionRunEpisodeToCompletion` を 1 呼び出しに束ねる。compile が Failure(NotRuntimeSession 等) ならそれを返す。
+→ `<|Status, WorkflowId, EpisodeId, SessionId, Backend, Role, ControlState, Receipt, Run|>`
+opts は Compile と Run の option を受ける。
+
+### ClaudeSessionConductPlan[taskNodes, opts] → Association
+複数の RuntimeSession TaskNode を DependsOn の DAG として実行する Conductor plan runner。topological order で逐次 `ClaudeSessionConductTaskNode` を回し、失敗ノードの依存先は "Skipped" にする (failure propagation)。依存ノードの commit receipt は依存先へ DepReceipts として渡す。循環依存は Failure。非 RuntimeSession (LLMCall 等) は skip 対象で status "NotRuntimeSession"。並列実行は本 MVP では非対応 (逐次 topo)。
+→ `<|Status, Order, Nodes(TaskId→result), Receipts|>`
+Options: "Parallel" -> False
+
+### ClaudeSessionConductReuseChain[taskNodes, opts] → Association
+backend §8.1 契約の ReuseEpisode を使い、ReusePolicy=SameWorkflowSameTrust かつ同一 trust domain の連続 episode で物理 session を自動再利用する reuse-aware chain runner (Inc10 の Petri→reuse auto-firing 配線)。backend contract のみ経由し `ClaudeRuntime` に直接依存しない (§22)。trust-key=WorkflowId|AccessSpecHash|PolicySnapshotHash 単位の pool を持ち、eligible なら backend[ReuseEpisode]、不可なら fresh StartEpisode。各 episode は backend PollEvents で終端まで駆動。backend が ReuseEpisode 非対応なら常に fresh。
+→ `<|Status, Nodes, PhysicalSessions, ReuseCount|>`
 
 ## durable event bridge / command outbox (Inc3, §11)
 

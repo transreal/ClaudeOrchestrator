@@ -242,6 +242,74 @@ ClaudeRuntimeSessionArtifactReceipt::usage =
   "artifact の CommitReceipt (§17.3: CommitId/TargetRef/NewRevision/\n" <>
   "ContentHash 等) を返す。未 commit なら None。";
 
+(* ── IncC: Conductor / TaskSpec 統合 (§20/§21) ── *)
+
+ClaudeSessionMapRole::usage =
+  "ClaudeSessionMapRole[role] は multi-agent TaskSpec role を conductor role\n" <>
+  "へ正規化する (§20.2)。Explore/Draft->solve, Plan->plan, Verify->verify,\n" <>
+  "Reduce->synthesize, Commit->\"__SingleCommitter__\" (session にしない)。\n" <>
+  "既に conductor role ならそのまま。未知は Failure (silent 縮退しない)。";
+
+ClaudeSessionResolveBackend::usage =
+  "ClaudeSessionResolveBackend[requirement] は登録済み backend から\n" <>
+  "§20.3 の heterogeneous binding で 1 つ選ぶ。requirement:\n" <>
+  "<|\"PreferredBackend\"->_, \"RequiredCapabilities\"->{..},\n" <>
+  "  \"IsolationRequired\"->_, \"SeatProbe\"->fn|>。capability/isolation で\n" <>
+  "filter し、seat 可用性で rank。無ければ Failure (§20.3 silent に起動しない)。";
+
+ClaudeSessionCompileTaskNode::usage =
+  "ClaudeSessionCompileTaskNode[taskNodeSpec, opts] は WorkerKind=\n" <>
+  "\"RuntimeSession\" の TaskNodeSpec を episode supervisor net に compile\n" <>
+  "する (§20.1)。role mapping・SessionProfile 正規化・SessionStartSpec 構築\n" <>
+  "(iCondBuildSessionStartSpec)・backend resolve を行い\n" <>
+  "ClaudeCreateRuntimeSessionEpisodeNet を呼ぶ。WorkerKind=\"LLMCall\" は\n" <>
+  "本経路の対象外 (Failure(\"NotRuntimeSession\"))=既存 atomic 経路が担当。\n" <>
+  "戻り値 <|WorkflowId, EpisodeId, SessionId, Backend, Role, StartSpec|>。";
+
+ClaudeSessionBuildStartSpecFromTaskNode::usage =
+  "ClaudeSessionBuildStartSpecFromTaskNode[taskNodeSpec, binding] は\n" <>
+  "TaskNodeSpec + binding から検証済み SessionStartSpec を構築する\n" <>
+  "(§21.2 iCondBuildSessionStartSpec)。net を作らず spec だけ返す。";
+
+ClaudeSessionRunEpisodeToCompletion::usage =
+  "ClaudeSessionRunEpisodeToCompletion[wid, episodeId, opts] は既に compile\n" <>
+  "+ start 済みの episode net を、pump(§11.2 一個ずつ)+ engine step で\n" <>
+  "終端まで駆動する Conductor 向け driver。WorkflowStatus==\"Done\" もしくは\n" <>
+  "進展が止まる(NoNewEvents/NoActiveLease 等)まで bounded に回す。搬送層\n" <>
+  "しか触らない(model/tool/NotebookWrite なし=§11.5)。戻り値\n" <>
+  "<|Status(Completed|Failed|Incomplete), WorkflowStatus, ControlState,\n" <>
+  "  Pumps, LastPump, Receipt|>。opts: \"MaxPumps\"->200。";
+
+ClaudeSessionConductTaskNode::usage =
+  "ClaudeSessionConductTaskNode[taskNodeSpec, opts] は RuntimeSession\n" <>
+  "TaskNode を compile → start → 終端まで駆動する end-to-end 配線。\n" <>
+  "ClaudeSessionCompileTaskNode + ClaudeStartRuntimeSessionEpisode +\n" <>
+  "ClaudeSessionRunEpisodeToCompletion を 1 呼び出しに束ねる。compile が\n" <>
+  "Failure(NotRuntimeSession 等)ならそれを返す。戻り値\n" <>
+  "<|Status, WorkflowId, EpisodeId, SessionId, Backend, Role, ControlState,\n" <>
+  "  Receipt, Run|>。opts は Compile と Run の option を受ける。";
+
+ClaudeSessionConductPlan::usage =
+  "ClaudeSessionConductPlan[taskNodes, opts] は複数の RuntimeSession\n" <>
+  "TaskNode を DependsOn の DAG として実行する Conductor plan runner。\n" <>
+  "topological order で逐次 ClaudeSessionConductTaskNode を回し、失敗ノード\n" <>
+  "の依存先は \"Skipped\" にする (failure propagation)。依存ノードの commit\n" <>
+  "receipt は依存先へ DepReceipts として渡す。循環依存は Failure。戻り値\n" <>
+  "<|Status, Order, Nodes(TaskId→result), Receipts|>。非 RuntimeSession\n" <>
+  "(LLMCall 等)は skip 対象で status \"NotRuntimeSession\"。\n" <>
+  "並列実行は本 MVP では非対応 (逐次 topo)。opts: \"Parallel\"->False。";
+
+ClaudeSessionConductReuseChain::usage =
+  "ClaudeSessionConductReuseChain[taskNodes, opts] は backend §8.1 契約の\n" <>
+  "ReuseEpisode を使い、ReusePolicy=SameWorkflowSameTrust かつ同一 trust\n" <>
+  "domain の連続 episode で物理 session を自動再利用する reuse-aware chain\n" <>
+  "runner (Inc10 の Petri→reuse auto-firing 配線)。backend contract のみ\n" <>
+  "経由し ClaudeRuntime に直接依存しない (§22)。trust-key=WorkflowId|\n" <>
+  "AccessSpecHash|PolicySnapshotHash 単位の pool を持ち、eligible なら\n" <>
+  "backend[ReuseEpisode]、不可なら fresh StartEpisode。各 episode は backend\n" <>
+  "PollEvents で終端まで駆動。戻り値 <|Status, Nodes, PhysicalSessions,\n" <>
+  "  ReuseCount|>。backend が ReuseEpisode 非対応なら常に fresh。";
+
 (* ── Inc3: durable event bridge / command outbox (§11) ── *)
 
 $ClaudeSessionSpoolRoot::usage =
@@ -3271,6 +3339,523 @@ iSesRestoreAttachments[newWid_String, aux_Association] :=
     n
   ];
 
+(* ::Subsection:: *)
+(* IncC: Conductor / TaskSpec 統合 (§20/§21) *)
+
+(* ── role mapping (§20.2) ── *)
+
+$iSesRoleMap = <|
+  "Explore" -> "solve", "Plan" -> "plan", "Draft" -> "solve",
+  "Verify" -> "verify", "Reduce" -> "synthesize",
+  "Commit" -> "__SingleCommitter__"|>;
+
+(* conductor 側の既知 role (そのまま通す) *)
+$iSesConductorRoles = {"solve", "solve-hard", "plan", "verify",
+  "synthesize"};
+
+ClaudeSessionMapRole[role_String] :=
+  Which[
+    KeyExistsQ[$iSesRoleMap, role], $iSesRoleMap[role],
+    MemberQ[$iSesConductorRoles, role], role,
+    True, Failure["UnknownRole",
+      <|"Role" -> role,
+        "Known" -> Join[Keys[$iSesRoleMap], $iSesConductorRoles]|>]];
+
+ClaudeSessionMapRole[_] :=
+  Failure["InvalidRole", <|"Reason" -> "role must be a String"|>];
+
+(* ── SessionProfile 正規化 (§20.1): conductor 予約語 → canonical ── *)
+
+iSesNormalizeSessionProfile[profile_Association] :=
+  <|"Backend" -> Lookup[profile, "Backend", Automatic],
+    "ReusePolicy" -> Lookup[profile, "ReusePolicy", "Never"],
+    "IsolationRequired" -> Lookup[profile, "IsolationRequired",
+      "CooperativeKernel"],
+    (* canonical > conductor legacy 名 *)
+    "ToolPolicyRef" -> Lookup[profile, "ToolPolicyRef",
+      Lookup[profile, "ToolPolicy", None]],
+    "BudgetGrantRef" -> Lookup[profile, "BudgetGrantRef",
+      Lookup[profile, "TurnBudget", None]],
+    "EnvironmentSpecRef" -> Lookup[profile, "EnvironmentSpecRef",
+      Lookup[profile, "EnvironmentRef", None]],
+    "CheckpointPolicyRef" -> Lookup[profile, "CheckpointPolicyRef",
+      None]|>;
+
+iSesNormalizeSessionProfile[_] := iSesNormalizeSessionProfile[<||>];
+
+(* ── heterogeneous binding resolver (§20.3) ── *)
+
+iSesBackendCapabilities[name_] :=
+  Lookup[Lookup[$iRuntimeSessionBackends, name, <||>],
+    "Capabilities", {}];
+
+ClaudeSessionResolveBackend[requirement_Association] :=
+  Module[{pref, reqCaps, iso, seatProbe, candidates, isoNeedsExternal,
+          filtered, ranked},
+    pref = Lookup[requirement, "PreferredBackend", Automatic];
+    reqCaps = Lookup[requirement, "RequiredCapabilities", {}];
+    iso = Lookup[requirement, "IsolationRequired", None];
+    seatProbe = Lookup[requirement, "SeatProbe", None];
+    candidates = Keys[$iRuntimeSessionBackends];
+
+    (* 明示指定があれば、それが filter を満たすか検査 *)
+    isoNeedsExternal = MemberQ[
+      {"ExternalProcess", "Container"}, iso];
+
+    filtered = Select[candidates,
+      Function[b,
+        Module[{caps = iSesBackendCapabilities[b]},
+          (* RequiredCapabilities ⊆ backend Capabilities *)
+          SubsetQ[caps, reqCaps] &&
+          (* isolation が external を要求するなら ExternalProcess capability 要 *)
+          (!isoNeedsExternal || MemberQ[caps, "ExternalProcess"])]]];
+
+    If[filtered === {},
+      Return[Failure["NoEligibleBackend",
+        <|"Requirement" -> requirement,
+          "Registered" -> candidates|>]]];
+
+    (* PreferredBackend が eligible ならそれを優先 *)
+    If[StringQ[pref] && MemberQ[filtered, pref],
+      Return[<|"Backend" -> pref, "Reason" -> "Preferred",
+        "Eligible" -> filtered|>]];
+
+    (* seat 可用性で rank (§20.3)。probe 無しは順序維持 *)
+    ranked = If[Head[seatProbe] === Function,
+      SortBy[filtered,
+        -N[Quiet @ Check[seatProbe[#], 0]] &],
+      filtered];
+
+    <|"Backend" -> First[ranked], "Reason" -> "Ranked",
+      "Eligible" -> filtered|>
+  ];
+
+ClaudeSessionResolveBackend[_] :=
+  Failure["InvalidRequirement", <||>];
+
+(* ── SessionStartSpec builder (§21.2 iCondBuildSessionStartSpec) ──
+   TaskNodeSpec + binding から検証済み StartSpec を組む。ref
+   (ToolPolicyRef/BudgetGrantRef/...) が Association ならインライン採用、
+   None なら template 既定。ref-string の解決は seam 化 (未実装は既定)。 *)
+
+Options[ClaudeSessionBuildStartSpecFromTaskNode] = {
+  "WorkflowId" -> Automatic, "RunId" -> None, "Attempt" -> 1};
+
+ClaudeSessionBuildStartSpecFromTaskNode[taskNode_Association,
+    binding_Association:<||>, opts:OptionsPattern[]] :=
+  Module[{profile, role, backend, base, caps, iso, budgetRef, envRef,
+          ckptRef, toolRef, spec},
+    profile = iSesNormalizeSessionProfile[
+      Lookup[taskNode, "SessionProfile", <||>]];
+    role = ClaudeSessionMapRole[Lookup[taskNode, "Role", "solve"]];
+    If[FailureQ[role], Return[role]];
+    backend = Lookup[binding, "Backend",
+      Lookup[profile, "Backend", "MockRuntimeSession"]];
+    If[backend === Automatic, backend = "MockRuntimeSession"];
+
+    (* template を base にして TaskNode から上書き *)
+    base = ClaudeSessionStartSpecTemplate[
+      "Backend" -> backend,
+      "GoalRef" -> Lookup[taskNode, "Goal", "goal-unknown"],
+      "TaskId" -> Lookup[taskNode, "TaskId", Automatic]];
+
+    caps = Lookup[taskNode, "Capabilities", {}];
+    If[!ListQ[caps], caps = {}];
+    iso = Lookup[profile, "IsolationRequired", "CooperativeKernel"];
+
+    (* ref が Association ならインライン採用 *)
+    budgetRef = Lookup[profile, "BudgetGrantRef", None];
+    envRef = Lookup[profile, "EnvironmentSpecRef", None];
+    ckptRef = Lookup[profile, "CheckpointPolicyRef", None];
+    toolRef = Lookup[profile, "ToolPolicyRef", None];
+
+    spec = base;
+    (* Attempt / RunId *)
+    spec["Attempt"] = OptionValue["Attempt"];
+    spec["RunId"] = OptionValue["RunId"];
+    If[OptionValue["WorkflowId"] =!= Automatic,
+      spec["WorkflowId"] = OptionValue["WorkflowId"]];
+    (* Task 上書き *)
+    spec["Task"] = Join[spec[["Task"]], <|
+      "ExpectedArtifactType" -> Lookup[taskNode, "ExpectedArtifactType",
+        spec[["Task", "ExpectedArtifactType"]]],
+      "InputArtifactRefs" -> Replace[Lookup[taskNode, "Inputs", {}],
+        Except[_List] -> {}]|>];
+    (* Access: AllowedCapabilities = TaskNode.Capabilities。
+       ToolPolicyRef が Association なら AccessSpec を上書き (hash 再計算) *)
+    Module[{access = spec[["Access"]], accessSpec},
+      access["AllowedCapabilities"] = caps;
+      If[AssociationQ[toolRef],
+        accessSpec = toolRef;
+        access["AccessSpec"] = accessSpec;
+        access["AccessSpecHash"] =
+          ClaudeSessionAccessSpecHash[accessSpec]];
+      access["Role"] = If[StringQ[role], role, "solve"];
+      spec["Access"] = access];
+    (* Environment: IsolationRequired を反映。ref が Association なら採用 *)
+    Module[{env = If[AssociationQ[envRef], envRef, spec[["Environment"]]]},
+      env["IsolationLevel"] = iso;
+      spec["Environment"] = env];
+    (* BudgetGrant / CheckpointPolicy / ArtifactContract: ref が
+       Association なら採用 (GrantHash 再計算) *)
+    If[AssociationQ[budgetRef],
+      spec["BudgetGrant"] = Append[KeyDrop[budgetRef, "GrantHash"],
+        "GrantHash" -> ClaudeSessionGrantHash[
+          KeyDrop[budgetRef, "GrantHash"]]]];
+    If[AssociationQ[ckptRef], spec["CheckpointPolicy"] = ckptRef];
+    (* ExpectedArtifactType を ArtifactContract にも反映 *)
+    Module[{c = spec[["ArtifactContract"]]},
+      c["ExpectedArtifactType"] = Lookup[taskNode, "ExpectedArtifactType",
+        c[["ExpectedArtifactType"]]];
+      spec["ArtifactContract"] = c];
+    (* TaskNode.Worker (Provider/Model/RuntimeProfile/AdapterFactory) を
+       template 既定 Worker に上書きマージ。real backend は AdapterFactory を
+       必要とする (mock backend は event script なので既定 "mock" のまま可) *)
+    If[AssociationQ[Lookup[taskNode, "Worker", None]],
+      spec["Worker"] = Join[spec[["Worker"]], taskNode[["Worker"]]]];
+    spec["ReusePolicy"] = Lookup[profile, "ReusePolicy", "Never"];
+    spec
+  ];
+
+(* ── compile: TaskNodeSpec → episode net (§20.1) ── *)
+
+Options[ClaudeSessionCompileTaskNode] =
+  Join[Options[ClaudeSessionBuildStartSpecFromTaskNode],
+    {"Binding" -> <||>, "SessionSlots" -> 1, "EnvironmentSlots" -> 1}];
+
+ClaudeSessionCompileTaskNode[taskNode_Association,
+    opts:OptionsPattern[]] :=
+  Module[{wk, role, profile, resolveReq, resolved, backend, binding,
+          spec, made},
+    wk = Lookup[taskNode, "WorkerKind", None];
+    If[wk =!= "RuntimeSession",
+      Return[Failure["NotRuntimeSession",
+        <|"WorkerKind" -> wk,
+          "Note" -> "LLMCall 等は既存 atomic AwaitingLLM 経路が担当"|>]]];
+    role = ClaudeSessionMapRole[Lookup[taskNode, "Role", "solve"]];
+    If[FailureQ[role], Return[role]];
+    If[role === "__SingleCommitter__",
+      Return[Failure["CommitRoleNotEpisode",
+        <|"Note" -> "Commit role は worker session にせず " <>
+          "single committer transition が担当 (§20.2)"|>]]];
+
+    profile = iSesNormalizeSessionProfile[
+      Lookup[taskNode, "SessionProfile", <||>]];
+    binding = OptionValue["Binding"];
+
+    (* backend resolve (binding に明示があれば優先) *)
+    backend = Lookup[binding, "Backend", None];
+    If[!StringQ[backend],
+      resolveReq = <|
+        "PreferredBackend" -> Lookup[profile, "Backend", Automatic],
+        "RequiredCapabilities" ->
+          Lookup[binding, "RequiredCapabilities", {}],
+        "IsolationRequired" -> Lookup[profile, "IsolationRequired",
+          None],
+        "SeatProbe" -> Lookup[binding, "SeatProbe", None]|>;
+      resolved = ClaudeSessionResolveBackend[resolveReq];
+      If[FailureQ[resolved], Return[resolved]];
+      backend = resolved[["Backend"]]];
+
+    spec = ClaudeSessionBuildStartSpecFromTaskNode[taskNode,
+      Append[binding, "Backend" -> backend],
+      "WorkflowId" -> OptionValue["WorkflowId"],
+      "RunId" -> OptionValue["RunId"],
+      "Attempt" -> OptionValue["Attempt"]];
+    If[FailureQ[spec], Return[spec]];
+
+    made = ClaudeCreateRuntimeSessionEpisodeNet[spec,
+      "SessionSlots" -> OptionValue["SessionSlots"],
+      "EnvironmentSlots" -> OptionValue["EnvironmentSlots"]];
+    If[FailureQ[made], Return[made]];
+
+    <|"WorkflowId" -> made[["WorkflowId"]],
+      "EpisodeId" -> made[["EpisodeId"]],
+      "SessionId" -> made[["SessionId"]],
+      "Backend" -> backend,
+      "Role" -> role,
+      "TaskId" -> Lookup[taskNode, "TaskId", None],
+      "StartSpec" -> spec|>
+  ];
+
+(* ── IncF: 実 Conductor 配線 driver (§20 / §11.2 / §11.5) ── *)
+
+$iSesPositiveTerminalControlStates = {"Completed", "Committed", "Closed"};
+$iSesFailureTerminalControlStates  = {"Failed", "StartFailed"};
+
+(* engine step を bounded に drain (Fired が続く限り、上限まで) *)
+iSesDrainWorkflow[wid_String, cap_Integer:48] :=
+  Module[{n = 0},
+    While[n < cap &&
+      Lookup[ClaudeStepWorkflow[wid], "Status", None] === "Fired",
+      n++];
+    n];
+
+Options[ClaudeSessionRunEpisodeToCompletion] = {"MaxPumps" -> 200};
+
+ClaudeSessionRunEpisodeToCompletion[wid_String, episodeId_String,
+    opts:OptionsPattern[]] :=
+  Module[{maxPumps, pumps = 0, p, lastPump = None, wstatus, info, cs,
+          receipt, idle = 0, status},
+    maxPumps = OptionValue["MaxPumps"];
+    (* 最初に既に発火可能な transition を掃く (start 直後の Starting→Running 等) *)
+    iSesDrainWorkflow[wid];
+    While[pumps < maxPumps,
+      wstatus = Lookup[ClaudeWorkflowState[wid], "Status", None];
+      If[wstatus === "Done", Break[]];
+      p = ClaudeRuntimeSessionPumpOnce[wid, episodeId];
+      lastPump = Lookup[p, "Status", None];
+      pumps++;
+      iSesDrainWorkflow[wid];
+      Which[
+        (* event を入れた → 進展あり、idle リセット *)
+        MemberQ[{"Deposited", "Duplicate"}, lastPump],
+          idle = 0,
+        (* 取得すべき event がまだ無い → episode 側の再 poll 待ち。
+           進展が無い状態が続けば打ち切る (mock は即 terminal なので稀) *)
+        lastPump === "NoNewEvents",
+          idle++;
+          If[idle >= 3, Break[]],
+        (* gap / quarantine → 一度は再試行、続けば打ち切る *)
+        MemberQ[{"GapDetected", "BlockedByQuarantinedEvent"}, lastPump],
+          idle++;
+          If[idle >= 5, Break[]],
+        (* lease/backend が無い等の構造的失敗 → 即打ち切る *)
+        True,
+          Break[]
+      ]];
+
+    wstatus = Lookup[ClaudeWorkflowState[wid], "Status", None];
+    info = ClaudeRuntimeSessionEpisodeInfo[wid, episodeId];
+    cs = Lookup[info, "ControlState", None];
+    receipt = Quiet @ Check[
+      ClaudeRuntimeSessionArtifactReceipt[wid, episodeId], None];
+    status = Which[
+      MemberQ[$iSesPositiveTerminalControlStates, cs], "Completed",
+      MemberQ[$iSesFailureTerminalControlStates, cs],  "Failed",
+      wstatus === "Done", "Completed",
+      True, "Incomplete"];
+    <|"Status" -> status,
+      "WorkflowStatus" -> wstatus,
+      "ControlState" -> cs,
+      "Pumps" -> pumps,
+      "LastPump" -> lastPump,
+      "Receipt" -> receipt|>
+  ];
+
+Options[ClaudeSessionConductTaskNode] =
+  Join[Options[ClaudeSessionCompileTaskNode],
+    Options[ClaudeSessionRunEpisodeToCompletion]];
+
+ClaudeSessionConductTaskNode[taskNode_Association,
+    opts:OptionsPattern[]] :=
+  Module[{compiled, wid, epi, started, run},
+    compiled = ClaudeSessionCompileTaskNode[taskNode,
+      FilterRules[{opts}, Options[ClaudeSessionCompileTaskNode]]];
+    If[FailureQ[compiled], Return[compiled]];
+    wid = compiled[["WorkflowId"]]; epi = compiled[["EpisodeId"]];
+    started = ClaudeStartRuntimeSessionEpisode[wid];
+    If[AssociationQ[started] &&
+       MemberQ[{"Failed", "StartFailed"}, Lookup[started, "Status", ""]],
+      Return[<|"Status" -> "StartFailed",
+        "WorkflowId" -> wid, "EpisodeId" -> epi,
+        "SessionId" -> compiled[["SessionId"]],
+        "Backend" -> compiled[["Backend"]], "Role" -> compiled[["Role"]],
+        "ControlState" -> None, "Receipt" -> None,
+        "Run" -> <|"StartResult" -> started|>|>]];
+    run = ClaudeSessionRunEpisodeToCompletion[wid, epi,
+      FilterRules[{opts}, Options[ClaudeSessionRunEpisodeToCompletion]]];
+    <|"Status" -> Lookup[run, "Status", "Incomplete"],
+      "WorkflowId" -> wid, "EpisodeId" -> epi,
+      "SessionId" -> compiled[["SessionId"]],
+      "Backend" -> compiled[["Backend"]], "Role" -> compiled[["Role"]],
+      "ControlState" -> Lookup[run, "ControlState", None],
+      "Receipt" -> Lookup[run, "Receipt", None],
+      "Run" -> run|>
+  ];
+
+(* ── IncH: 複数 TaskNode の DAG 実行 (Conductor plan runner) ── *)
+
+(* 自己完結 topological sort (DependsOn を尊重、循環は $Failed) *)
+iSesTopoSortNodes[nodes_List] :=
+  Module[{remaining = nodes, sorted = {}, doneIds = {}, ready},
+    While[Length[remaining] > 0,
+      ready = Select[remaining,
+        Function[t, AllTrue[Lookup[t, "DependsOn", {}],
+          MemberQ[doneIds, #] &]]];
+      If[ready === {}, Return[$Failed]];   (* 循環依存 *)
+      sorted = Join[sorted, ready];
+      doneIds = Join[doneIds, Map[Lookup[#, "TaskId", "?"] &, ready]];
+      remaining = Complement[remaining, ready]];
+    sorted
+  ];
+
+Options[ClaudeSessionConductPlan] =
+  Join[Options[ClaudeSessionConductTaskNode], {"Parallel" -> False}];
+
+ClaudeSessionConductPlan[taskNodes_List, opts:OptionsPattern[]] :=
+  Module[{ordered, results = <||>, receipts = <||>, order, failedIds = {},
+          overall = "Completed"},
+    ordered = iSesTopoSortNodes[taskNodes];
+    If[ordered === $Failed,
+      Return[<|"Status" -> "CyclicDependency",
+        "Order" -> None, "Nodes" -> <||>, "Receipts" -> <||>|>]];
+    order = Map[Lookup[#, "TaskId", "?"] &, ordered];
+    Scan[
+      Function[node,
+        Module[{tid, deps, blockedBy, r},
+          tid = Lookup[node, "TaskId", "?"];
+          deps = Lookup[node, "DependsOn", {}];
+          blockedBy = Intersection[deps, failedIds];
+          If[blockedBy =!= {},
+            (* 依存が失敗 → skip *)
+            results[tid] = <|"Status" -> "Skipped",
+              "BlockedBy" -> blockedBy|>;
+            AppendTo[failedIds, tid],
+            (* 依存 receipt を DepReceipts として供給 (下流が参照可能に) *)
+            r = ClaudeSessionConductTaskNode[
+              Append[node,
+                "DepReceipts" ->
+                  Association[Map[# -> Lookup[receipts, #, None] &, deps]]],
+              FilterRules[{opts},
+                Options[ClaudeSessionConductTaskNode]]];
+            Which[
+              FailureQ[r],
+                results[tid] = <|"Status" -> "Failed",
+                  "Failure" -> r[[1]]|>;
+                AppendTo[failedIds, tid],
+              Lookup[r, "Status", ""] === "Completed",
+                results[tid] = r;
+                receipts[tid] = Lookup[r, "Receipt", None],
+              True,
+                results[tid] = r;
+                AppendTo[failedIds, tid]]
+          ]
+        ]],
+      ordered];
+    If[failedIds =!= {}, overall = "Partial"];
+    If[AllTrue[Values[results],
+        Lookup[#, "Status", ""] === "Skipped" &] && results =!= <||>,
+      overall = "Failed"];
+    <|"Status" -> overall,
+      "Order" -> order,
+      "Nodes" -> results,
+      "Receipts" -> receipts,
+      "FailedTaskIds" -> failedIds|>
+  ];
+
+(* ── IncI: ReusePolicy 自動発火 chain runner (backend 契約経由) ── *)
+
+iSesTrustKeyOf[spec_Association] :=
+  StringJoin[
+    ToString @ Lookup[spec, "WorkflowId", "?"], "|",
+    ToString @ Lookup[Lookup[spec, "Access", <||>], "AccessSpecHash", "?"],
+    "|",
+    ToString @ Lookup[Lookup[spec, "Access", <||>],
+      "PolicySnapshotHash", "?"]];
+
+(* backend 契約で 1 episode を終端まで駆動 (net を張らず PollEvents で harvest)。
+   Compute 同期 backend は start 時点で terminal event が用意される。 *)
+iSesDriveEpisodeViaBackend[backend_Association, handle_, att_Integer,
+    maxPolls_Integer:50] :=
+  Module[{cursor = 0, i, res, evs, terminal = None, all = {}},
+    Do[
+      res = Quiet @ Check[
+        backend[["PollEvents"]][handle,
+          <|"Attempt" -> att, "EventSeq" -> cursor|>],
+        <|"Status" -> "Unavailable"|>];
+      evs = Lookup[res, "Events", {}];
+      If[evs =!= {},
+        all = Join[all, evs];
+        cursor = Max[cursor,
+          Max[Map[Lookup[#, "EventSeq", 0] &, evs]]];
+        terminal = SelectFirst[evs,
+          MemberQ[{"Completed", "Failed", "Cancelled", "EnvironmentLost"},
+            Lookup[#, "Type", None]] &, terminal]];
+      If[terminal =!= None, Break[]],
+      {i, maxPolls}];
+    <|"Terminal" -> terminal, "Events" -> all|>
+  ];
+
+Options[ClaudeSessionConductReuseChain] =
+  Options[ClaudeSessionBuildStartSpecFromTaskNode];
+
+ClaudeSessionConductReuseChain[taskNodes_List, opts:OptionsPattern[]] :=
+  Module[{pool = <||>, records = {}, reuseCount = 0, physical = {}},
+    Scan[
+      Function[node,
+        Module[{rec},
+          rec = Catch[
+            Module[{tid, backendName, backend, spec, tkey, reusePol,
+                    prior, started, reused = False, handle, driven, insp,
+                    role},
+              tid = Lookup[node, "TaskId", "?"];
+              role = ClaudeSessionMapRole[Lookup[node, "Role", "solve"]];
+              If[FailureQ[role],
+                Throw[<|"TaskId" -> tid, "Status" -> "BadRole"|>,
+                  "sesChainStep"]];
+              (* backend resolve (profile 明示優先) *)
+              backendName = Lookup[
+                iSesNormalizeSessionProfile[
+                  Lookup[node, "SessionProfile", <||>]],
+                "Backend", Automatic];
+              If[!StringQ[backendName],
+                Module[{rr = ClaudeSessionResolveBackend[<||>]},
+                  backendName = If[FailureQ[rr], None,
+                    rr[["Backend"]]]]];
+              backend = Lookup[$iRuntimeSessionBackends, backendName,
+                Missing["NoBackend"]];
+              If[MissingQ[backend],
+                Throw[<|"TaskId" -> tid, "Status" -> "NoBackend",
+                  "Backend" -> backendName|>, "sesChainStep"]];
+              spec = ClaudeSessionBuildStartSpecFromTaskNode[node,
+                <|"Backend" -> backendName|>,
+                FilterRules[{opts},
+                  Options[ClaudeSessionBuildStartSpecFromTaskNode]]];
+              If[FailureQ[spec],
+                Throw[<|"TaskId" -> tid,
+                  "Status" -> "BuildSpecFailed"|>, "sesChainStep"]];
+              tkey = iSesTrustKeyOf[spec];
+              reusePol = Lookup[spec, "ReusePolicy", "Never"];
+              prior = Lookup[pool, tkey, None];
+              (* reuse 発火判断: policy 許可 + 同 trust の prior + backend 対応 *)
+              If[reusePol === "SameWorkflowSameTrust" && StringQ[prior] &&
+                 KeyExistsQ[backend, "ReuseEpisode"],
+                started = backend[["ReuseEpisode"]][prior, spec];
+                If[Lookup[started, "Status", None] === "Started",
+                  reused = True; reuseCount++,
+                  (* reuse 不可 → fresh *)
+                  started = backend[["StartEpisode"]][spec]],
+                started = backend[["StartEpisode"]][spec]];
+              If[!MemberQ[{"Started", "AlreadyStarted"},
+                   Lookup[started, "Status", None]],
+                Throw[<|"TaskId" -> tid, "Status" -> "StartFailed",
+                  "Detail" -> started|>, "sesChainStep"]];
+              handle = Lookup[started, "HandleRef", None];
+              driven = iSesDriveEpisodeViaBackend[backend, handle,
+                Lookup[spec, "Attempt", 1]];
+              insp = Quiet @ Check[backend[["Inspect"]][handle], <||>];
+              (* reuse 可能な session は pool に維持 *)
+              If[reusePol === "SameWorkflowSameTrust" && StringQ[handle],
+                pool[tkey] = handle];
+              If[StringQ[handle], AppendTo[physical, handle]];
+              <|"TaskId" -> tid, "Status" -> "Ran",
+                "HandleRef" -> handle, "Reused" -> reused,
+                "TrustKey" -> tkey,
+                "EpisodeCount" -> Lookup[insp, "EpisodeCount", None],
+                "TerminalType" ->
+                  Lookup[driven[["Terminal"]] /. None -> <||>,
+                    "Type", None]|>
+            ], "sesChainStep"];
+          AppendTo[records, rec]
+        ]],
+      taskNodes];
+    <|"Status" -> "Completed",
+      "Nodes" -> records,
+      "PhysicalSessions" -> DeleteDuplicates[physical],
+      "ReuseCount" -> reuseCount|>
+  ];
+
 (* ── engine seam への注入 (§10.1 / §10.5 / §10.4 / §15.2) ── *)
 
 ClaudeOrchestrator`Workflow`$ClaudeRuntimeSessionExecutor =
@@ -3309,4 +3894,9 @@ Print["
   ClaudeRuntimeSessionCancel / ProvideObservation
   ClaudeRuntimeSessionInjectSyntheticTerminal  → watchdog 合成 terminal
   ClaudeRuntimeSessionEpisodeInfo / Episodes / ActiveEpisodes / Quarantine
+  -- Inc8/IncC --
+  ClaudeSessionValidateArtifactCandidate       → §17.1 artifact 検証
+  ClaudeRuntimeSessionArtifactReceipt[wid, epi] → commit receipt
+  ClaudeSessionCompileTaskNode[taskNode]       → §20.1 TaskNode→episode net
+  ClaudeSessionMapRole / ResolveBackend / BuildStartSpecFromTaskNode
 "];
