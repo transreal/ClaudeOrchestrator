@@ -2,7 +2,7 @@
 
 Mathematica / Wolfram Language 向けマルチエージェント・オーケストレーション層パッケージ
 
-[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位でタスク分解・並列ワーカー配車・アーティファクト収集・統合・single-committer コミットを提供します。タスク分解の結果は **ペトリネット (Workflow Net)** として表現・実行でき、自然文プロンプトから直接ペトリネットを構築して可視化・追跡する拡張、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張を同梱します。
+[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位でタスク分解・並列ワーカー配車・アーティファクト収集・統合・single-committer コミットを提供します。タスク分解の結果は **ペトリネット (Workflow Net)** として表現・実行でき、自然文プロンプトから直接ペトリネットを構築して可視化・追跡する拡張、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張、そして Workflow エンジン上に RuntimeSession の episode ライフサイクルを実装する **Session** 拡張を同梱します。
 
 > このリポジトリのドキュメントは、概要を示す **本 README**、詳細な使い方の **`user_manual.md`**、全関数仕様の **`api*.md`**、動くコード例の **`example.md`** に役割分担しています。本 README は全体像と最小の動作確認までを扱い、各機能の網羅的な解説や全 API は `user_manual.md` と `api*.md` を参照してください。
 
@@ -30,7 +30,8 @@ NBAccess → claudecode_base → ClaudeRuntime (単一エージェント実行�
                             ClaudeOrchestrator (本パッケージ)
                               ├─ Workflow        (multi-token Petri net エンジン)
                               ├─ Observability   (LLM/Handler 観測・Tooltip 可視化)
-                              └─ PromptWorkflow   (ClaudeEval 複雑プロンプト → workflow)
+                              ├─ PromptWorkflow   (ClaudeEval 複雑プロンプト → workflow)
+                              └─ Session          (RuntimeSession episode 層、任意ロード)
                                    ↑
                               claudecode
 ```
@@ -65,13 +66,15 @@ NBAccess → claudecode_base → ClaudeRuntime (単一エージェント実行�
 
 自動ロードは存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。手動ロード防止フラグ (例: `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True`) で個別に無効化できます。
 
+**任意ロードの追加サブモジュール** — 上記 3 ファイルとは別に、[`ClaudeOrchestrator_session.wl`](https://github.com/transreal/ClaudeOrchestrator_session) (`ClaudeOrchestrator`Session`` 名前空間、RuntimeSession episode 層) が用意されていますが、自動ロード対象には含まれず利用する場合は別途 `Get` が必要です。`ClaudeOrchestrator_workflow` にのみ依存し (ロード順は workflow → session)、`ClaudeRuntime` には依存しません。全 API は `api_session.md` を参照。また `ClaudeOrchestrator_stategraph` は deprecated であり既定では読み込まれません (`$ClaudeOrchestratorEnableStateGraphCompat = True` でオプトイン可)。
+
 なお、自然文プロンプトから WorkflowNet を生成するサンプル兼ライブラリ `docs/examples/petri_from_prompt.wl` がリポジトリに同梱されていますが、**これは example 段階の参考実装で本体には統合されておらず、自動ロードもされません**。試す場合は本体ロード後に別途 `Get` してください。
 
-## 3 つの拡張の概要
+## 4 つの拡張の概要
 
 ### ペトリネット拡張 (Workflow)
 
-DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** の Petri net 用語のまま記述・実行できる multi-token Petri net エンジンです。`WorkflowToken` / `WorkflowPlace` / `WorkflowTransition` / `WorkflowNet` で net を組み、`ClaudeCreateWorkflowNet` で登録、`ClaudeSubmitToken` で投入、`ClaudeRunWorkflow` で実行します(`"Async" -> True` で非同期実行)。状態参照 (`ClaudeWorkflowState` 等)、ライフサイクル制御 (`ClaudePause/Resume/CancelWorkflow`)、Completion Hook、Snapshot / Restore を備えます。全 API は `api_workflow.md`、使い方は `user_manual.md` のペトリネット拡張節を参照。
+DAG に閉じない並行・同期・選択を含むワークフローを **place / transition / arc / token / marking** の Petri net 用語のまま記述・実行できる multi-token Petri net エンジンです。`WorkflowToken` / `WorkflowPlace` / `WorkflowTransition` / `WorkflowNet` で net を組み、`ClaudeCreateWorkflowNet` で登録、`ClaudeSubmitToken` で投入、`ClaudeRunWorkflow` で実行します(`"Async" -> True` で非同期実行)。状態参照 (`ClaudeWorkflowState` 等)、ライフサイクル制御 (`ClaudePause/Resume/CancelWorkflow`)、Completion Hook、Snapshot / Restore を備えます。Executor には `"RuntimeSession"` も指定でき、`$ClaudeRuntimeSessionExecutor` seam 経由で Session 拡張 (下記) と連携します。外部完了待ち中の Stuck 誤判定を避けるための `ClaudeWorkflowWaitingExternalQ` / `$ClaudeWorkflowExternalPendingQ` seam、`WorkflowNet` の `DefaultAwaitingLLMTimeout` オプションも備えます。全 API は `api_workflow.md`、使い方は `user_manual.md` のペトリネット拡張節を参照。
 
 ### 観測 (Observability)
 
@@ -80,6 +83,10 @@ LLM 呼び出しログ (`ClaudeQueryBgLogged` / `showLLMCallLog`)、handler 観�
 ### PromptWorkflow
 
 `ClaudeEval` に与えられた複雑プロンプト(複数サブタスクや順序制御を含むもの)を WorkflowNet として再実行する経路です。`ClaudeWorkflowComplexPromptQ` で複雑性を決定的に判定し(秘密プロンプトを外部送信しない)、`ClaudeProposeWorkflowNetFromPrompt` で提案、安全パーサ `ClaudeParseWorkflowNetCode`(評価せず静的検査 → HoldComplete パース → ホワイトリスト評価)を通します。新規ワークフローは常に `NeedsApproval` で停止し、自動実行はしません。全 API は `api_promptworkflow.md`。
+
+### RuntimeSession エピソード層 (Session)
+
+Workflow エンジン上に実装された RuntimeSession episode 層 (`ClaudeOrchestrator`Session`` 名前空間) です。schema validator (fail-closed) と canonical hash による SessionControlEvent / SessionCommand / BudgetGrant / AccessSpec の整合性検証、episode supervisor net の構築・駆動 (`ClaudeCreateRuntimeSessionEpisodeNet` / `ClaudeStartRuntimeSessionEpisode`)、durable inbox/outbox スプールと recovery scan、テスト用の決定論的 `ClaudeMockRuntimeSessionBackendSpec` バックエンド、multi-agent TaskSpec を conductor role へ正規化し episode 終端まで DAG プランを駆動するドライバなどを備えます。3 つの自動ロード拡張とは異なり任意ロードのモジュールです。全 API は `api_session.md`。
 
 ## 動作環境
 
@@ -104,7 +111,7 @@ GitHubInstallPackage["ClaudeOrchestrator",
   "https://github.com/transreal/ClaudeOrchestrator"]
 ```
 
-   github パッケージを使わない場合は `git clone https://github.com/transreal/ClaudeOrchestrator`。依存パッケージ([ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) / [claudecode](https://github.com/transreal/claudecode))も同じ `$packageDirectory` 直下に置きます。外部サブモジュールも同梱・自動ロードされます。
+   github パッケージを使わない場合は `git clone https://github.com/transreal/ClaudeOrchestrator`。依存パッケージ([ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) / [claudecode](https://github.com/transreal/claudecode))も同じ `$packageDirectory` 直下に置きます。自動ロードされる外部サブモジュールも同梱されます。Session 拡張([`ClaudeOrchestrator_session`](https://github.com/transreal/ClaudeOrchestrator_session))を使う場合は同じディレクトリに配置した上で別途 `Get` してください。
 
 3. **`$Path` の設定** — すべての `.wl` を `$packageDirectory` 直下に置き、サブディレクトリは `$Path` に追加しないでください。
 
@@ -152,18 +159,36 @@ Get[FileNameJoin[{Quiet @ Check[NotebookDirectory[], $packageDirectory],
 | ファイル | 内容 |
 |----------|------|
 | `README.md` | 本ファイル。全体像・設計思想・インストール・最小動作確認 |
-| `user_manual.md` | ユーザーマニュアル。各フェーズ・非同期 API・ペトリネット 3 拡張の詳細な使い方 |
+| `user_manual.md` | ユーザーマニュアル。各フェーズ・非同期 API・ペトリネット拡張の詳細な使い方 |
 | `api.md` | 本体の API リファレンス(全関数・データ型・グローバル変数) |
 | `api_workflow.md` | Workflow サブモジュールの API リファレンス |
 | `api_observability.md` | Observability サブモジュールの API リファレンス |
 | `api_promptworkflow.md` | PromptWorkflow 拡張の API リファレンス |
+| `api_session.md` | Session (RuntimeSession episode 層) サブモジュールの API リファレンス |
 | `setup.md` | インストール手順書(動作要件・環境構築・トラブルシューティング) |
 | `example.md` | 使用例集(バージョン確認からペトリネット拡張・バッチ処理まで) |
 | `docs/examples/petri_from_prompt.wl` | 自然文 → ペトリネット → 実行のエンドツーエンドサンプル |
 
+## 使用例・デモ
+
+バージョン確認からペトリネットの生成・可視化・観測・実行、DAG オーケストレーションの Plan → Spawn → Reduce → Commit までを一連の流れで体験できる例は `example.md` にまとまっています。
+
+- **Part A. ペトリネット (Workflow / Observability)** — `proposePetriNet` で自然文の目標から WorkflowNet コードを生成し、`plotPetriNet` / `plotPetriNetDetail` で可視化、`instrumentNetForObservation` で観測を装着、`ClaudeRunWorkflow` で実行、`traceTransitions` / `showLLMCallLog` でトレースする一連のデモ。
+- **Part B. オーケストレーション (Plan → Spawn → Reduce → Commit)** — `ClaudeRunOrchestration` / `ClaudeRunOrchestrationAsync` を中心とした DAG ベースのオーケストレーター本体 API の使用例。
+
+同梱サンプル `docs/examples/petri_from_prompt.wl` は、この Part A で使う `proposePetriNet` / `reviewPetriProposal` / `parsePetriCode` を提供する example 段階のライブラリで、本体ロード後に個別に `Get` して試せます。
+
+---
+
 ## 免責事項
 
-本ソフトウェアは "as is"（現状有姿）で提供されており、明示・黙示を問わずいかなる保証もありません。本ソフトウェアの使用または使用不能から生じるいかなる損害についても責任を負いません。今後の動作保証のための更新が行われるとは限りません。本ソフトウェアとドキュメントはほぼすべてが生成AIによって生成されたものです。Windows 11上での実行を想定しており、MacOS, LinuxのMathematicaでの動作検証は一切していません(生成AIの処理で対応可能と想定されます)。
+本ソフトウェアは "as is"（現状有姿）で提供されており、明示・黙示を問わずいかなる保証もありません。
+本ソフトウェアの使用または使用不能から生じるいかなる損害についても責任を負いません。
+今後の動作保証のための更新が行われるとは限りません。
+本ソフトウェアとドキュメントはほぼすべてが生成AIによって生成されたものです。
+Windows 11上での実行を想定しており、MacOS, LinuxのMathematicaでの動作検証は一切していません(生成AIの処理で対応可能と想定されます)。
+
+---
 
 ## ライセンス
 
@@ -177,3 +202,4 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

@@ -11,7 +11,12 @@ macOS/Linux ではパス区切りやシェルコマンドを適宜読み替え�
 | Mathematica / Wolfram Engine | 13.3 以上 |
 | Claude CLI (`claude.cmd`) | 最新版（Anthropic 公式） |
 | ClaudeRuntime パッケージ | 同梱または別途取得 |
-| ClaudeCode パッケージ | 同梱または別途取得 |
+| ClaudeCode パッケージ | 同梱または別途取得（任意・下記参照） |
+
+`ClaudeCode` は Markdown → セル変換（`MarkdownToCells`）を提供しますが、未ロードの場合でも
+ClaudeOrchestrator はローカルのフォールバック実装で同等の変換（見出し・コードブロック・
+セルスタイルの整形を含む）を行うため、commit safety 系の機能は `ClaudeCode` なしでも動作します。
+ただし `ClaudeCode` の高機能な変換ロジックを使うには、依存パッケージとして導入してください。
 
 ---
 

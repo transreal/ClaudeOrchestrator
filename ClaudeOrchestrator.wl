@@ -9721,13 +9721,41 @@ iCellsFromBulletList[other_] :=
  *     Input セルとして扱う (Code キーから来た場合の用途)。
  *)
 
-ClearAll[iParseMarkdownToCells];
+ClearAll[iParseMarkdownToCells, iParseMarkdownToCellsLocal];
 
 Options[iParseMarkdownToCells] = {
   "DefaultMode" -> "Para"
 };
 
-iParseMarkdownToCells[text_String, opts:OptionsPattern[]] :=
+(* 2026-07-15: the canonical markdown -> cells parser now lives in
+   claudecode.wl (ClaudeCode`MarkdownToCells). When the claudecode
+   umbrella is loaded (always true on the FE commit paths) delegate to
+   it, mapping this parser's historical contract: # -> Section headings,
+   bare ``` -> Input, no TeX-math cells, iSanitizeCellStyle post-pass.
+   The full local implementation below is kept only as a headless
+   fallback so commit safety keeps working without claudecode. *)
+iParseMarkdownToCells[text_String, opts:OptionsPattern[]] := Module[{cells},
+  If[Length[Names["ClaudeCode`MarkdownToCells"]] > 0,
+    cells = Quiet @ Check[
+      ClaudeCode`MarkdownToCells[text,
+        "HeadingStyles" -> {"Section", "Subsection", "Subsubsection", "Subsubsubsection"},
+        "DefaultMode" -> OptionValue["DefaultMode"],
+        "TeXMath" -> False,
+        "UntaggedCodeStyle" -> "Input"],
+      $Failed];
+    If[ListQ[cells],
+      If[Length[DownValues[ClaudeOrchestrator`Private`iSanitizeCellStyle]] > 0,
+        cells = Replace[cells,
+          Cell[c_, s_String, r___] :>
+            Cell[c, ClaudeOrchestrator`Private`iSanitizeCellStyle[s], r], {1}]];
+      Return[cells, Module]]];
+  iParseMarkdownToCellsLocal[text, opts]];
+
+Options[iParseMarkdownToCellsLocal] = {
+  "DefaultMode" -> "Para"
+};
+
+iParseMarkdownToCellsLocal[text_String, opts:OptionsPattern[]] :=
   Module[{lines, cells = {}, current = {}, codeLang = "",
           inCodeBlock = False, defaultMode, hasAnyCodeBlock,
           flushPara, flushCode, makeCodeCell, sanitizeStyle,

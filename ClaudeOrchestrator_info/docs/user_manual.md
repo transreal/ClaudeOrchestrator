@@ -111,7 +111,7 @@ ClaudePlanTasks[input, opts]
 
 | オプション | 既定値 | 説明 |
 |---|---|---|
-| `Planner` | `Automatic` | プランナー関数（省略時はモック） |
+| `Planner` | `Automatic` | プランナー関数(省略時はモック) |
 | `MaxTasks` | `10` | 生成するタスクの最大数 |
 
 **戻り値の構造:**
@@ -172,7 +172,7 @@ If[validation["Valid"],
 
 ### ClaudeSpawnWorkers
 
-TaskSpec の依存順に従ってワーカー runtime を起動し、各タスクのアーティファクトを収集します。現バージョンは順次実行（`MaxParallelism -> 1`）です。
+TaskSpec の依存順に従ってワーカー runtime を起動し、各タスクのアーティファクトを収集します。現バージョンは順次実行(`MaxParallelism -> 1`)です。
 
 **シグネチャ:**
 ```wolfram
@@ -182,7 +182,7 @@ ClaudeSpawnWorkers[tasks, opts]
 | オプション | 既定値 | 説明 |
 |---|---|---|
 | `WorkerAdapterBuilder` | `Automatic` | `(Role, TaskSpec) -> adapter` を返す関数 |
-| `MaxParallelism` | `1` | 並列数（Stage 2 以降で拡張予定） |
+| `MaxParallelism` | `1` | 並列数(Stage 2 以降で拡張予定) |
 
 **戻り値:**
 ```wolfram
@@ -437,7 +437,7 @@ ClaudeOrchestrationResult[jobId]
 
 ### ClaudeOrchestrationWait
 
-ジョブ完了まで待機します（テスト・スクリプト専用。対話セルでは使用を避けてください）。
+ジョブ完了まで待機します(テスト・スクリプト専用。対話セルでは使用を避けてください)。
 
 **シグネチャ:**
 ```wolfram
@@ -676,7 +676,7 @@ ClaudeWorkflowHandlerAllowlist[]
 
 ### ClaudeContinueBatch
 
-単一の runtime セッションを維持したまま、複数の prompt を `ClaudeContinueTurn` で順次投入します。ノートブック共有問題を回避する現実解です（spec §17.1）。
+単一の runtime セッションを維持したまま、複数の prompt を `ClaudeContinueTurn` で順次投入します。ノートブック共有問題を回避する現実解です(spec §17.1)。
 
 **シグネチャ:**
 ```wolfram
@@ -920,7 +920,7 @@ PromptWorkflow 拡張は、`ClaudeEval` に与えられた **複雑なプロン�
 ClaudeWorkflowComplexPromptQ["文書を要約し、要点を抽出し、レポートにまとめる"]
 (* → <|"Decision" -> "WorkflowCandidate", "Reason" -> ..., "Signals" -> ...|> *)
 
-ClaudeWorkflowComplexPromptQ["今日の天気は？"]
+ClaudeWorkflowComplexPromptQ["今日の天気は?"]
 (* → <|"Decision" -> "NotComplex", ...|> *)
 ```
 
@@ -1179,7 +1179,7 @@ Auto モードで「短い factual query は Orchestrator を通さず Single �
 | 変数 | 用途 |
 |---|---|
 | `$ClaudeEvalAutoSkipKeywords` | パッケージ名・関数名・拡張子など、出現するだけで Single パスに渡したいキーワード |
-| `$ClaudeEvalAutoFactualEndings` | 「を調べて」「を教えて」「check if」「compare」など、調査・質問型を示す語尾／フレーズ |
+| `$ClaudeEvalAutoFactualEndings` | 「を調べて」「を教えて」「check if」「compare」など、調査・質問型を示す語尾/フレーズ |
 | `$ClaudeEvalAutoComplexMarkers` | 「スライド」「レポート」「プレゼン」「複数の成果物」など、必ず Orchestrator 経由にしたい複雑タスクのマーカー |
 
 判定の概要:
@@ -1230,3 +1230,4 @@ AppendTo[$ClaudeEvalAutoComplexMarkers, "10ページ"];
 ```wolfram
 $ClaudeOrchestratorRoles
 (* {"Explore", "Plan", "Draft", "Verify", "Reduce", "Commit"} *)
+```
