@@ -50,7 +50,30 @@ GitHubInstallPackage["ClaudeOrchestrator",
   "https://github.com/transreal/ClaudeOrchestrator"]
 ```
 
-サブモジュール（PromptWorkflow・Observability・Workflow）は PHASE 36（2026-04-28）以降、本体 `ClaudeOrchestrator.wl` に統合されています。別途ファイルを用意する必要はありません。
+サブモジュール（Directives・Routing・CommitSafety・A4Stub）は PHASE 36（2026-04-28）以降、本体 `ClaudeOrchestrator.wl` に統合されています。別途ファイルを用意する必要はありません。
+
+一方、以下のコンパニオンファイルは本体とは別ファイルのまま、同じディレクトリ（`$packageDirectory`）から**自動ロード**されます（`ClaudeOrchestrator.wl` 末尾の自動ロード機構）。いずれも欠けていても本体は壊れず、該当機能だけが無効化されて読み込みがスキップされます。
+
+- `ClaudeOrchestrator_workflow.wl`（`ClaudeOrchestrator`Workflow` — Petri net workflow engine）
+- `ClaudeOrchestrator_observability.wl`（LLM 呼び出しログ / workflow trace 可視化）
+- `ClaudeOrchestrator_promptworkflow.wl`（LLM 提案 WorkflowNet コードの安全パーサ）
+- `ClaudeOrchestrator_session.wl`（`ClaudeOrchestrator`Session` — RuntimeSession episode 層）
+- `ClaudeOrchestrator_turnwiki.wl`（`ClaudeOrchestrator`TurnWiki` — WikiSkill 型 LLM turn 自己改善ループ、2026-09-01 追加）
+
+これらは個別リポジトリとしても取得できます。
+
+```mathematica
+GitHubInstallPackage["ClaudeOrchestrator_workflow",
+  "https://github.com/transreal/ClaudeOrchestrator_workflow"]
+GitHubInstallPackage["ClaudeOrchestrator_observability",
+  "https://github.com/transreal/ClaudeOrchestrator_observability"]
+GitHubInstallPackage["ClaudeOrchestrator_promptworkflow",
+  "https://github.com/transreal/ClaudeOrchestrator_promptworkflow"]
+GitHubInstallPackage["ClaudeOrchestrator_session",
+  "https://github.com/transreal/ClaudeOrchestrator_session"]
+GitHubInstallPackage["ClaudeOrchestrator_turnwiki",
+  "https://github.com/transreal/ClaudeOrchestrator_turnwiki"]
+```
 
 依存パッケージも同様にインストールできます。
 
@@ -75,11 +98,16 @@ github パッケージを使わない場合は、`git clone` で取得します�
 git clone https://github.com/transreal/ClaudeOrchestrator
 ```
 
-いずれの場合も、依存パッケージも同じディレクトリ（`$packageDirectory`）に配置します。
+いずれの場合も、依存パッケージおよび上記コンパニオンファイルも同じディレクトリ（`$packageDirectory`）に配置します。
 
 - [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime)
 - [claudecode](https://github.com/transreal/claudecode)
 - [github](https://github.com/transreal/github)（インストールの簡略化に使用）
+- [ClaudeOrchestrator_workflow](https://github.com/transreal/ClaudeOrchestrator_workflow)
+- [ClaudeOrchestrator_observability](https://github.com/transreal/ClaudeOrchestrator_observability)
+- [ClaudeOrchestrator_promptworkflow](https://github.com/transreal/ClaudeOrchestrator_promptworkflow)
+- [ClaudeOrchestrator_session](https://github.com/transreal/ClaudeOrchestrator_session)
+- [ClaudeOrchestrator_turnwiki](https://github.com/transreal/ClaudeOrchestrator_turnwiki)
 
 ---
 
@@ -115,6 +143,8 @@ Block[{$CharacterEncoding = "UTF-8"},
   Needs["ClaudeCode`",         "claudecode.wl"];
   Needs["ClaudeOrchestrator`", "ClaudeOrchestrator.wl"]];
 ```
+
+`ClaudeOrchestrator.wl` の読み込み中に、上記コンパニオンファイル（`ClaudeOrchestrator_workflow.wl` / `_observability.wl` / `_promptworkflow.wl` / `_session.wl` / `_turnwiki.wl`）が `$packageDirectory` 内に存在すれば自動的に `Get` されます。各ファイルはロード完了を示す実ロードマーカー（例: `ClaudeOrchestrator`Workflow`$WorkflowVersion`、`ClaudeOrchestrator`TurnWiki`$TurnWikiVersion`）を設定しており、これらの有無で成否が判定されます（シンボルの単純な参照だけでは判定しません）。ファイルが見つからない、または読み込みに失敗した場合は警告メッセージが表示されますが、`ClaudeOrchestrator` 本体のロードは継続され、他の機能には影響しません。
 
 ---
 
@@ -184,6 +214,14 @@ result["Status"]
 (* "Complete" または "Partial" が返れば成功 *)
 ```
 
+### コンパニオンファイルのロード確認
+
+```mathematica
+ValueQ[ClaudeOrchestrator`Workflow`$WorkflowVersion]
+ValueQ[ClaudeOrchestrator`TurnWiki`$TurnWikiVersion]
+(* いずれも True なら該当コンパニオンファイルは正常にロードされている *)
+```
+
 ---
 
 ## トラブルシューティング
@@ -194,3 +232,4 @@ result["Status"]
 | `claude.cmd` が見つからない | PATH を確認し、`$ClaudeOrchestratorCLICommand` にフルパスを指定 |
 | 文字化け | `Block[{$CharacterEncoding="UTF-8"}, ...]` で読み込んでいるか確認 |
 | `Needs` でパッケージが見つからない | `$Path` に `$packageDirectory` が含まれているか確認 |
+| ロード時に「〜の自動ロードに失敗 (skip)」と表示される | 該当のコンパニオンファイル（例: `ClaudeOrchestrator_turnwiki.wl`）が `$packageDirectory` 直下に無い。本体は壊れないが該当機能は使えないため、必要なら個別に取得して配置する |

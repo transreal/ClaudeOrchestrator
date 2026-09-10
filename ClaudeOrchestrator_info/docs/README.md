@@ -2,7 +2,7 @@
 
 Mathematica / Wolfram Language 向けマルチエージェント・オーケストレーション層パッケージ
 
-[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位でタスク分解・並列ワーカー配車・アーティファクト収集・統合・single-committer コミットを提供します。タスク分解の結果は **ペトリネット (Workflow Net)** として表現・実行でき、自然文プロンプトから直接ペトリネットを構築して可視化・追跡する拡張、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張、そして Workflow エンジン上に RuntimeSession の episode ライフサイクルを実装する **Session** 拡張を同梱します。
+[ClaudeRuntime](https://github.com/transreal/ClaudeRuntime) を「単一エージェント実行核」として保持したまま、その上位でタスク分解・並列ワーカー配車・アーティファクト収集・統合・single-committer コミットを提供します。タスク分解の結果は **ペトリネット (Workflow Net)** として表現・実行でき、自然文プロンプトから直接ペトリネットを構築して可視化・追跡する拡張、`ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する **PromptWorkflow** 拡張、LLM turn の自己改善ループを回す **TurnWiki** 拡張、そして Workflow エンジン上に RuntimeSession の episode ライフサイクルを実装する **Session** 拡張を同梱します。
 
 > このリポジトリのドキュメントは、概要を示す **本 README**、詳細な使い方の **`user_manual.md`**、全関数仕様の **`api*.md`**、動くコード例の **`example.md`** に役割分担しています。本 README は全体像と最小の動作確認までを扱い、各機能の網羅的な解説や全 API は `user_manual.md` と `api*.md` を参照してください。
 
@@ -31,6 +31,7 @@ NBAccess → claudecode_base → ClaudeRuntime (単一エージェント実行�
                               ├─ Workflow        (multi-token Petri net エンジン)
                               ├─ Observability   (LLM/Handler 観測・Tooltip 可視化)
                               ├─ PromptWorkflow   (ClaudeEval 複雑プロンプト → workflow)
+                              ├─ TurnWiki         (LLM turn 自己改善ループ)
                               └─ Session          (RuntimeSession episode 層、任意ロード)
                                    ↑
                               claudecode
@@ -56,21 +57,22 @@ NBAccess → claudecode_base → ClaudeRuntime (単一エージェント実行�
 - 旧 `claudecode_commit_safety.wl` (コミット前後の整合性チェック) — `$ClaudeCommitSafetyVersion`
 - 旧 `claudecode_a4_stub.wl` / `ClaudeOrchestratorA4` (A4 フェーズ用フック群) — `$A4StubVersion`
 
-**自動ロードされる外部サブモジュール (3 ファイル)** — `ClaudeOrchestrator.wl` のロード時に同一コンテキストへ取り込まれ、外から見ると単一パッケージのように扱えます。
+**自動ロードされる外部サブモジュール (4 ファイル)** — `ClaudeOrchestrator.wl` のロード時に同一コンテキストへ取り込まれ、外から見ると単一パッケージのように扱えます。
 
 | ファイル | 役割 | API リファレンス |
 |---|---|---|
 | [`ClaudeOrchestrator_workflow.wl`](https://github.com/transreal/ClaudeOrchestrator_workflow) | multi-token Petri net 実行エンジン (`ClaudeOrchestrator`Workflow`` 名前空間) | `api_workflow.md` |
 | [`ClaudeOrchestrator_observability.wl`](https://github.com/transreal/ClaudeOrchestrator_observability) | LLM 呼び出し・transition handler のログ／Tooltip 付き可視化 (ChatGPT Codex を含む複数プロバイダの provenance 記録対応) | `api_observability.md` |
 | [`ClaudeOrchestrator_promptworkflow.wl`](https://github.com/transreal/ClaudeOrchestrator_promptworkflow) | `ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 | `api_promptworkflow.md` |
+| [`ClaudeOrchestrator_turnwiki.wl`](https://github.com/transreal/ClaudeOrchestrator_turnwiki) (2026-09-01 追加) | WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループ (`ClaudeOrchestrator`TurnWiki`` 名前空間)。raw トレース → Wiki (パターン集) → 検証ゲート付き手順書 → directive 注入 | `api_turnwiki.md` |
 
 自動ロードは存在チェック + 重複ロード回避を行うため、`ClaudeOrchestrator.wl` を 2 回 `Get` しても副作用はありません。手動ロード防止フラグ (例: `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True`) で個別に無効化できます。
 
-**任意ロードの追加サブモジュール** — 上記 3 ファイルとは別に、[`ClaudeOrchestrator_session.wl`](https://github.com/transreal/ClaudeOrchestrator_session) (`ClaudeOrchestrator`Session`` 名前空間、RuntimeSession episode 層) が用意されていますが、自動ロード対象には含まれず利用する場合は別途 `Get` が必要です。`ClaudeOrchestrator_workflow` にのみ依存し (ロード順は workflow → session)、`ClaudeRuntime` には依存しません。全 API は `api_session.md` を参照。また `ClaudeOrchestrator_stategraph` は deprecated であり既定では読み込まれません (`$ClaudeOrchestratorEnableStateGraphCompat = True` でオプトイン可)。
+**任意ロードの追加サブモジュール** — 上記 4 ファイルとは別に、[`ClaudeOrchestrator_session.wl`](https://github.com/transreal/ClaudeOrchestrator_session) (`ClaudeOrchestrator`Session`` 名前空間、RuntimeSession episode 層) が用意されていますが、自動ロード対象には含まれず利用する場合は別途 `Get` が必要です。`ClaudeOrchestrator_workflow` にのみ依存し (ロード順は workflow → session)、`ClaudeRuntime` には依存しません。全 API は `api_session.md` を参照。また `ClaudeOrchestrator_stategraph` は deprecated であり既定では読み込まれません (`$ClaudeOrchestratorEnableStateGraphCompat = True` でオプトイン可)。
 
 なお、自然文プロンプトから WorkflowNet を生成するサンプル兼ライブラリ `docs/examples/petri_from_prompt.wl` がリポジトリに同梱されていますが、**これは example 段階の参考実装で本体には統合されておらず、自動ロードもされません**。試す場合は本体ロード後に別途 `Get` してください。
 
-## 4 つの拡張の概要
+## 5 つの拡張の概要
 
 ### ペトリネット拡張 (Workflow)
 
@@ -84,9 +86,13 @@ LLM 呼び出しログ (`ClaudeQueryBgLogged` / `showLLMCallLog`)、handler 観�
 
 `ClaudeEval` に与えられた複雑プロンプト(複数サブタスクや順序制御を含むもの)を WorkflowNet として再実行する経路です。`ClaudeWorkflowComplexPromptQ` で複雑性を決定的に判定し(秘密プロンプトを外部送信しない)、`ClaudeProposeWorkflowNetFromPrompt` で提案、安全パーサ `ClaudeParseWorkflowNetCode`(評価せず静的検査 → HoldComplete パース → ホワイトリスト評価)を通します。新規ワークフローは常に `NeedsApproval` で停止し、自動実行はしません。全 API は `api_promptworkflow.md`。
 
+### TurnWiki (LLM Turn 自己改善ループ)
+
+WikiSkill 型 (arXiv:2608.27454) の自己改善ループを `ClaudeOrchestrator`TurnWiki`` 名前空間で実装します。raw トレース採取 (`ClaudeTurnWikiCollectTraces`) → Wiki パターン集の保守 (`ClaudeTurnWikiMaintain`) → 検証ゲート付き手順書の提案・採点・昇格 (`ClaudeTurnWikiPropose` / `ClaudeTurnWikiValidate` / `ClaudeTurnWikiPromote`) → directive 注入 (`ClaudeTurnWikiWireInjection`) という 3 層ワークスペース (`raw/` / `wiki/` / `skills/`) を 1 反復として `ClaudeTurnWikiRunIteration` / `ClaudeTurnWikiRun` で回します。wiki は append/compound のみで決してロールバックせず、手順書は検証スコアが前回ベストを上回った場合のみ更新される fail-closed 設計です (probe 0 件では昇格しません)。サービス heartbeat から呼び出しパターン集だけを定期的に育てる `ClaudeTurnWikiMaintainTick` も備えます。全 API は `api_turnwiki.md`。
+
 ### RuntimeSession エピソード層 (Session)
 
-Workflow エンジン上に実装された RuntimeSession episode 層 (`ClaudeOrchestrator`Session`` 名前空間) です。schema validator (fail-closed) と canonical hash による SessionControlEvent / SessionCommand / BudgetGrant / AccessSpec の整合性検証、episode supervisor net の構築・駆動 (`ClaudeCreateRuntimeSessionEpisodeNet` / `ClaudeStartRuntimeSessionEpisode`)、durable inbox/outbox スプールと recovery scan、テスト用の決定論的 `ClaudeMockRuntimeSessionBackendSpec` バックエンド、multi-agent TaskSpec を conductor role へ正規化し episode 終端まで DAG プランを駆動するドライバなどを備えます。3 つの自動ロード拡張とは異なり任意ロードのモジュールです。全 API は `api_session.md`。
+Workflow エンジン上に実装された RuntimeSession episode 層 (`ClaudeOrchestrator`Session`` 名前空間) です。schema validator (fail-closed) と canonical hash による SessionControlEvent / SessionCommand / BudgetGrant / AccessSpec の整合性検証、episode supervisor net の構築・駆動 (`ClaudeCreateRuntimeSessionEpisodeNet` / `ClaudeStartRuntimeSessionEpisode`)、durable inbox/outbox スプールと recovery scan、テスト用の決定論的 `ClaudeMockRuntimeSessionBackendSpec` バックエンド、multi-agent TaskSpec を conductor role へ正規化し episode 終端まで DAG プランを駆動するドライバ、ArtifactCandidate 検証と single commit の CommitReceipt 取得、InferenceTrustDomain 解決・trust gate・call ledger (conductor v0.2) などを備えます。4 つの自動ロード拡張とは異なり任意ロードのモジュールです。全 API は `api_session.md`。
 
 ## 動作環境
 
@@ -165,6 +171,7 @@ Get[FileNameJoin[{Quiet @ Check[NotebookDirectory[], $packageDirectory],
 | `api_observability.md` | Observability サブモジュールの API リファレンス |
 | `api_promptworkflow.md` | PromptWorkflow 拡張の API リファレンス |
 | `api_session.md` | Session (RuntimeSession episode 層) サブモジュールの API リファレンス |
+| `api_turnwiki.md` | TurnWiki (WikiSkill turn 自己改善ループ) サブモジュールの API リファレンス |
 | `setup.md` | インストール手順書(動作要件・環境構築・トラブルシューティング) |
 | `example.md` | 使用例集(バージョン確認からペトリネット拡張・バッチ処理まで) |
 | `docs/examples/petri_from_prompt.wl` | 自然文 → ペトリネット → 実行のエンドツーエンドサンプル |

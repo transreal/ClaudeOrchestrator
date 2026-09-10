@@ -5,7 +5,7 @@ ClaudeRuntime (単一エージェント実行核) の上に乗る、タスク分
 設計上の不変条件: (1) ClaudeRuntime は 1 agent kernel のまま、(2) 並列 worker は artifact producer 限定 (NotebookWrite 禁止)、(3) 実 notebook への書き込みは single committer のみ、(4) worker 間共有は明示的 artifact/JSON/Association のみ、(5) EvaluationNotebook[] / CreateNotebook[] は deny。
 
 依存: [ClaudeRuntime](https://github.com/transreal/ClaudeRuntime), [claudecode](https://github.com/transreal/claudecode), [NBAccess](https://github.com/transreal/NBAccess) (file_contents handler から NBFileImport/NBFileExport を弱呼び出し)。
-companion 自動ロード (3): [ClaudeOrchestrator_workflow](https://github.com/transreal/ClaudeOrchestrator_workflow), [ClaudeOrchestrator_observability](https://github.com/transreal/ClaudeOrchestrator_observability), [ClaudeOrchestrator_promptworkflow](https://github.com/transreal/ClaudeOrchestrator_promptworkflow)。※ `ClaudeOrchestrator_stategraph` は deprecated で既定ロードなし (`$ClaudeOrchestratorEnableStateGraphCompat = True` でオプトイン可)。
+companion 自動ロード (3): [ClaudeOrchestrator_workflow](https://github.com/transreal/ClaudeOrchestrator_workflow) (workflow engine 本体、eager ロード), [ClaudeOrchestrator_observability](https://github.com/transreal/ClaudeOrchestrator_observability), [ClaudeOrchestrator_promptworkflow](https://github.com/transreal/ClaudeOrchestrator_promptworkflow)。※ `ClaudeOrchestrator_stategraph` は deprecated (ClaudeStateGraph` 互換 alias 層、実ロジックは workflow engine に吸収済み) で既定ロードなし (`Global`$ClaudeOrchestratorEnableStateGraphCompat = True` をロード前に設定するとオプトイン可)。`Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` で promptworkflow 自動ロードを抑止可。
 
 ロード: `Block[{$CharacterEncoding = "UTF-8"}, Get["ClaudeOrchestrator.wl"]]`
 
@@ -117,12 +117,12 @@ real LLM 呼び出しを実行し診断情報 (endpoint/CLI パス/ExitCode/raw 
 
 ## Artifact deposit / handler 登録
 ### ClaudeOrchestratorDepositArtifacts[artifacts, opts] → Association
-worker 成果物 (taskId->artifact の Association) をメインカーネル (単一書き手) から SourceVault へ append-only deposit し各 sv://artifact/.. URI を返す。SourceVault`SourceVaultMCPDeposit を弱呼び出し、未ロードなら Status->Skipped。認可は provider 'orchestrator-worker' の AccessProfile 経由。
+worker 成果物 (taskId->artifact の Association) をメインカーネル (単一書き手) から SourceVault へ append-only deposit し各 sv://artifact/.. URI を返す。SourceVault`SourceVaultMCPDeposit を弱呼び出しし、未ロードなら Status->Skipped。認可は provider 'orchestrator-worker' の AccessProfile 経由 (AllowedOperations に DepositArtifact)。
 → `<|Status, Deposits (taskId-><|Status, URI, Detail|>), URIs|>`
 Options: "Provider"->"orchestrator-worker", "ModelId"->"worker", "SessionId"->Automatic, "PrivacyLevel"->Automatic, "Mode"->"commit"
 
 ### ClaudeWorkflowRegisterHandler[functionId, spec] → Association
-非SourceVault callable を Orchestrator 所有の handler allowlist に登録 (SourceVault PromptRouter の拡張点)。同一 functionId は置換。→ 登録エントリ。
+非SourceVault callable を Orchestrator 所有の handler allowlist に登録 (SourceVault PromptRouter の SourceVaultCallableAllowlistView がこの登録を weak-call で取り込む拡張点)。同一 functionId は置換。→ 登録エントリ。
 spec keys: "Symbol" (必須・評価しないシンボル), "UseAsFunctionRoute" (既定 True), "UseAsHandlerRef" (既定 True), "SideEffectClass" ("ReadOnly"|"SafeCreate"|.. 既定 "ReadOnly"), "OwnerPackage" (String)
 
 ### ClaudeWorkflowHandlerAllowlist[] → Association
@@ -133,7 +133,7 @@ spec keys: "Symbol" (必須・評価しないシンボル), "UseAsFunctionRoute"
 登録済み handler。Get 再ロードでも保持 (未設定時のみ初期化)。
 
 ## Directives 統合 (ClaudeOrchestrator` 名前空間)
-worker prompt 前置 (= LLM に何を読ませるか) を扱う。[claudecode_directives](https://github.com/transreal/claudecode_directives) 連携。未ロード/repository 未読込なら passthrough。
+worker prompt 前置 (= LLM に何を読ませるか) を扱う。[claudecode_directives](https://github.com/transreal/claudecode_directives) 連携。未ロード/repository 未読込なら passthrough。`$ClaudeOrchestratorEnableDirectives` (既定 True、BeginPackage 前設定) で統合自体を無効化可能。
 
 ### ClaudeOrchestrator`DirectivesEnabledQ[] → True/False
 ClaudeDirectives がロードされ repository も読込済みなら True。False なら hook は passthrough。
@@ -165,7 +165,7 @@ repository 読込を再試行 (path 指定可)。auto-load フラグをリセッ
 True で directive prefix 構築のたびに診断出力。
 
 ## Routing 統合 (ClaudeOrchestrator` 名前空間)
-queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI (Model オプションは渡さず常に CLI 既定モデル)、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default ($ClaudeRoleDefaultModels、既定 "claude-opus-4.7")。API 経路が使えない場合は CLI 素呼びへ fallback。
+queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI (Model オプションは渡さず常に CLI 既定モデル)、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default ($ClaudeRoleDefaultModels、既定 "claude-opus-4.7")。明示的な queryFn (Symbol/Function) は常に passthrough。API/CLI いずれも使えない場合は空文字列を返す queryFn にフォールバック。`$ClaudeOrchestratorEnableRouting` (既定 True) で統合自体を無効化可能。
 
 ### ClaudeOrchestrator`RoutingEnabledQ[] → True/False
 CLI または API の少なくとも一方が呼び出し可能なら True。
@@ -174,7 +174,7 @@ CLI または API の少なくとも一方が呼び出し可能なら True。
 role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み model spec。引数省略時 role:"", model:Automatic。
 
 ### ClaudeOrchestrator`RoutingGetInfo[role, model] → Association
-→ `<|"Source"->str, "Path"->"CLI"|"API"|"Explicit"|"Empty", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`
+→ `<|"Source"->str, "Path"->"CLI"|"API"|"Explicit"|"Empty", "Model"->resolved, "Role"->role, "QueryFunction"->fn|>`。引数省略時 role:"", model:Automatic。
 
 ### ClaudeOrchestrator`RoutingListPaths[] → Association
 利用可能な routing path。→ `<|"CLI"->bool, "API"->bool, "PrivateModel"->bool, "RoleDefaults"->bool|>`
@@ -184,7 +184,7 @@ role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み
 True で ResolveQueryFnForRole 呼出のたびに診断出力。
 
 ## A4 hook (ClaudeOrchestrator` 名前空間)
-Directives/Routing が本格実装で再定義する低レベル hook。
+Directives/Routing が本格実装で再定義する低レベル hook。`$ClaudeOrchestratorEnableA4Stub` (既定 True) でロードを制御 (本格実装が無効化されている場合の passthrough stub)。
 
 ### ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role, model, goal] → String
 prompt に directive prefix を前置 (Directives 未ロード時 passthrough)。
@@ -196,7 +196,7 @@ queryFn が明示なら respect、Automatic なら role/model から CLI/API clo
 role に応じた model 解決 (iResolveModelInternal)。
 
 ## CommitSafety 統合
-LLM-backed commit と iDeterministicSlideCommit がいずれも失敗/不十分時の 3rd-tier fallback。payload を Markdown 解析して Cell list を生成し target notebook へ書込む (Title->Section, Summary/Description/Body等のテキスト系キー->Text, Code/Source等のコード系キー->Input, KeyPoints/Bullets等のリスト系キー->ItemParagraph, heading (#/##/###)->Section/Subsection, bullet (-/*)->ItemParagraph)。ClaudeOrchestrator.wl の Private context に直接定義され独立した BeginPackage は持たない。
+LLM-backed commit と iDeterministicSlideCommit がいずれも失敗/不十分時の 3rd-tier fallback。payload を Markdown 解析して Cell list を生成し target notebook へ書込む (Title->Section, Summary/Description/Body等のテキスト系キー->Markdown解析, Code/Source等のコード系キー->Input, KeyPoints/Bullets等のリスト系キー->Subsection+ItemParagraph, heading (#/##/###)->Section/Subsection, bullet (-/*)->ItemParagraph, ``` コードブロック->Input)。ClaudeOrchestrator.wl の Private context に直接定義され独立した BeginPackage は持たない。`$ClaudeOrchestratorEnableCommitSafety` (既定 True) で無効化可能; 無効時はこの fallback 自体がロードされない。
 
 ### ClaudeOrchestrator`$ClaudeCommitSafetyVersion
 型: String。commit safety パッチのバージョン文字列。
@@ -241,4 +241,4 @@ Orchestrator 経路を通すべき複雑タスクを識別するマーカー (�
 型: True/False, 初期値: いずれも True
 `$ClaudeOrchestratorEnableDirectives`, `$ClaudeOrchestratorEnableRouting`, `$ClaudeOrchestratorEnableCommitSafety`, `$ClaudeOrchestratorEnableA4Stub` — 対応する統合サブモジュールの読込を制御。
 `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` でロード前に設定すると promptworkflow 自動ロードを抑止。
-`Global`$ClaudeOrchestratorEnableStateGraphCompat = True` でロード前に設定すると deprecated な ClaudeOrchestrator_stategraph.wl (ClaudeStateGraph` 互換層) を自動ロードする (既定は不読込)。
+`Global`$ClaudeOrchestratorEnableStateGraphCompat = True` でロード前に設定すると deprecated な ClaudeOrchestrator_stategraph.wl (ClaudeStateGraph` 互換層) を自動ロードする (既定は不読込。実ロジックは ClaudeOrchestrator`Workflow` に吸収済みで、実利用箇所が無いことを確認した上で既定オフにされている)。

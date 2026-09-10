@@ -10402,3 +10402,18 @@ If[!ValueQ[ClaudeOrchestrator`$ClaudePromptWorkflowVersion] &&
     Print[Style[
       "ClaudeOrchestrator: ClaudeOrchestrator_promptworkflow.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
       Italic, RGBColor[0.6, 0.4, 0.2]]]]];
+
+(* ClaudeOrchestrator_turnwiki.wl の自動ロード (2026-09-01 追加)。
+   WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループ
+   (ClaudeOrchestrator`TurnWiki`)。workflow engine と同じく実ロードマーカー
+   $TurnWikiVersion で判定する (context/Names の存在では判定しない)。
+   ロード失敗しても ClaudeOrchestrator 本体は壊れない。 *)
+If[! ValueQ[ClaudeOrchestrator`TurnWiki`$TurnWikiVersion],
+  Quiet @ Check[
+    Block[{$CharacterEncoding = "UTF-8"},
+      Get[ClaudeOrchestrator`Private`iCompanionPath["ClaudeOrchestrator_turnwiki.wl"]]],
+    Null];
+  If[! ValueQ[ClaudeOrchestrator`TurnWiki`$TurnWikiVersion],
+    Print[Style[
+      "ClaudeOrchestrator: ClaudeOrchestrator_turnwiki.wl \:306e\:81ea\:52d5\:30ed\:30fc\:30c9\:306b\:5931\:6557 (skip)\:3002",
+      Italic, RGBColor[0.6, 0.4, 0.2]]]]];

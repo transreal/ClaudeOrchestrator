@@ -13,8 +13,9 @@
 9. [バッチ実行](#バッチ実行)
 10. [ペトリネット拡張 (Workflow + Observability + PromptWorkflow)](#ペトリネット拡張-workflow--observability--promptworkflow)
 11. [Real LLM 統合](#real-llm-統合)
-12. [グローバル設定変数](#グローバル設定変数)
-13. [エラーと検証](#エラーと検証)
+12. [TurnWiki (LLM Turn 自己改善ループ)](#turnwiki-llm-turn-自己改善ループ)
+13. [グローバル設定変数](#グローバル設定変数)
+14. [エラーと検証](#エラーと検証)
 
 ---
 
@@ -46,17 +47,20 @@ NBAccess → claudecode_base → ClaudeRuntime → ClaudeOrchestrator → claude
 - 旧 `claudecode_commit_safety.wl` — コミット前後の整合性チェック (HeldExpr 検出・決定論的フォールバック)
 - 旧 `claudecode_a4_stub.wl` / `ClaudeOrchestratorA4``— A4 フェーズ用フック群
 
-**自動ロードされる外部サブモジュール (3 ファイル):**
+**自動ロードされる外部サブモジュール (4 ファイル):**
 
-以下の 3 ファイルは `ClaudeOrchestrator.wl` のロード時に自動的に取り込まれます。手動ロード防止フラグ (例: `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True`) を立てると個別に無効化できます。
+以下の 4 ファイルは `ClaudeOrchestrator.wl` のロード時に自動的に取り込まれます。手動ロード防止フラグ (例: `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True`) を立てると個別に無効化できます。
 
 | ファイル | 役割 | 主な公開 API / シンボル |
 |---|---|---|
 | `ClaudeOrchestrator_workflow.wl` | multi-token Petri net 実行エンジン (`ClaudeOrchestrator`Workflow``) | `ClaudeCreateWorkflowNet` / `ClaudeSubmitToken` / `ClaudeRunWorkflow` / `ClaudeWorkflowState` ほか |
 | `ClaudeOrchestrator_observability.wl` | LLM 呼び出し・transition handler のログ／Tooltip 付き可視化 | `ClaudeQueryBgLogged` / `showLLMCallLog` / `instrumentNetForObservation` / `plotPetriNetDetail` / `traceTransitions` ほか |
 | `ClaudeOrchestrator_promptworkflow.wl` | `ClaudeEval` の複雑プロンプトを WorkflowNet として再実行する経路 | `ClaudeWorkflowComplexPromptQ` / `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` / `ClaudeCreateWorkflowRouteDraft` / `ClaudeWorkflowRouteFromPrompt` ほか |
+| `ClaudeOrchestrator_turnwiki.wl` (2026-09-01 追加) | WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループ (`ClaudeOrchestrator`TurnWiki``) | `ClaudeTurnWikiInitialize` / `ClaudeTurnWikiStatus` / `ClaudeTurnWikiCollectTraces` / `ClaudeTurnWikiMaintain` / `ClaudeTurnWikiPropose` / `ClaudeTurnWikiValidate` / `ClaudeTurnWikiPromote` ほか |
 
-これら 3 ファイルは `BeginPackage["ClaudeOrchestrator`"]` と同一コンテキストを使うため、外側から見ると単一パッケージのように扱えます。さらに `A5InjectSourceVaultContext` / `A6PostProcessParseProposal` といった post-processing フックを通じて、本体を壊さずに拡張ロジック (Codex 応答の整形、SourceVault コンテキスト注入など) を差し込めます。
+これら 4 ファイルは `BeginPackage["ClaudeOrchestrator`"]` と同一コンテキスト、またはその配下のサブコンテキスト(`ClaudeOrchestrator`Workflow``、`ClaudeOrchestrator`TurnWiki`` など)を使うため、外側から見ると単一パッケージのように扱えます。さらに `A5InjectSourceVaultContext` / `A6PostProcessParseProposal` といった post-processing フックを通じて、本体を壊さずに拡張ロジック (Codex 応答の整形、SourceVault コンテキスト注入など) を差し込めます。
+
+`ClaudeOrchestrator_turnwiki.wl` の自動ロード判定は、workflow engine と同じく実ロードマーカー(`ClaudeOrchestrator`TurnWiki`$TurnWikiVersion` の `ValueQ`)で行い、context / Names の存在では判定しません。ロードに失敗しても ClaudeOrchestrator 本体は壊れず、警告を表示して skip するだけです。詳細は[TurnWiki (LLM Turn 自己改善ループ)](#turnwiki-llm-turn-自己改善ループ)を参照してください。
 
 **Auto ゲート強化:**
 
@@ -1144,6 +1148,106 @@ pd["Status"]     (* "OK" / "Failed" *)
 
 ---
 
+## TurnWiki (LLM Turn 自己改善ループ)
+
+`ClaudeOrchestrator_turnwiki.wl`(2026-09-01 追加)は、WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループを `ClaudeOrchestrator`TurnWiki`` 名前空間で提供します。[ClaudeOrchestrator_turnwiki](https://github.com/transreal/ClaudeOrchestrator_turnwiki) がソースです。
+
+`ClaudeOrchestrator.wl` のロード時に workflow engine と同じ方式で自動的に取り込まれます。判定は実ロードマーカー `ClaudeOrchestrator`TurnWiki`$TurnWikiVersion` の `ValueQ` で行い、context / Names の存在では判定しません(空シンボルだけが作られて未ロードと誤判定される問題を避けるため)。ロードに失敗しても ClaudeOrchestrator 本体は壊れず、警告(`"ClaudeOrchestrator: ClaudeOrchestrator_turnwiki.wl の自動ロードに失敗 (skip)。"`)を表示して読み飛ばします。
+
+### コンセプトと 3 層構成
+
+TurnWiki は、LLM turn の実行トレースを蓄積し、そこから抽出したパターンを検証つきで手順書(skill)へ昇格させることで、`ClaudeEval` / `ClaudeRunTurn` の挙動を反復的に改善します。ワークスペース(既定 root = `$ClaudeTurnWikiRoot`、既定は `<package dir>/Claude TurnWiki/`)は 3 層で構成されます。
+
+| 層 | ディレクトリ | 性質 |
+|---|---|---|
+| Raw Layer | `raw/` | 不変の実行トレース(write-once) |
+| Wiki Layer | `wiki/` | パターン集 + 進化ログ + skill-impact 台帳(append/compound のみ、決してロールバックしない) |
+| Skill Layer | `skills/` | 昇格済み手順書(検証ゲート通過時のみ更新、`archive/` で版管理) |
+
+### 4 コンポーネント
+
+| コンポーネント | 実装 | 役割 |
+|---|---|---|
+| Inference Agent | 既存 `ClaudeEval` / `ClaudeRunTurn`(無改変。手順書のみ注入) | turn を実際に実行するエージェント本体 |
+| Wiki Maintainer | `ClaudeTurnWikiMaintain` | LLM 1 呼び出し + 純関数適用で、収集トレースからパターン集・進化ログを更新する |
+| Skill Proposer | `ClaudeTurnWikiPropose` | ReAct 型のクライアント側ツールループで、新規/改訂スキルを提案する |
+| Gating & Rollback | `ClaudeTurnWikiValidate` / `ClaudeTurnWikiGateDecision` / `ClaudeTurnWikiPromote` / `ClaudeTurnWikiReject` / `ClaudeTurnWikiRollbackSkill` | probe スコアが現行ベスト (`RBest`) を上回った場合のみ昇格させる fail-closed ゲート |
+
+### 設計不変条件 (I1–I4)
+
+- **I1** — wiki は append/compound のみ。リセット・ロールバックは禁止。
+- **I2** — 全提案(却下されたものを含む)を skill-impact 台帳に diff・スコア・判定つきで追記する。
+- **I3** — 手順書は検証ゲート通過時のみ更新する。悪化を検出した場合は手順書のみを戻す(wiki 側は変更しない)。probe が 0 件のときは昇格しない。
+- **I4** — 実行役(Inference Agent)に渡すのは手順書のみ。wiki は directive root の外に置かれ(起動時に検査)、具現化されるのは `skills/<name>/SKILL.md` 本文のみ。
+
+### 弱結合依存
+
+以下はロード済みのときのみ使用され、未ロードなら縮退動作します。
+
+- `ClaudeOrchestrator`Workflow`` — 反復処理の Petri net 実行
+- `ClaudeDirectives`` — 手順書の注入具現化
+- `SourceVault`` — 既定 LLM(`SourceVaultQueryLocalLLM`)と llmlog トレース原資
+- `ClaudeRuntime`` — 生きている runtime の EventTrace 原資
+
+### 公開 API
+
+| 関数 | 役割 |
+|---|---|
+| `ClaudeTurnWikiInitialize[]` | ワークスペース(`raw/` / `wiki/` / `skills/` / `staging/` / `archive/` / `probes/` + seed files)を作成する。冪等。ステータス Association を返す。 |
+| `ClaudeTurnWikiStatus[]` | Root / Iteration / RBest / ActiveSkills / Patterns / Probes / Isolation のサマリを返す。 |
+| `ClaudeTurnWikiCheckIsolation[]` | 不変条件 I4(TurnWiki root と Claude Directives root が互いに含まれないこと)を検証し、`<|"OK" -> True/False, "Detail" -> ...|>` を返す。 |
+| `ClaudeTurnWikiState[]` | 永続ループ状態(`RBest`、`Iteration`、`ActiveSkills`、`UpdatedAt`)を返す。 |
+| `ClaudeTurnWikiCollectTraces[opts]` | 実行トレースの層化サンプルを収集する(Raw Layer)。オプション: `"TracesFn"`(既定 Automatic = ライブ `ClaudeRuntime` EventTrace + SourceVault llmlog ダイジェスト)、`"MaxFail"`(既定 5)、`"MaxPass"`(既定 3)、`"MaxChars"`(既定 15000)、`"Persist"`(既定 True)。`<\|"TraceId", "Kind", "Task", "Text", "Source"\|>` のリストを返す。 |
+| `ClaudeTurnWikiClassifyRuntimeTrace[trace]` | `ClaudeTurnTrace` イベント列を `<\|"Kind" -> "pass"/"fail"/"unknown", "Signals" -> {...}\|>` に分類する純関数。 |
+| `ClaudeTurnWikiRenderTrace[trace, maxChars]` | `ClaudeTurnTrace` イベント列を LLM 向けのコンパクトなテキストにレンダリングする純関数。 |
+| `ClaudeTurnWikiApplyPatchOps[content, edits]` | パッチ操作(`op`: `append` / `replace` / `insert_after`、`target` / `content` 指定)を文字列に適用する純関数。`<\|"Content", "Applied", "Failed"\|>` を返す。 |
+| `ClaudeTurnWikiApplyMaintainerOutput[out]` | Wiki Maintainer の JSON 出力(`create_patterns` / `update_patterns` / `update_index` / `append_log`)をワークスペースに適用する。 |
+| `ClaudeTurnWikiMaintain[...]` | Wiki Maintainer コンポーネント本体。収集トレースから LLM 1 呼び出しでパターン集・進化ログの更新案を得て適用する。 |
+| `ClaudeTurnWikiPropose[...]` | Skill Proposer コンポーネント本体。ReAct 型ツールループで新規/改訂スキルを提案する。 |
+| `ClaudeTurnWikiValidate[...]` / `ClaudeTurnWikiGateDecision[...]` | 提案スキルを probe で検証し、`RBest` との比較で昇格可否を判定する(Gating)。 |
+| `ClaudeTurnWikiPromote[...]` / `ClaudeTurnWikiReject[...]` | Gating の判定結果に応じて手順書を昇格、または提案を却下し skill-impact 台帳に記録する。 |
+| `ClaudeTurnWikiRollbackSkill[...]` | 昇格後に悪化が検出されたスキルの手順書のみをロールバックする(wiki 側の記録は変更しない、I1)。 |
+
+### グローバル設定変数
+
+| 変数 | 既定値 | 説明 |
+|---|---|---|
+| `$TurnWikiVersion` | (文字列) | `ClaudeOrchestrator_turnwiki.wl` の実ロードマーカー/バージョン文字列 |
+| `$ClaudeTurnWikiRoot` | `Automatic` | TurnWiki ワークスペースのルートディレクトリを上書き。既定は `<package dir>/Claude TurnWiki/` |
+| `$ClaudeTurnWikiLLMFn` | `Automatic` | `fn[prompt, sysPrompt] -> String \| Missing` を設定すると既定 LLM backend (`SourceVaultQueryLocalLLM`) を上書きできる |
+| `$ClaudeTurnWikiLLMTimeout` | `480` | 既定ローカル LLM backend の呼び出しタイムアウト(秒)。ローカル 27B モデルは ~12 tok/s 相当を想定 |
+| `$ClaudeTurnWikiMaxActiveSkills` | `3` | 一度に directive store へ具現化する進化済みスキルの上限数 |
+| `$ClaudeTurnWikiFailureMarkers` | (リスト) | llmlog セッションテキストを失敗トレースとして分類するための正規表現リスト |
+| `$ClaudeTurnWikiMinTraceChars` | `200` | 自動収集トレース(runtime/llmlog)のうち、この文字数未満のものを破棄する(注入された `"TracesFn"` トレースはフィルタ対象外) |
+| `$ClaudeTurnWikiAutoWire` | `True` | パッケージロード時に、既に承認済みの進化済みスキルを directive 層へ再登録する |
+| `$ClaudeTurnWikiInjectionEnabled` | `True` | Promote/Wire が進化済みスキルを Claude Directives store に具現化するかどうかのゲート |
+| `$ClaudeTurnWikiMaxFailStreak` | `3` | 同一トレース集合で maintain tick がこの回数連続失敗すると、そのトレースを `Status "GaveUp"` として消費済み扱いにする(poison trace 対策) |
+| `$ClaudeTurnWikiDirectiveRootOverride` | `Automatic` | スキル具現化に使う directive root を上書き(テスト用途。本番は `ClaudeDirectives`ClaudeResolveDirectiveRoot` で解決) |
+
+### 使用例
+
+```wolfram
+(* 初期化 (冪等) *)
+ClaudeTurnWikiInitialize[]
+
+(* I4 不変条件の確認 *)
+ClaudeTurnWikiCheckIsolation[][["OK"]]
+(* True *)
+
+(* 現在の状態確認 *)
+ClaudeTurnWikiStatus[]
+
+(* トレース収集 -> Wiki Maintainer 適用 -> Skill 提案 -> Gating の一連の流れ (概念図) *)
+traces = ClaudeTurnWikiCollectTraces["MaxFail" -> 5, "MaxPass" -> 3];
+(* Wiki Maintainer / Skill Proposer / Gating は反復ループの内部コンポーネントとして
+   ClaudeTurnWikiMaintain / ClaudeTurnWikiPropose / ClaudeTurnWikiValidate /
+   ClaudeTurnWikiGateDecision / ClaudeTurnWikiPromote 等を組み合わせて呼び出す。 *)
+```
+
+> API の詳細は `api_turnwiki.md` を参照してください。
+
+---
+
 ## グローバル設定変数
 
 | 変数 | 既定値 | 説明 |
@@ -1160,6 +1264,17 @@ pd["Status"]     (* "OK" / "Failed" *)
 | `$ClaudeEvalAutoComplexMarkers` | (リスト) | Orchestrator 経路を強制する複雑タスクのマーカー |
 | `$ClaudeWorkflowHandlerRegistry` | `Association` | 登録済み handler allowlist (`FunctionId -> エントリ`)。`Get` 再ロードでも保持 |
 | `$ClaudeOrchestratorDisablePromptWorkflowAutoLoad` (Global) | `False` | PromptWorkflow 拡張の autoload を抑止するフラグ (本体ロード前にセット) |
+| `$TurnWikiVersion` | (文字列) | TurnWiki 拡張の実ロードマーカー/バージョン文字列。詳細は[TurnWiki](#turnwiki-llm-turn-自己改善ループ)節を参照 |
+| `$ClaudeTurnWikiRoot` | `Automatic` | TurnWiki ワークスペースのルートディレクトリ上書き |
+| `$ClaudeTurnWikiLLMFn` | `Automatic` | TurnWiki 既定 LLM backend の上書き関数 |
+| `$ClaudeTurnWikiLLMTimeout` | `480` | TurnWiki 既定 LLM backend のタイムアウト(秒) |
+| `$ClaudeTurnWikiMaxActiveSkills` | `3` | directive store に同時具現化する TurnWiki スキルの上限数 |
+| `$ClaudeTurnWikiFailureMarkers` | (リスト) | TurnWiki の失敗トレース分類用正規表現 |
+| `$ClaudeTurnWikiMinTraceChars` | `200` | TurnWiki 自動収集トレースの最小文字数フィルタ |
+| `$ClaudeTurnWikiAutoWire` | `True` | パッケージロード時に承認済み TurnWiki スキルを directive 層へ再登録するか |
+| `$ClaudeTurnWikiInjectionEnabled` | `True` | TurnWiki Promote/Wire の directive store 具現化ゲート |
+| `$ClaudeTurnWikiMaxFailStreak` | `3` | TurnWiki maintain tick の連続失敗許容回数(poison trace 対策) |
+| `$ClaudeTurnWikiDirectiveRootOverride` | `Automatic` | TurnWiki スキル具現化に使う directive root の上書き(テスト用途) |
 
 ### `$ClaudeOrchestratorRealLLMEndpoint` の設定値
 
@@ -1215,6 +1330,8 @@ AppendTo[$ClaudeEvalAutoComplexMarkers, "10ページ"];
 | `ClaudeOrchestrator`$ClaudePromptWorkflowVersion` が未定義 | PromptWorkflow 拡張の autoload に失敗、または `$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` が立っている | フラグを `False` に戻し、`Get["ClaudeOrchestrator_promptworkflow.wl"]` を手動実行する |
 | `ClaudeProposeWorkflowNetFromPrompt` が `"Rejected"` を返す | 禁止 API が検出された、または提案コードが parse できない | `prop["AttemptTrace"]` と `ClaudeWorkflowCheckForbidden` の出力を確認する |
 | 旧 `proposePetriNet` / `parsePetriCode` が未定義 | これらは `docs/examples/petri_from_prompt.wl` 側の関数で、本体には統合されていない参考実装 | 正規 API である `ClaudeProposeWorkflowNetFromPrompt` / `ClaudeParseWorkflowNetCode` を使う (Section A の対応表を参照) |
+| `ClaudeOrchestrator`TurnWiki`$TurnWikiVersion` が未定義 | `ClaudeOrchestrator_turnwiki.wl` の自動ロードに失敗している(ファイルが `$Path` / パッケージディレクトリ上にない等) | `Get["ClaudeOrchestrator_turnwiki.wl"]` を手動実行するか、ファイルの配置を確認する。失敗してもロード自体は skip されるだけで ClaudeOrchestrator 本体には影響しない |
+| `ClaudeTurnWikiCheckIsolation[]` が `"OK" -> False` を返す | TurnWiki root と Claude Directives root が互いに含まれてしまっている(I4 違反) | `$ClaudeTurnWikiRoot` または directive root の配置を見直し、両者が重ならないようにする |
 
 ### TaskSpec の必須キー
 
