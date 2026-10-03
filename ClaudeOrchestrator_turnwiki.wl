@@ -3,55 +3,60 @@
 (* ::Title:: *)
 (* ClaudeOrchestrator_turnwiki.wl *)
 
-(* ::Subsection:: *)
-(* 概要 *)
 
-(* ════════════════════════════════════════════════════════════════════
+(* ::Subsection:: *)
+(* \:6982\:8981 *)
+
+
+(* \:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550
    ClaudeOrchestrator_turnwiki.wl
 
-   ClaudeOrchestrator`TurnWiki` 名前空間。
-   WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループ。
-   仕様: ドキュメント/claude_turnwiki_wikiskill_spec_v0_1.md
+   ClaudeOrchestrator`TurnWiki` \:540d\:524d\:7a7a\:9593\:3002
+   WikiSkill \:578b (arXiv:2608.27454) \:306e LLM turn \:81ea\:5df1\:6539\:5584\:30eb\:30fc\:30d7\:3002
+   \:4ed5\:69d8: \:30c9\:30ad\:30e5\:30e1\:30f3\:30c8/claude_turnwiki_wikiskill_spec_v0_1.md
 
-   3 層 (root = $ClaudeTurnWikiRoot, 既定 <MyPackages>/Claude TurnWiki/):
-     raw/      不変実行トレース (write-once)
-     wiki/     パターン集 + 進化ログ + skill-impact 台帳 (append/compound、
-               決してロールバックしない)
-     skills/   昇格済み手順書 (検証ゲート通過時のみ更新、archive/ で版管理)
+   3 \:5c64 (root = $ClaudeTurnWikiRoot, \:65e2\:5b9a <MyPackages>/Claude TurnWiki/):
+     raw/      \:4e0d\:5909\:5b9f\:884c\:30c8\:30ec\:30fc\:30b9 (write-once)
+     wiki/     \:30d1\:30bf\:30fc\:30f3\:96c6 + \:9032\:5316\:30ed\:30b0 + skill-impact \:53f0\:5e33 (append/compound\:3001
+               \:6c7a\:3057\:3066\:30ed\:30fc\:30eb\:30d0\:30c3\:30af\:3057\:306a\:3044)
+     skills/   \:6607\:683c\:6e08\:307f\:624b\:9806\:66f8 (\:691c\:8a3c\:30b2\:30fc\:30c8\:901a\:904e\:6642\:306e\:307f\:66f4\:65b0\:3001archive/ \:3067\:7248\:7ba1\:7406)
 
-   4 コンポーネント:
-     Inference Agent  = 既存 ClaudeEval/ClaudeRunTurn (無改変。手順書のみ注入)
-     Wiki Maintainer  = ClaudeTurnWikiMaintain   (LLM 1 呼び出し + 純関数適用)
-     Skill Proposer   = ClaudeTurnWikiPropose    (ReAct 型クライアント側ツールループ)
+   4 \:30b3\:30f3\:30dd\:30fc\:30cd\:30f3\:30c8:
+     Inference Agent  = \:65e2\:5b58 ClaudeEval/ClaudeRunTurn (\:7121\:6539\:5909\:3002\:624b\:9806\:66f8\:306e\:307f\:6ce8\:5165)
+     Wiki Maintainer  = ClaudeTurnWikiMaintain   (LLM 1 \:547c\:3073\:51fa\:3057 + \:7d14\:95a2\:6570\:9069\:7528)
+     Skill Proposer   = ClaudeTurnWikiPropose    (ReAct \:578b\:30af\:30e9\:30a4\:30a2\:30f3\:30c8\:5074\:30c4\:30fc\:30eb\:30eb\:30fc\:30d7)
      Gating&Rollback  = ClaudeTurnWikiValidate/GateDecision/Promote/Reject/
-                        RollbackSkill (probe スコア > RBest のみ昇格、fail-closed)
+                        RollbackSkill (probe \:30b9\:30b3\:30a2 > RBest \:306e\:307f\:6607\:683c\:3001fail-closed)
 
-   設計不変条件 (I1-I4):
-     I1 wiki は append/compound のみ (リセット・ロールバック禁止)
-     I2 全提案 (却下含む) を skill-impact に diff+スコア+判定つきで台帳追記
-     I3 手順書は検証ゲート通過時のみ更新。悪化時は手順書のみ戻す。
-        probe 0 件では昇格しない
-     I4 実行役には手順書だけ。wiki は directive root の外 (起動時検査)。
-        具現化されるのは skills/<name>/SKILL.md 本文のみ
+   \:8a2d\:8a08\:4e0d\:5909\:6761\:4ef6 (I1-I4):
+     I1 wiki \:306f append/compound \:306e\:307f (\:30ea\:30bb\:30c3\:30c8\:30fb\:30ed\:30fc\:30eb\:30d0\:30c3\:30af\:7981\:6b62)
+     I2 \:5168\:63d0\:6848 (\:5374\:4e0b\:542b\:3080) \:3092 skill-impact \:306b diff+\:30b9\:30b3\:30a2+\:5224\:5b9a\:3064\:304d\:3067\:53f0\:5e33\:8ffd\:8a18
+     I3 \:624b\:9806\:66f8\:306f\:691c\:8a3c\:30b2\:30fc\:30c8\:901a\:904e\:6642\:306e\:307f\:66f4\:65b0\:3002\:60aa\:5316\:6642\:306f\:624b\:9806\:66f8\:306e\:307f\:623b\:3059\:3002
+        probe 0 \:4ef6\:3067\:306f\:6607\:683c\:3057\:306a\:3044
+     I4 \:5b9f\:884c\:5f79\:306b\:306f\:624b\:9806\:66f8\:3060\:3051\:3002wiki \:306f directive root \:306e\:5916 (\:8d77\:52d5\:6642\:691c\:67fb)\:3002
+        \:5177\:73fe\:5316\:3055\:308c\:308b\:306e\:306f skills/<name>/SKILL.md \:672c\:6587\:306e\:307f
 
-   境界 (runtime-orchestrator-boundary): 進化ループは turn を跨ぐ永続 state を
-   持つため Orchestrator 側。turn 内の注入は既存 ClaudeDirectives 機構
-   (always-on rule として具現化) を使い、ClaudeRuntime/claudecode は無改変。
+   \:5883\:754c (runtime-orchestrator-boundary): \:9032\:5316\:30eb\:30fc\:30d7\:306f turn \:3092\:8de8\:3050\:6c38\:7d9a state \:3092
+   \:6301\:3064\:305f\:3081 Orchestrator \:5074\:3002turn \:5185\:306e\:6ce8\:5165\:306f\:65e2\:5b58 ClaudeDirectives \:6a5f\:69cb
+   (always-on rule \:3068\:3057\:3066\:5177\:73fe\:5316) \:3092\:4f7f\:3044\:3001ClaudeRuntime/claudecode \:306f\:7121\:6539\:5909\:3002
 
-   弱結合依存 (ロード済みのときのみ使用、無ければ縮退):
-     ClaudeOrchestrator`Workflow` : 反復の Petri net 実行 (UseOrchestrator)
-     ClaudeDirectives`            : 手順書の注入具現化 (WireInjection)
-     SourceVault`                 : 既定 LLM (SourceVaultQueryLocalLLM) と
-                                    llmlog トレース原資
-     ClaudeRuntime`               : 生きている runtime の EventTrace 原資
+   \:5f31\:7d50\:5408\:4f9d\:5b58 (\:30ed\:30fc\:30c9\:6e08\:307f\:306e\:3068\:304d\:306e\:307f\:4f7f\:7528\:3001\:7121\:3051\:308c\:3070\:7e2e\:9000):
+     ClaudeOrchestrator`Workflow` : \:53cd\:5fa9\:306e Petri net \:5b9f\:884c (UseOrchestrator)
+     ClaudeDirectives`            : \:624b\:9806\:66f8\:306e\:6ce8\:5165\:5177\:73fe\:5316 (WireInjection)
+     SourceVault`                 : \:65e2\:5b9a LLM (SourceVaultQueryLocalLLM) \:3068
+                                    llmlog \:30c8\:30ec\:30fc\:30b9\:539f\:8cc7
+     ClaudeRuntime`               : \:751f\:304d\:3066\:3044\:308b runtime \:306e EventTrace \:539f\:8cc7
 
-   バージョン: v0.1 (2026-09-01) 初版
-   ════════════════════════════════════════════════════════════════════ *)
+   \:30d0\:30fc\:30b8\:30e7\:30f3: v0.1 (2026-09-01) \:521d\:7248
+   \:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550\:2550 *)
 
 BeginPackage["ClaudeOrchestrator`TurnWiki`"];
 
+
+
 (* ::Subsection:: *)
-(* 公開 API usage *)
+(* \:516c\:958b API usage *)
+
 
 $TurnWikiVersion::usage =
   "$TurnWikiVersion is the real-load marker / version string of ClaudeOrchestrator_turnwiki.wl.";
@@ -249,22 +254,22 @@ Begin["`Private`"];
 
 $TurnWikiVersion = "0.2 (2026-09-08)";
 
-(* ロード時のファイル位置を捕捉 (root 既定値の基準)。 *)
+(* \:30ed\:30fc\:30c9\:6642\:306e\:30d5\:30a1\:30a4\:30eb\:4f4d\:7f6e\:3092\:6355\:6349 (root \:65e2\:5b9a\:5024\:306e\:57fa\:6e96)\:3002 *)
 $iTWPackageDir = Quiet @ Check[DirectoryName[$InputFileName], ""];
 If[!StringQ[$iTWPackageDir] || $iTWPackageDir === "", $iTWPackageDir = Directory[]];
 
 If[!ValueQ[$ClaudeTurnWikiRoot], $ClaudeTurnWikiRoot = Automatic];
 If[!ValueQ[$ClaudeTurnWikiLLMFn], $ClaudeTurnWikiLLMFn = Automatic];
-(* 実測 (2026-09-02, strixhalo128 / qwen3.8-27b): Maintainer の JSON 出力は生成 ~12 tok/s で
-   1500 トークン超 → 180s では client 切断 (LLMFailed) になった。480s = 5000 トークン相当。 *)
+(* \:5b9f\:6e2c (2026-09-02, strixhalo128 / qwen3.8-27b): Maintainer \:306e JSON \:51fa\:529b\:306f\:751f\:6210 ~12 tok/s \:3067
+   1500 \:30c8\:30fc\:30af\:30f3\:8d85 \[RightArrow] 180s \:3067\:306f client \:5207\:65ad (LLMFailed) \:306b\:306a\:3063\:305f\:3002480s = 5000 \:30c8\:30fc\:30af\:30f3\:76f8\:5f53\:3002 *)
 If[!ValueQ[$ClaudeTurnWikiLLMTimeout], $ClaudeTurnWikiLLMTimeout = 480];
 If[!ValueQ[$ClaudeTurnWikiMaxActiveSkills], $ClaudeTurnWikiMaxActiveSkills = 3];
 If[!ValueQ[$ClaudeTurnWikiAutoWire], $ClaudeTurnWikiAutoWire = True];
 If[!ValueQ[$ClaudeTurnWikiInjectionEnabled], $ClaudeTurnWikiInjectionEnabled = True];
 If[!ValueQ[$ClaudeTurnWikiDirectiveRootOverride], $ClaudeTurnWikiDirectiveRootOverride = Automatic];
 If[!IntegerQ[$ClaudeTurnWikiMaxFailStreak], $ClaudeTurnWikiMaxFailStreak = 3];
-(* 自動原資 (runtime/llmlog) のトレース最小文字数。これ未満は材料にならない (実測:
-   "(no user message)" の 40 字セッションが Maintainer に渡っていた)。TracesFn 注入には適用しない。 *)
+(* \:81ea\:52d5\:539f\:8cc7 (runtime/llmlog) \:306e\:30c8\:30ec\:30fc\:30b9\:6700\:5c0f\:6587\:5b57\:6570\:3002\:3053\:308c\:672a\:6e80\:306f\:6750\:6599\:306b\:306a\:3089\:306a\:3044 (\:5b9f\:6e2c:
+   "(no user message)" \:306e 40 \:5b57\:30bb\:30c3\:30b7\:30e7\:30f3\:304c Maintainer \:306b\:6e21\:3063\:3066\:3044\:305f)\:3002TracesFn \:6ce8\:5165\:306b\:306f\:9069\:7528\:3057\:306a\:3044\:3002 *)
 If[!ValueQ[$ClaudeTurnWikiMinTraceChars], $ClaudeTurnWikiMinTraceChars = 200];
 If[!ValueQ[$ClaudeTurnWikiFailureMarkers],
   $ClaudeTurnWikiFailureMarkers = {
@@ -272,8 +277,11 @@ If[!ValueQ[$ClaudeTurnWikiFailureMarkers],
     "FatalFailure", "ExecutionFailed", "TransportRetryExhausted",
     "CallContractViolation", "ToolLoopBudgetExhausted"}];
 
+
+
 (* ::Subsection:: *)
-(* 基本ユーティリティ: パス / IO / JSON *)
+(* \:57fa\:672c\:30e6\:30fc\:30c6\:30a3\:30ea\:30c6\:30a3: \:30d1\:30b9 / IO / JSON *)
+
 
 iTWRoot[] := Module[{r = $ClaudeTurnWikiRoot},
   If[!StringQ[r], r = FileNameJoin[{$iTWPackageDir, "Claude TurnWiki"}]];
@@ -286,7 +294,7 @@ iTWEnsureDir[dir_String] :=
     Quiet @ Check[CreateDirectory[dir, CreateIntermediateDirectories -> True], $Failed],
     dir];
 
-(* UTF-8 固定の read/write。wolframscript / FE どちらでも同一挙動にする。 *)
+(* UTF-8 \:56fa\:5b9a\:306e read/write\:3002wolframscript / FE \:3069\:3061\:3089\:3067\:3082\:540c\:4e00\:6319\:52d5\:306b\:3059\:308b\:3002 *)
 iTWReadFile[path_String] := Module[{ba},
   If[!FileExistsQ[path], Return[Missing["NotFound", path]]];
   ba = Quiet @ Check[ReadByteArray[path], $Failed];
@@ -295,7 +303,7 @@ iTWReadFile[path_String] := Module[{ba},
     ByteArrayQ[ba], Quiet @ Check[ByteArrayToString[ba], Missing["DecodeFailed", path]],
     True, Missing["ReadFailed", path]]];
 
-(* tmp+rename の原子的書き込み (Windows は Rename 先在で失敗するため退避削除)。 *)
+(* tmp+rename \:306e\:539f\:5b50\:7684\:66f8\:304d\:8fbc\:307f (Windows \:306f Rename \:5148\:5728\:3067\:5931\:6557\:3059\:308b\:305f\:3081\:9000\:907f\:524a\:9664)\:3002 *)
 iTWWriteFile[path_String, content_String] := Module[{dir, tmp, strm, ok = True},
   dir = DirectoryName[path];
   If[dir =!= "", iTWEnsureDir[dir]];
@@ -320,11 +328,11 @@ iTWAppendFile[path_String, content_String] := Module[{cur},
 iTWNowISO[] := DateString[TimeZoneConvert[Now, 0], "ISODateTime"] <> "Z";
 iTWStamp[] := DateString[{"Year", "Month", "Day", "Hour", "Minute", "Second"}];
 
-(* JSON: Missing を落としてから Export (RawJSON は Missing を扱えない)。
-   2026-09-08 実測: ImportString[s, "RawJSON"] は非 ASCII (日本語) を含む文字列で
-   失敗し、LM Studio の正しい JSON 応答 (append_log に「である調」) が ParseFailed に
-   なっていた。mining と同じ Developer`ReadRawJSONString を第一候補にし、
-   UTF-8 バイト経由 → ImportString の順でフォールバックする。 *)
+(* JSON: Missing \:3092\:843d\:3068\:3057\:3066\:304b\:3089 Export (RawJSON \:306f Missing \:3092\:6271\:3048\:306a\:3044)\:3002
+   2026-09-08 \:5b9f\:6e2c: ImportString[s, "RawJSON"] \:306f\:975e ASCII (\:65e5\:672c\:8a9e) \:3092\:542b\:3080\:6587\:5b57\:5217\:3067
+   \:5931\:6557\:3057\:3001LM Studio \:306e\:6b63\:3057\:3044 JSON \:5fdc\:7b54 (append_log \:306b\:300c\:3067\:3042\:308b\:8abf\:300d) \:304c ParseFailed \:306b
+   \:306a\:3063\:3066\:3044\:305f\:3002mining \:3068\:540c\:3058 Developer`ReadRawJSONString \:3092\:7b2c\:4e00\:5019\:88dc\:306b\:3057\:3001
+   UTF-8 \:30d0\:30a4\:30c8\:7d4c\:7531 \[RightArrow] ImportString \:306e\:9806\:3067\:30d5\:30a9\:30fc\:30eb\:30d0\:30c3\:30af\:3059\:308b\:3002 *)
 iTWToJSON[expr_] := Module[{e = expr /. _Missing -> Null, r},
   r = Quiet @ Check[Developer`WriteRawJSONString[e, "Compact" -> True], $Failed];
   If[StringQ[r], r,
@@ -354,8 +362,8 @@ iTWFromJSON[s_String] := Module[{r},
     r = Quiet @ Check[ImportString[s, "RawJSON"], $Failed]];
   r];
 
-(* LLM 応答からの緩い JSON 抽出: <think> ブロックと code fence を剥がし、
-   最初の balanced {...} を取り出す。 *)
+(* LLM \:5fdc\:7b54\:304b\:3089\:306e\:7de9\:3044 JSON \:62bd\:51fa: <think> \:30d6\:30ed\:30c3\:30af\:3068 code fence \:3092\:5265\:304c\:3057\:3001
+   \:6700\:521d\:306e balanced {...} \:3092\:53d6\:308a\:51fa\:3059\:3002 *)
 iTWParseJSONLenient[s_String] := Module[{t = s, start, depth = 0, i, chars, inStr = False, esc = False, endPos = 0, res},
   t = StringReplace[t, RegularExpression["(?s)<think>.*?</think>"] -> ""];
   t = StringReplace[t, RegularExpression["```[a-zA-Z]*"] -> ""];
@@ -378,8 +386,8 @@ iTWParseJSONLenient[s_String] := Module[{t = s, start, depth = 0, i, chars, inSt
   If[AssociationQ[res], res, Missing["ParseFailed"]]];
 iTWParseJSONLenient[___] := Missing["NoJSON"];
 
-(* 弱結合: フルネームの関数/変数が実在するかを DownValues/OwnValues で判定
-   (半登録シンボル対策 = ClaudeOrchestrator iHookCallableQ と同発想)。 *)
+(* \:5f31\:7d50\:5408: \:30d5\:30eb\:30cd\:30fc\:30e0\:306e\:95a2\:6570/\:5909\:6570\:304c\:5b9f\:5728\:3059\:308b\:304b\:3092 DownValues/OwnValues \:3067\:5224\:5b9a
+   (\:534a\:767b\:9332\:30b7\:30f3\:30dc\:30eb\:5bfe\:7b56 = ClaudeOrchestrator iHookCallableQ \:3068\:540c\:767a\:60f3)\:3002 *)
 iTWCallableQ[fullName_String] := Quiet @ Check[
   Names[fullName] =!= {} &&
     With[{h = ToExpression[fullName, InputForm, Hold]},
@@ -404,8 +412,11 @@ iTWTruncate[s_String, max_Integer] :=
   If[StringLength[s] <= max, s,
     StringTake[s, max] <> "\n...[truncated " <> ToString[StringLength[s] - max] <> " chars]"];
 
+
+
 (* ::Subsection:: *)
-(* ストア初期化 / 状態 / 隔離検査 *)
+(* \:30b9\:30c8\:30a2\:521d\:671f\:5316 / \:72b6\:614b / \:9694\:96e2\:691c\:67fb *)
+
 
 $iTWIndexSeed = "# TurnWiki pattern index\n\nNo patterns yet.\n";
 $iTWLogsSeed = "# TurnWiki evolution log\n";
@@ -432,11 +443,16 @@ iTWSaveState[a_Association] :=
 
 ClaudeTurnWikiState[] := iTWLoadState[];
 
-(* RBest は JSON で Null 化されるので数値以外は Missing 扱いへ正規化。 *)
+(* RBest \:306f JSON \:3067 Null \:5316\:3055\:308c\:308b\:306e\:3067\:6570\:5024\:4ee5\:5916\:306f Missing \:6271\:3044\:3078\:6b63\:898f\:5316\:3002 *)
 iTWRBest[] := Module[{r = Lookup[iTWLoadState[], "RBest", Null]},
   If[NumberQ[r], r, Missing["NoBaseline"]]];
 
+
+
 (* ::Subsection:: *)
+(**)
+
+
 (* Model profiles (2026-09-08)
 
    WikiSkill's finding: evolved skills transfer across models, but WHICH skills
@@ -525,7 +541,7 @@ iTWDirectiveRoot[] := Module[{r},
   r = Quiet @ Check[ToExpression["ClaudeDirectives`ClaudeResolveDirectiveRoot"][Automatic], $Failed];
   If[StringQ[r] && DirectoryQ[r], r, Missing["NoDirectiveRoot"]]];
 
-(* I4: wiki が directive root 配下に置かれると注入経路に乗ってしまうため禁止。 *)
+(* I4: wiki \:304c directive root \:914d\:4e0b\:306b\:7f6e\:304b\:308c\:308b\:3068\:6ce8\:5165\:7d4c\:8def\:306b\:4e57\:3063\:3066\:3057\:307e\:3046\:305f\:3081\:7981\:6b62\:3002 *)
 ClaudeTurnWikiCheckIsolation[] := Module[{root, droot, inside, contains, canon},
   root = iTWRoot[];
   droot = iTWDirectiveRoot[];
@@ -555,8 +571,11 @@ ClaudeTurnWikiStatus[] := Module[{st = iTWLoadState[], pats, probes},
     "AutoLevel" -> ClaudeTurnWikiAutoLevelQ[],
     "DirectiveLevels" -> ClaudeTurnWikiDirectiveLevels[]|>];
 
+
+
 (* ::Subsection:: *)
-(* LLM 解決 *)
+(* LLM \:89e3\:6c7a *)
+
 
 iTWResolveLLMFn[opt_] := Which[
   opt =!= Automatic && opt =!= None, opt,
@@ -571,8 +590,11 @@ iTWCallLLM[llmFn_, prompt_String, sys_] := Module[{r},
   r = Quiet @ Check[llmFn[prompt, sys], $Failed];
   If[StringQ[r], r, Missing["LLMFailed", r]]];
 
+
+
 (* ::Subsection:: *)
-(* Raw Layer: トレース分類 / 描画 / 採取 *)
+(* Raw Layer: \:30c8\:30ec\:30fc\:30b9\:5206\:985e / \:63cf\:753b / \:63a1\:53d6 *)
+
 
 $iTWFailEventTypes = {
   "FatalFailure", "ExecutionFailed", "TransportRetryExhausted",
@@ -580,8 +602,8 @@ $iTWFailEventTypes = {
   "FormatRetry", "ValidationRepairAttempt", "ProviderFatalError",
   "BudgetExhausted", "ProviderFailed"};
 
-(* 「修復ループが要らない turn」を pass とみなす: 修復系イベントが 1 つでも
-   あれば学習対象 (fail)。 *)
+(* \:300c\:4fee\:5fa9\:30eb\:30fc\:30d7\:304c\:8981\:3089\:306a\:3044 turn\:300d\:3092 pass \:3068\:307f\:306a\:3059: \:4fee\:5fa9\:7cfb\:30a4\:30d9\:30f3\:30c8\:304c 1 \:3064\:3067\:3082
+   \:3042\:308c\:3070\:5b66\:7fd2\:5bfe\:8c61 (fail)\:3002 *)
 ClaudeTurnWikiClassifyRuntimeTrace[trace_List] := Module[{evs, types, signals, denyQ},
   evs = Select[trace, AssociationQ];
   types = Lookup[#, "Type", ""] & /@ evs;
@@ -612,8 +634,8 @@ ClaudeTurnWikiRenderTrace[trace_List, maxChars_Integer : 15000] := Module[{lines
   iTWTruncate[StringRiffle[Select[lines, # =!= "" &], "\n"], maxChars]];
 ClaudeTurnWikiRenderTrace[___] := "";
 
-(* 生きている runtime からの採取 (弱結合。公開 enumeration が無いため
-   Private レジストリを defensive に読む)。 *)
+(* \:751f\:304d\:3066\:3044\:308b runtime \:304b\:3089\:306e\:63a1\:53d6 (\:5f31\:7d50\:5408\:3002\:516c\:958b enumeration \:304c\:7121\:3044\:305f\:3081
+   Private \:30ec\:30b8\:30b9\:30c8\:30ea\:3092 defensive \:306b\:8aad\:3080)\:3002 *)
 iTWCollectRuntimeTraces[maxChars_Integer] := Module[{reg, out = {}},
   If[!iTWCallableQ["ClaudeRuntime`ClaudeTurnTrace"], Return[{}]];
   reg = Quiet @ Check[ToExpression["ClaudeRuntime`Private`$iClaudeRuntimes"], <||>];
@@ -647,9 +669,9 @@ iTWRuntimeProviderModel[tr_List] := Module[{ev},
       If[StringQ[m], m, Missing["NotReported"]]]|>];
 iTWRuntimeProviderModel[___] := <|"Provider" -> Missing["NotReported"], "Model" -> Missing["NotReported"]|>;
 
-(* ハーネス生成プロンプト (ClaudeEval 単発) の user 発話は CLAUDE.md 投影や注入 docs の
-   定型文が数千字続く。llmlog と同じ規則で実タスク本文だけを残す (llmlog の抽出関数が
-   あればそれを使い、無ければ同等の最小実装)。対話セッションの発話は素通し。 *)
+(* \:30cf\:30fc\:30cd\:30b9\:751f\:6210\:30d7\:30ed\:30f3\:30d7\:30c8 (ClaudeEval \:5358\:767a) \:306e user \:767a\:8a71\:306f CLAUDE.md \:6295\:5f71\:3084\:6ce8\:5165 docs \:306e
+   \:5b9a\:578b\:6587\:304c\:6570\:5343\:5b57\:7d9a\:304f\:3002llmlog \:3068\:540c\:3058\:898f\:5247\:3067\:5b9f\:30bf\:30b9\:30af\:672c\:6587\:3060\:3051\:3092\:6b8b\:3059 (llmlog \:306e\:62bd\:51fa\:95a2\:6570\:304c
+   \:3042\:308c\:3070\:305d\:308c\:3092\:4f7f\:3044\:3001\:7121\:3051\:308c\:3070\:540c\:7b49\:306e\:6700\:5c0f\:5b9f\:88c5)\:3002\:5bfe\:8a71\:30bb\:30c3\:30b7\:30e7\:30f3\:306e\:767a\:8a71\:306f\:7d20\:901a\:3057\:3002 *)
 iTWStripHarnessBoilerplate[s_String] := Module[{f, m, t},
   If[iTWCallableQ["SourceVault`PrivateLLMLog`iSVLLExtractTaskText"],
     f = ToExpression["SourceVault`PrivateLLMLog`iSVLLExtractTaskText"];
@@ -672,8 +694,8 @@ iTWTurnText[t_Association] := With[{txt = StringTrim[ToString[Lookup[t, "Text", 
   If[ToLowerCase[ToString[Lookup[t, "Role", ""]]] === "user",
     iTWStripHarnessBoilerplate[txt], txt]];
 
-(* llmlog の全文 transcript ({<|Role,At,Text,Tools|>..}) を LLM 向けテキストに描画。
-   失敗の証拠は末尾に出るので tail-keep (先頭の user 依頼だけは Task として別途保持)。 *)
+(* llmlog \:306e\:5168\:6587 transcript ({<|Role,At,Text,Tools|>..}) \:3092 LLM \:5411\:3051\:30c6\:30ad\:30b9\:30c8\:306b\:63cf\:753b\:3002
+   \:5931\:6557\:306e\:8a3c\:62e0\:306f\:672b\:5c3e\:306b\:51fa\:308b\:306e\:3067 tail-keep (\:5148\:982d\:306e user \:4f9d\:983c\:3060\:3051\:306f Task \:3068\:3057\:3066\:5225\:9014\:4fdd\:6301)\:3002 *)
 iTWRenderTranscript[turns_List, maxChars_Integer] := Module[{lines, acc = {}, total = 0},
   lines = Map[
     Function[t,
@@ -692,11 +714,11 @@ iTWRenderTranscript[turns_List, maxChars_Integer] := Module[{lines, acc = {}, to
     {i, Length[lines], 1, -1}];
   If[Length[acc] < Length[lines], "...[earlier turns omitted]\n", ""] <> StringRiffle[acc, "\n"]];
 
-(* SourceVault llmlog からの採取 (弱結合)。SessionKind=harness が ClaudeEval 単発 turn に
-   相当。全文 transcript が取れればそれを (2026-09-02: digest 由来の要約は 数十〜数百字で
-   Maintainer の材料にならなかった)、無ければ digest フィールドを使う。
-   分類は failure marker 正規表現 (cap 前の全文に対して)。 *)
-(* SessionTranscript の戻りは <|SessionId, Source, Path, Turns|> (実測) または turn の List。 *)
+(* SourceVault llmlog \:304b\:3089\:306e\:63a1\:53d6 (\:5f31\:7d50\:5408)\:3002SessionKind=harness \:304c ClaudeEval \:5358\:767a turn \:306b
+   \:76f8\:5f53\:3002\:5168\:6587 transcript \:304c\:53d6\:308c\:308c\:3070\:305d\:308c\:3092 (2026-09-02: digest \:7531\:6765\:306e\:8981\:7d04\:306f \:6570\:5341\:301c\:6570\:767e\:5b57\:3067
+   Maintainer \:306e\:6750\:6599\:306b\:306a\:3089\:306a\:304b\:3063\:305f)\:3001\:7121\:3051\:308c\:3070 digest \:30d5\:30a3\:30fc\:30eb\:30c9\:3092\:4f7f\:3046\:3002
+   \:5206\:985e\:306f failure marker \:6b63\:898f\:8868\:73fe (cap \:524d\:306e\:5168\:6587\:306b\:5bfe\:3057\:3066)\:3002 *)
+(* SessionTranscript \:306e\:623b\:308a\:306f <|SessionId, Source, Path, Turns|> (\:5b9f\:6e2c) \:307e\:305f\:306f turn \:306e List\:3002 *)
 iTWTranscriptTurns[r_] := Which[
   ListQ[r], Select[r, AssociationQ],
   AssociationQ[r], With[{t = Lookup[r, "Turns", {}]}, If[ListQ[t], Select[t, AssociationQ], {}]],
@@ -708,7 +730,7 @@ iTWCollectLLMLogTraces[maxChars_Integer, scanLimit_Integer, transcriptLimit_Inte
   f = ToExpression["SourceVault`SourceVaultClaudeCodeSessions"];
   hasTranscript = iTWCallableQ["SourceVault`SourceVaultClaudeCodeSessionTranscript"];
   tf = If[hasTranscript, ToExpression["SourceVault`SourceVaultClaudeCodeSessionTranscript"], None];
-  (* ClaudeEval 単発 (SessionKind=harness) を優先し、足りなければ interactive で補う。 *)
+  (* ClaudeEval \:5358\:767a (SessionKind=harness) \:3092\:512a\:5148\:3057\:3001\:8db3\:308a\:306a\:3051\:308c\:3070 interactive \:3067\:88dc\:3046\:3002 *)
   sessions = Quiet @ Check[f["Limit" -> scanLimit, "Kind" -> "harness"], {}];
   If[!ListQ[sessions], sessions = {}];
   sessions = Select[sessions, AssociationQ];
@@ -723,7 +745,7 @@ iTWCollectLLMLogTraces[maxChars_Integer, scanLimit_Integer, transcriptLimit_Inte
       Module[{text, full, kind, sid, turns, task},
         If[AssociationQ[d],
           sid = ToString[Lookup[d, "SessionId", CreateUUID[]]];
-          (* transcript は 1 件 1-5s かかるので直近 transcriptLimit 件だけ全文を引く *)
+          (* transcript \:306f 1 \:4ef6 1-5s \:304b\:304b\:308b\:306e\:3067\:76f4\:8fd1 transcriptLimit \:4ef6\:3060\:3051\:5168\:6587\:3092\:5f15\:304f *)
           turns = If[hasTranscript && fetched < transcriptLimit,
             fetched++; iTWTranscriptTurns[Quiet @ Check[tf[sid], $Failed]],
             {}];
@@ -747,7 +769,7 @@ iTWCollectLLMLogTraces[maxChars_Integer, scanLimit_Integer, transcriptLimit_Inte
             AnyTrue[$ClaudeTurnWikiFailureMarkers,
               StringContainsQ[full, RegularExpression[#]] &],
             "fail", "pass"];
-          (* 数十字の空セッション ("(no user message)" 等) は材料にならないので捨てる *)
+          (* \:6570\:5341\:5b57\:306e\:7a7a\:30bb\:30c3\:30b7\:30e7\:30f3 ("(no user message)" \:7b49) \:306f\:6750\:6599\:306b\:306a\:3089\:306a\:3044\:306e\:3067\:6368\:3066\:308b *)
           If[StringLength[full] >= $ClaudeTurnWikiMinTraceChars,
             AppendTo[out, iTWEnsureTraceProfile @ <|
               "TraceId" -> "cc-" <> sid,
@@ -794,11 +816,11 @@ ClaudeTurnWikiCollectTraces[opts : OptionsPattern[]] := Module[
   all = iTWEnsureTraceProfile /@ Select[all, AssociationQ];
   If[profile =!= $iTWDefaultProfile,
     all = Select[all, Lookup[#, "Profile", "unknown"] === profile &]];
-  (* 定期 tick の watermark: 消費済み TraceId は再サンプルしない。 *)
+  (* \:5b9a\:671f tick \:306e watermark: \:6d88\:8cbb\:6e08\:307f TraceId \:306f\:518d\:30b5\:30f3\:30d7\:30eb\:3057\:306a\:3044\:3002 *)
   If[ListQ[exclude] && exclude =!= {},
     all = Select[all, !MemberQ[exclude, ToString[Lookup[#, "TraceId", ""]]] &]];
-  (* 層化: 論文 App.C = fail<=5 + pass<=3。原資は新しい順 (llmlog は
-     LastAtUTC 降順) なので先頭から採る。 *)
+  (* \:5c64\:5316: \:8ad6\:6587 App.C = fail<=5 + pass<=3\:3002\:539f\:8cc7\:306f\:65b0\:3057\:3044\:9806 (llmlog \:306f
+     LastAtUTC \:964d\:9806) \:306a\:306e\:3067\:5148\:982d\:304b\:3089\:63a1\:308b\:3002 *)
   fails = Take[Select[all, Lookup[#, "Kind", ""] === "fail" &], UpTo[maxFail]];
   passes = Take[Select[all, Lookup[#, "Kind", ""] === "pass" &], UpTo[maxPass]];
   sample = Join[fails, passes];
@@ -810,13 +832,16 @@ ClaudeTurnWikiCollectTraces[opts : OptionsPattern[]] := Module[
       Function[t,
         Module[{p = iTWPath["raw", "iter-" <> ToString[iter],
             ToString[Lookup[t, "TraceId", CreateUUID[]]] <> ".json"]},
-          (* Raw Layer は不変: 既存ファイルは上書きしない (write-once)。 *)
+          (* Raw Layer \:306f\:4e0d\:5909: \:65e2\:5b58\:30d5\:30a1\:30a4\:30eb\:306f\:4e0a\:66f8\:304d\:3057\:306a\:3044 (write-once)\:3002 *)
           If[!FileExistsQ[p], iTWWriteFile[p, iTWToJSON[t]]]]],
       sample]];
   sample];
 
+
+
 (* ::Subsection:: *)
-(* patch ops エンジン (純関数) *)
+(* patch ops \:30a8\:30f3\:30b8\:30f3 (\:7d14\:95a2\:6570) *)
+
 
 ClaudeTurnWikiApplyPatchOps[content_String, edits_List] := Module[{cur = content, applied = 0, failed = {}},
   Scan[
@@ -842,8 +867,11 @@ ClaudeTurnWikiApplyPatchOps[content_String, edits_List] := Module[{cur = content
   <|"Content" -> cur, "Applied" -> applied, "Failed" -> failed|>];
 ClaudeTurnWikiApplyPatchOps[content_String, _] := <|"Content" -> content, "Applied" -> 0, "Failed" -> {}|>;
 
+
+
 (* ::Subsection:: *)
 (* Wiki Maintainer *)
+
 
 $iTWMaintainerSysPrompt = "You are a Wiki Maintainer Agent for an LLM turn-improvement system.
 Your job is to maintain a structured knowledge base (wiki) documenting patterns observed
@@ -899,7 +927,7 @@ ClaudeTurnWikiApplyMaintainerOutput[out_Association, opts : OptionsPattern[]] :=
   ClaudeTurnWikiInitialize[];
   iter = OptionValue["Iteration"];
   If[iter === Automatic, iter = Lookup[iTWLoadState[], "Iteration", 0]];
-  (* create_patterns: 既存があれば上書きせず追記 (I1 append/compound)。 *)
+  (* create_patterns: \:65e2\:5b58\:304c\:3042\:308c\:3070\:4e0a\:66f8\:304d\:305b\:305a\:8ffd\:8a18 (I1 append/compound)\:3002 *)
   Scan[
     Function[cp,
       Module[{nm, safe, path, content},
@@ -915,7 +943,7 @@ ClaudeTurnWikiApplyMaintainerOutput[out_Association, opts : OptionsPattern[]] :=
             AppendTo[created, safe <> ".md"],
             AppendTo[failedOps, cp]]]]],
     Lookup[out, "create_patterns", {}]];
-  (* update_patterns: patch ops。 *)
+  (* update_patterns: patch ops\:3002 *)
   Scan[
     Function[up,
       Module[{nm, safe, path, cur, res},
@@ -967,8 +995,11 @@ ClaudeTurnWikiMaintain[traces_List, opts : OptionsPattern[]] := Module[
     ClaudeTurnWikiApplyMaintainerOutput[parsed, "Iteration" -> OptionValue["Iteration"]],
     "RawKeys" -> Keys[parsed]]];
 
+
+
 (* ::Subsection:: *)
-(* Skill Layer: 読み出し / staging / 昇格 / 却下 / ロールバック *)
+(* Skill Layer: \:8aad\:307f\:51fa\:3057 / staging / \:6607\:683c / \:5374\:4e0b / \:30ed\:30fc\:30eb\:30d0\:30c3\:30af *)
+
 
 (* active skills of a profile (default = the global set). Skill files are
    shared under skills/<name>/; profiles only differ in which are active. *)
@@ -1050,7 +1081,7 @@ ClaudeTurnWikiPromote[name_String, skillMD_String, purposeMD_String, score_, met
   {ps, cur, ts = iTWStamp[], profile = iTWNormProfile[Lookup[meta, "Profile", Automatic]]},
   ClaudeTurnWikiInitialize[];
   cur = iTWReadFile[iTWPath["skills", name, "SKILL.md"]];
-  (* 同一秒内の連続昇格で archive が潰れないようサフィックスで回避。 *)
+  (* \:540c\:4e00\:79d2\:5185\:306e\:9023\:7d9a\:6607\:683c\:3067 archive \:304c\:6f70\:308c\:306a\:3044\:3088\:3046\:30b5\:30d5\:30a3\:30c3\:30af\:30b9\:3067\:56de\:907f\:3002 *)
   While[DirectoryQ[iTWPath["archive", name, ts]], ts = ts <> "x"];
   If[StringQ[cur],
     iTWWriteFile[iTWPath["archive", name, ts, "SKILL.md"], cur]];
@@ -1084,7 +1115,7 @@ ClaudeTurnWikiRollbackSkill[name_String, profileIn_ : Automatic] := Module[
      is shared, so restoring an archived version would change every other
      profile too. Content restore is the default-profile operation. *)
   If[versions === {} || profile =!= $iTWDefaultProfile,
-    (* 前版が無い: 非活性化 (手順書を外す)。wiki は不変。 *)
+    (* \:524d\:7248\:304c\:7121\:3044: \:975e\:6d3b\:6027\:5316 (\:624b\:9806\:66f8\:3092\:5916\:3059)\:3002wiki \:306f\:4e0d\:5909\:3002 *)
     iTWSaveProfileState[profile, <|
       "ActiveSkills" -> DeleteCases[Lookup[ps, "ActiveSkills", {}], name],
       "RBest" -> Null|>];
@@ -1107,7 +1138,7 @@ ClaudeTurnWikiRollbackSkill[name_String, profileIn_ : Automatic] := Module[
     content = iTWReadFile[FileNameJoin[{latest, "SKILL.md"}]];
     If[!StringQ[content], Return[<|"Status" -> "ArchiveUnreadable", "Name" -> name|>]];
     iTWWriteFile[iTWPath["skills", name, "SKILL.md"], content];
-    iTWSaveProfileState[profile, <|"RBest" -> Null|>];  (* 次反復で再ベースライン (I3) *)
+    iTWSaveProfileState[profile, <|"RBest" -> Null|>];  (* \:6b21\:53cd\:5fa9\:3067\:518d\:30d9\:30fc\:30b9\:30e9\:30a4\:30f3 (I3) *)
     If[TrueQ[$ClaudeTurnWikiInjectionEnabled],
       Quiet @ Check[iTWMaterializeSkill[name, content], Null]];
     ClaudeTurnWikiAppendSkillImpact[<|
@@ -1141,8 +1172,11 @@ ClaudeTurnWikiTransferSkill[name_String, toProfile_, opts : OptionsPattern[]] :=
     "Validation" -> Lookup[gate, "Validation", Missing[]],
     "RBest" -> iTWProfileRBest[profile]|>];
 
+
+
 (* ::Subsection:: *)
-(* Skill Proposer (ReAct 型クライアント側ツールループ) *)
+(* Skill Proposer (ReAct \:578b\:30af\:30e9\:30a4\:30a2\:30f3\:30c8\:5074\:30c4\:30fc\:30eb\:30eb\:30fc\:30d7) *)
+
 
 $iTWProposerSysPrompt = "You are a Skill Proposer Agent for an LLM turn-improvement system.
 Your job is to explore the wiki knowledge base and execution traces, diagnose root causes,
@@ -1172,7 +1206,7 @@ No change needed: {\"action\": \"no_action\", \"rationale\": \"...\"}
 5. Prefer patching an existing skill over creating a new one when it is partially correct.
 6. One atomic proposal targeting a single skill.";
 
-(* サンドボックス: wiki/ traces/ skills/ のみ。traces/<id> は raw/iter-<k>/ へ解決。 *)
+(* \:30b5\:30f3\:30c9\:30dc\:30c3\:30af\:30b9: wiki/ traces/ skills/ \:306e\:307f\:3002traces/<id> \:306f raw/iter-<k>/ \:3078\:89e3\:6c7a\:3002 *)
 iTWSandboxRead[path_String, maxChars_Integer] := Module[{p = path, iter, full, c},
   If[StringContainsQ[p, ".."] || StringStartsQ[p, "/"] || StringContainsQ[p, ":"],
     Return["ERROR: path not allowed"]];
@@ -1195,7 +1229,7 @@ iTWSandboxRead[path_String, maxChars_Integer] := Module[{p = path, iter, full, c
   c = iTWReadFile[full];
   If[!StringQ[c], Return["ERROR: not found: " <> p]];
   If[StringStartsQ[p, "traces/"],
-    (* raw トレース JSON は Text フィールドを本文として返す。 *)
+    (* raw \:30c8\:30ec\:30fc\:30b9 JSON \:306f Text \:30d5\:30a3\:30fc\:30eb\:30c9\:3092\:672c\:6587\:3068\:3057\:3066\:8fd4\:3059\:3002 *)
     Module[{a = iTWFromJSON[c]},
       If[AssociationQ[a],
         iTWTruncate["Task: " <> ToString[Lookup[a, "Task", ""]] <> "\n" <>
@@ -1252,7 +1286,7 @@ ClaudeTurnWikiPropose[opts : OptionsPattern[]] := Module[
         Break[],
       ToString[Lookup[parsed, "tool", ""]] === "read_file",
         path = ToString[Lookup[parsed, "path", ""]];
-        (* 同一 read の堂々巡りガード (claudecode-eval-loop-guard と同発想)。 *)
+        (* \:540c\:4e00 read \:306e\:5802\:3005\:5de1\:308a\:30ac\:30fc\:30c9 (claudecode-eval-loop-guard \:3068\:540c\:767a\:60f3)\:3002 *)
         If[path === lastSig, sameSigCount++, sameSigCount = 0; lastSig = path];
         If[sameSigCount >= 2,
           result = <|"Action" -> "no_action", "Status" -> "LoopGuard", "Path" -> path|>;
@@ -1260,7 +1294,7 @@ ClaudeTurnWikiPropose[opts : OptionsPattern[]] := Module[
         convo = convo <> "\n\n=== read_file: " <> path <> " ===\n" <>
           iTWSandboxRead[path, maxChars] <>
           "\n\nRespond with your next JSON action.",
-      (* finish 相当を直接返してくるモデルへの寛容: proposal 形をしていれば受ける。 *)
+      (* finish \:76f8\:5f53\:3092\:76f4\:63a5\:8fd4\:3057\:3066\:304f\:308b\:30e2\:30c7\:30eb\:3078\:306e\:5bdb\:5bb9: proposal \:5f62\:3092\:3057\:3066\:3044\:308c\:3070\:53d7\:3051\:308b\:3002 *)
       KeyExistsQ[parsed, "action"],
         result = ClaudeTurnWikiParseProposal[parsed]; Break[],
       True,
@@ -1273,8 +1307,11 @@ ClaudeTurnWikiPropose[opts : OptionsPattern[]] := Module[
     result = <|"Action" -> "no_action", "Status" -> "Exhausted"|>];
   Append[result, "TurnsUsed" -> turnsUsed]];
 
+
+
 (* ::Subsection:: *)
 (* Probes / Validation / Gate *)
+
 
 ClaudeTurnWikiAddProbe[probe_Association] := Module[{pid, p = probe},
   ClaudeTurnWikiInitialize[];
@@ -1299,8 +1336,8 @@ ClaudeTurnWikiProbeFromTrace[trace_Association] :=
     "Kind" -> "contains",
     "OriginTraceId" -> Lookup[trace, "TraceId", Missing[]]|>;
 
-(* 既定の probe 評価: 手順書を注入した 1 発 LLM 回答に Expected が含まれるか。
-   Expected 無し probe は pass (WiCER iSVMDefaultProbeEval と同規約)。 *)
+(* \:65e2\:5b9a\:306e probe \:8a55\:4fa1: \:624b\:9806\:66f8\:3092\:6ce8\:5165\:3057\:305f 1 \:767a LLM \:56de\:7b54\:306b Expected \:304c\:542b\:307e\:308c\:308b\:304b\:3002
+   Expected \:7121\:3057 probe \:306f pass (WiCER iSVMDefaultProbeEval \:3068\:540c\:898f\:7d04)\:3002 *)
 iTWDefaultProbeEval[probe_Association, skillsText_String, llmFn_] := Module[{exp, task, sys, resp},
   exp = Lookup[probe, "Expected", Missing["NoExpected"]];
   If[MissingQ[exp] || exp === Null, Return[True]];
@@ -1357,15 +1394,18 @@ ClaudeTurnWikiValidate[opts : OptionsPattern[]] := Module[
     "Score" -> score, "Passed" -> passed, "Failed" -> failed, "Runs" -> runs,
     "Profile" -> profile|>];
 
-(* fail-closed: 数値スコア同士の厳密な > のみ Accepted (論文 Eq.4)。 *)
+(* fail-closed: \:6570\:5024\:30b9\:30b3\:30a2\:540c\:58eb\:306e\:53b3\:5bc6\:306a > \:306e\:307f Accepted (\:8ad6\:6587 Eq.4)\:3002 *)
 ClaudeTurnWikiGateDecision[cand_, rBest_] := Which[
   !NumberQ[cand], "Rejected",
   !NumberQ[rBest], "Rejected",
   cand > rBest, "Accepted",
   True, "Rejected"];
 
+
+
 (* ::Subsection:: *)
-(* skill-impact 台帳 (I2: 没案も残す。ハーネスが機械的に追記) *)
+(* skill-impact \:53f0\:5e33 (I2: \:6ca1\:6848\:3082\:6b8b\:3059\:3002\:30cf\:30fc\:30cd\:30b9\:304c\:6a5f\:68b0\:7684\:306b\:8ffd\:8a18) *)
+
 
 ClaudeTurnWikiAppendSkillImpact[entry_Association] := Module[{md, jl, iter},
   ClaudeTurnWikiInitialize[];
@@ -1389,11 +1429,14 @@ ClaudeTurnWikiAppendSkillImpact[entry_Association] := Module[{md, jl, iter},
 ClaudeTurnWikiSkillImpact[] :=
   With[{c = iTWReadFile[iTWPath["wiki", "skill-impact.md"]]}, If[StringQ[c], c, ""]];
 
-(* ::Subsection:: *)
-(* 反復 step 関数 (direct / Orchestrator 共有) *)
 
-(* 評価が健全 (Status OK) なときだけベースライン確定。エラー混じりの
-   0 点を RBest に固定しない (fail-closed だが junk baseline も作らない)。 *)
+
+(* ::Subsection:: *)
+(* \:53cd\:5fa9 step \:95a2\:6570 (direct / Orchestrator \:5171\:6709) *)
+
+
+(* \:8a55\:4fa1\:304c\:5065\:5168 (Status OK) \:306a\:3068\:304d\:3060\:3051\:30d9\:30fc\:30b9\:30e9\:30a4\:30f3\:78ba\:5b9a\:3002\:30a8\:30e9\:30fc\:6df7\:3058\:308a\:306e
+   0 \:70b9\:3092 RBest \:306b\:56fa\:5b9a\:3057\:306a\:3044 (fail-closed \:3060\:304c junk baseline \:3082\:4f5c\:3089\:306a\:3044)\:3002 *)
 iTWStepEnsureBaseline[llmFn_, evalFn_, profileIn_ : Automatic] := Module[
   {profile = iTWNormProfile[profileIn], ps, v},
   ps = iTWProfileState[profile];
@@ -1447,8 +1490,11 @@ iTWBumpIteration[] := Module[{st = iTWLoadState[]},
   iTWSaveState[st];
   st["Iteration"]];
 
+
+
 (* ::Subsection:: *)
-(* 反復ドライバ (direct + Orchestrator) *)
+(* \:53cd\:5fa9\:30c9\:30e9\:30a4\:30d0 (direct + Orchestrator) *)
+
 
 iTWOrchestratorAvailableQ[] :=
   iTWValueQ["ClaudeOrchestrator`Workflow`$WorkflowVersion"] &&
@@ -1517,8 +1563,8 @@ iTWRunIterationDirect[opts : OptionsPattern[ClaudeTurnWikiRunIteration]] := Modu
     "Decision" -> gate["Decision"], "Validation" -> Lookup[gate, "Validation", Missing[]],
     "RBest" -> iTWProfileRBest[profile]|>];
 
-(* Orchestrator 経路: 分岐は Guard 純関数、LLM は transition handler のみ
-   (WiCER iSVMWikiCompileNetWith と同型)。step 関数は direct と共有。 *)
+(* Orchestrator \:7d4c\:8def: \:5206\:5c90\:306f Guard \:7d14\:95a2\:6570\:3001LLM \:306f transition handler \:306e\:307f
+   (WiCER iSVMWikiCompileNetWith \:3068\:540c\:578b)\:3002step \:95a2\:6570\:306f direct \:3068\:5171\:6709\:3002 *)
 iTWPay[b_] := Lookup[First[Values[b], <||>], "Payload", <||>];
 
 iTWRunIterationViaOrchestrator[opts : OptionsPattern[ClaudeTurnWikiRunIteration]] := Module[
@@ -1609,7 +1655,7 @@ iTWRunIterationViaOrchestrator[opts : OptionsPattern[ClaudeTurnWikiRunIteration]
   ToExpression["ClaudeOrchestrator`Workflow`ClaudeSubmitInputs"][wid, <|"Iteration" -> iterBefore|>];
   runRes = ToExpression["ClaudeOrchestrator`Workflow`ClaudeRunWorkflow"][
     wid, "Async" -> False, "MaxWait" -> Quantity[3600, "Seconds"]];
-  (* 結果抽出は marking 由来のみ (closure 非依存 = restore 後も抽出可)。 *)
+  (* \:7d50\:679c\:62bd\:51fa\:306f marking \:7531\:6765\:306e\:307f (closure \:975e\:4f9d\:5b58 = restore \:5f8c\:3082\:62bd\:51fa\:53ef)\:3002 *)
   state = Quiet @ Check[ToExpression["ClaudeOrchestrator`Workflow`ClaudeWorkflowState"][wid], <||>];
   marking = Lookup[state, "Marking", <||>];
   tokens = Lookup[state, "Tokens", <||>];
@@ -1632,18 +1678,21 @@ Options[ClaudeTurnWikiRun] = Options[ClaudeTurnWikiRunIteration];
 ClaudeTurnWikiRun[k_Integer?Positive, opts : OptionsPattern[]] := Module[{results = {}, r, rb},
   Do[
     rb = iTWRBest[];
-    If[NumberQ[rb] && rb >= 1.0, Break[]];  (* 早期終了 (Algorithm 1 line 4) *)
+    If[NumberQ[rb] && rb >= 1.0, Break[]];  (* \:65e9\:671f\:7d42\:4e86 (Algorithm 1 line 4) *)
     r = ClaudeTurnWikiRunIteration[opts];
     AppendTo[results, r];
     If[MemberQ[{"IsolationViolation", "LLMUnavailable"}, Lookup[r, "Status", ""]], Break[]],
     {k}];
   results];
 
-(* ::Subsection:: *)
-(* 定期維持 tick (service/heartbeat 用): 設定 / watermark / 排他ロック *)
 
-(* 設定は root 直下の settings.json に永続化 = 対話カーネルの設定欄で ON にした
-   値を headless の service カーネルが Dropbox 経由でそのまま読める。 *)
+
+(* ::Subsection:: *)
+(* \:5b9a\:671f\:7dad\:6301 tick (service/heartbeat \:7528): \:8a2d\:5b9a / watermark / \:6392\:4ed6\:30ed\:30c3\:30af *)
+
+
+(* \:8a2d\:5b9a\:306f root \:76f4\:4e0b\:306e settings.json \:306b\:6c38\:7d9a\:5316 = \:5bfe\:8a71\:30ab\:30fc\:30cd\:30eb\:306e\:8a2d\:5b9a\:6b04\:3067 ON \:306b\:3057\:305f
+   \:5024\:3092 headless \:306e service \:30ab\:30fc\:30cd\:30eb\:304c Dropbox \:7d4c\:7531\:3067\:305d\:306e\:307e\:307e\:8aad\:3081\:308b\:3002 *)
 $iTWDefaultSettings = <|"AutoMaintain" -> False, "MaintainIntervalSeconds" -> 21600|>;
 
 iTWSettingsPath[] := iTWPath["settings.json"];
@@ -1674,7 +1723,12 @@ ClaudeTurnWikiSetAutoLevel[flag : (True | False)] := Module[{s = ClaudeTurnWikiS
   KeyTake[ClaudeTurnWikiSettings[], {"AutoLevel"}]];
 ClaudeTurnWikiAutoLevelQ[] := TrueQ[Lookup[ClaudeTurnWikiSettings[], "AutoLevel", False]];
 
+
+
 (* ::Subsection:: *)
+(**)
+
+
 (* Adaptive DirectiveLevel per model profile (2026-09-08)
 
    The "how many rules does this model need" knob (ClaudeDirectives
@@ -1802,8 +1856,8 @@ iTWInstallLevelResolver[] := Module[{f},
     Null];
   <|"Status" -> "OK"|>];
 
-(* watermark: 消費済み TraceId (上限つき) と最終 tick 時刻。時刻は AbsoluteTime の
-   数値で持つ (文字列時刻の大小比較は禁物)。 *)
+(* watermark: \:6d88\:8cbb\:6e08\:307f TraceId (\:4e0a\:9650\:3064\:304d) \:3068\:6700\:7d42 tick \:6642\:523b\:3002\:6642\:523b\:306f AbsoluteTime \:306e
+   \:6570\:5024\:3067\:6301\:3064 (\:6587\:5b57\:5217\:6642\:523b\:306e\:5927\:5c0f\:6bd4\:8f03\:306f\:7981\:7269)\:3002 *)
 $iTWMaxSeenTraceIds = 2000;
 iTWWatermarkPath[] := iTWPath["maintain-watermark.json"];
 
@@ -1814,8 +1868,8 @@ iTWLoadWatermark[] := Module[{s = iTWReadFile[iTWWatermarkPath[]], a},
 
 iTWSaveWatermark[a_Association] := iTWWriteFile[iTWWatermarkPath[], iTWToJSON[a]];
 
-(* 排他ロック: 対話カーネルと service カーネルの同時 tick を防ぐ。stale なら奪う。
-   書いた後に読み戻して所有者を確認する (同時書き込みの取りこぼし対策)。 *)
+(* \:6392\:4ed6\:30ed\:30c3\:30af: \:5bfe\:8a71\:30ab\:30fc\:30cd\:30eb\:3068 service \:30ab\:30fc\:30cd\:30eb\:306e\:540c\:6642 tick \:3092\:9632\:3050\:3002stale \:306a\:3089\:596a\:3046\:3002
+   \:66f8\:3044\:305f\:5f8c\:306b\:8aad\:307f\:623b\:3057\:3066\:6240\:6709\:8005\:3092\:78ba\:8a8d\:3059\:308b (\:540c\:6642\:66f8\:304d\:8fbc\:307f\:306e\:53d6\:308a\:3053\:307c\:3057\:5bfe\:7b56)\:3002 *)
 iTWLockPath[] := iTWPath["locks", "maintain-tick.lock"];
 iTWLockOwner[] := $MachineName <> ":" <> ToString[$ProcessID];
 
@@ -1842,7 +1896,7 @@ iTWReleaseLock[] := Module[{p = iTWLockPath[], a, c},
   If[AssociationQ[a] && Lookup[a, "Owner", ""] === iTWLockOwner[],
     Quiet @ Check[DeleteFile[p], Null]]];
 
-(* LLM 可用性の軽量 ping (Automatic かつ ClaudeBackendAvailableQ 不在のとき)。 *)
+(* LLM \:53ef\:7528\:6027\:306e\:8efd\:91cf ping (Automatic \:304b\:3064 ClaudeBackendAvailableQ \:4e0d\:5728\:306e\:3068\:304d)\:3002 *)
 iTWLLMPingQ[llmFn_] := Module[{r},
   If[MissingQ[llmFn], Return[False]];
   r = Quiet @ Check[
@@ -1854,8 +1908,8 @@ Options[ClaudeTurnWikiMaintainTick] = {
   "AvailabilityFn" -> Automatic, "MinIntervalSeconds" -> Automatic,
   "MaxFail" -> 5, "MaxPass" -> 3, "LockStaleSeconds" -> 1800};
 
-(* Collect + Maintain のみ (提案・ゲート・手順書変更は行わない = 観測モードの自動化)。
-   Iteration カウンタは進めない。raw は TraceId 単位 write-once なので重複しない。 *)
+(* Collect + Maintain \:306e\:307f (\:63d0\:6848\:30fb\:30b2\:30fc\:30c8\:30fb\:624b\:9806\:66f8\:5909\:66f4\:306f\:884c\:308f\:306a\:3044 = \:89b3\:6e2c\:30e2\:30fc\:30c9\:306e\:81ea\:52d5\:5316)\:3002
+   Iteration \:30ab\:30a6\:30f3\:30bf\:306f\:9032\:3081\:306a\:3044\:3002raw \:306f TraceId \:5358\:4f4d write-once \:306a\:306e\:3067\:91cd\:8907\:3057\:306a\:3044\:3002 *)
 ClaudeTurnWikiMaintainTick[opts : OptionsPattern[]] := Module[
   {settings, wm, now = AbsoluteTime[], interval, lock, llmFn, avail, traces, m,
    seen, newSeen, iter, res, force = TrueQ[OptionValue["Force"]],
@@ -1873,9 +1927,9 @@ ClaudeTurnWikiMaintainTick[opts : OptionsPattern[]] := Module[
   lock = iTWAcquireLock[OptionValue["LockStaleSeconds"]];
   If[!TrueQ[lock["Acquired"]], Return[Append[lock, "Status" -> "Locked"]]];
   res = Catch[
-    (* LLM 不可用で終わる場合も最終 tick 時刻を記録する (service の判定周期ごとに
-       再試行せず、設定の MaintainIntervalSeconds に従わせる。実測: 旧版は 10 分おきに
-       LLMUnavailable を繰り返した)。 *)
+    (* LLM \:4e0d\:53ef\:7528\:3067\:7d42\:308f\:308b\:5834\:5408\:3082\:6700\:7d42 tick \:6642\:523b\:3092\:8a18\:9332\:3059\:308b (service \:306e\:5224\:5b9a\:5468\:671f\:3054\:3068\:306b
+       \:518d\:8a66\:884c\:305b\:305a\:3001\:8a2d\:5b9a\:306e MaintainIntervalSeconds \:306b\:5f93\:308f\:305b\:308b\:3002\:5b9f\:6e2c: \:65e7\:7248\:306f 10 \:5206\:304a\:304d\:306b
+       LLMUnavailable \:3092\:7e70\:308a\:8fd4\:3057\:305f)\:3002 *)
     Module[{markUnavailable},
       markUnavailable := (
         wm["LastTickAbs"] = now; wm["LastTickAtUTC"] = iTWNowISO[];
@@ -1887,15 +1941,15 @@ ClaudeTurnWikiMaintainTick[opts : OptionsPattern[]] := Module[
     avail = Which[
       avail =!= Automatic, TrueQ[Quiet @ Check[avail[], False]],
       OptionValue["LLMFn"] =!= Automatic, True,
-      (* ClaudeBackendAvailableQ は <|"Available"->True|False, "Reason"->..|> を返す
-         (真偽値ではない。実測: service で llmlog が claudecode を遅延ロードした後、
-         TrueQ[assoc]=False で常に LLMUnavailable になった 2026-09-02)。 *)
+      (* ClaudeBackendAvailableQ \:306f <|"Available"->True|False, "Reason"->..|> \:3092\:8fd4\:3059
+         (\:771f\:507d\:5024\:3067\:306f\:306a\:3044\:3002\:5b9f\:6e2c: service \:3067 llmlog \:304c claudecode \:3092\:9045\:5ef6\:30ed\:30fc\:30c9\:3057\:305f\:5f8c\:3001
+         TrueQ[assoc]=False \:3067\:5e38\:306b LLMUnavailable \:306b\:306a\:3063\:305f 2026-09-02)\:3002 *)
       iTWCallableQ["ClaudeCode`ClaudeBackendAvailableQ"],
         With[{r = Quiet @ Check[
             ToExpression["ClaudeCode`ClaudeBackendAvailableQ"][{"lmstudio", Automatic}], False]},
           TrueQ[r] || (AssociationQ[r] && TrueQ[Lookup[r, "Available", False]])],
-      (* service カーネル (claudecode 不在) では mining の安価な /v1/models 照会で判定。
-         戻りは <|"URL","Model"|> (実測) または model 文字列。不達は Missing/$Failed。 *)
+      (* service \:30ab\:30fc\:30cd\:30eb (claudecode \:4e0d\:5728) \:3067\:306f mining \:306e\:5b89\:4fa1\:306a /v1/models \:7167\:4f1a\:3067\:5224\:5b9a\:3002
+         \:623b\:308a\:306f <|"URL","Model"|> (\:5b9f\:6e2c) \:307e\:305f\:306f model \:6587\:5b57\:5217\:3002\:4e0d\:9054\:306f Missing/$Failed\:3002 *)
       iTWCallableQ["SourceVault`Private`iSVMResolveLocalLLM"],
         With[{r = Quiet @ Check[ToExpression["SourceVault`Private`iSVMResolveLocalLLM"][], $Failed]},
           StringQ[r] || (AssociationQ[r] && StringQ[Lookup[r, "Model", Missing[]]])],
@@ -1913,11 +1967,11 @@ ClaudeTurnWikiMaintainTick[opts : OptionsPattern[]] := Module[
       Throw[<|"Status" -> "NoNewTraces"|>]];
     iter = Lookup[iTWLoadState[], "Iteration", 0];
     m = ClaudeTurnWikiMaintain[traces, "LLMFn" -> llmFn, "Iteration" -> iter];
-    (* 消費済みマークは Maintainer が成功したときだけ (失敗分は次回再挑戦)。
-       ただし最終 tick 時刻は毎回更新して LLM を連打しない。
-       2026-09-08: 同一トレース集合で連続 $ClaudeTurnWikiMaxFailStreak 回失敗したら
-       毒トレースとみなして消費済みにし (Status "GaveUp")、ループの永久停滞を防ぐ
-       (実測: 日本語 JSON の parse 失敗で同じ 2 件を 6h ごとに 3 回以上再試行していた)。 *)
+    (* \:6d88\:8cbb\:6e08\:307f\:30de\:30fc\:30af\:306f Maintainer \:304c\:6210\:529f\:3057\:305f\:3068\:304d\:3060\:3051 (\:5931\:6557\:5206\:306f\:6b21\:56de\:518d\:6311\:6226)\:3002
+       \:305f\:3060\:3057\:6700\:7d42 tick \:6642\:523b\:306f\:6bce\:56de\:66f4\:65b0\:3057\:3066 LLM \:3092\:9023\:6253\:3057\:306a\:3044\:3002
+       2026-09-08: \:540c\:4e00\:30c8\:30ec\:30fc\:30b9\:96c6\:5408\:3067\:9023\:7d9a $ClaudeTurnWikiMaxFailStreak \:56de\:5931\:6557\:3057\:305f\:3089
+       \:6bd2\:30c8\:30ec\:30fc\:30b9\:3068\:307f\:306a\:3057\:3066\:6d88\:8cbb\:6e08\:307f\:306b\:3057 (Status "GaveUp")\:3001\:30eb\:30fc\:30d7\:306e\:6c38\:4e45\:505c\:6ede\:3092\:9632\:3050
+       (\:5b9f\:6e2c: \:65e5\:672c\:8a9e JSON \:306e parse \:5931\:6557\:3067\:540c\:3058 2 \:4ef6\:3092 6h \:3054\:3068\:306b 3 \:56de\:4ee5\:4e0a\:518d\:8a66\:884c\:3057\:3066\:3044\:305f)\:3002 *)
     newSeen = seen;
     ids = ToString[Lookup[#, "TraceId", ""]] & /@ traces;
     setKey = Hash[Sort[ids], "SHA256", "HexString"];
@@ -1957,11 +2011,15 @@ ClaudeTurnWikiMaintainTickStatus[] := Module[{wm = iTWLoadWatermark[], c, lock},
     "LastResult" -> Lookup[wm, "LastResult", None],
     "Lock" -> If[AssociationQ[lock], KeyTake[lock, {"Owner", "AcquiredAtUTC"}], None]|>];
 
+
+
 (* ::Subsection:: *)
-(* 注入 (I4: 手順書のみ。always-on rule として具現化) *)
+(* \:6ce8\:5165 (I4: \:624b\:9806\:66f8\:306e\:307f\:3002always-on rule \:3068\:3057\:3066\:5177\:73fe\:5316) *)
+
 
 (* ::Subsection:: *)
 (* Raw store repair (2026-09-08) *)
+
 
 Options[ClaudeTurnWikiRepairRawEncoding] = {"DryRun" -> False};
 ClaudeTurnWikiRepairRawEncoding[opts : OptionsPattern[]] := Module[
@@ -1986,7 +2044,12 @@ ClaudeTurnWikiRepairRawEncoding[opts : OptionsPattern[]] := Module[
     files];
   <|"Scanned" -> scanned, "Repaired" -> Length[repaired], "DryRun" -> dry, "Files" -> repaired|>];
 
+
+
 (* ::Subsection:: *)
+(**)
+
+
 (* Ledger / log / trace readers (core) and their Views (2026-09-08)
 
    core  -> List[Association] (chainable, uncapped)
@@ -2221,7 +2284,7 @@ iTWDirectivesReadyQ[] :=
 iTWRulePath[droot_String, name_String] :=
   FileNameJoin[{droot, "rules", $iTWRulePrefix <> name <> ".md"}];
 
-(* frontmatter の YAML サブセットパーサに優しいよう ":" は "-" に潰す。 *)
+(* frontmatter \:306e YAML \:30b5\:30d6\:30bb\:30c3\:30c8\:30d1\:30fc\:30b5\:306b\:512a\:3057\:3044\:3088\:3046 ":" \:306f "-" \:306b\:6f70\:3059\:3002 *)
 iTWSkillDescription[skillMD_String] := Module[{lines, d},
   lines = Select[StringSplit[skillMD, "\n"],
     StringTrim[#] =!= "" && !StringStartsQ[StringTrim[#], "#"] &&
@@ -2245,7 +2308,7 @@ iTWMaterializeSkill[name_String, skillMD_String] := Module[{droot, ruleName, bod
   droot = iTWDirectiveRoot[];
   If[MissingQ[droot], Return[<|"Status" -> "NoDirectiveRoot"|>]];
   ruleName = $iTWRulePrefix <> name;
-  (* 具現化は SKILL.md 本文のみ (I4)。frontmatter は最小限。
+  (* \:5177\:73fe\:5316\:306f SKILL.md \:672c\:6587\:306e\:307f (I4)\:3002frontmatter \:306f\:6700\:5c0f\:9650\:3002
      2026-09-08: tier: evolved (always delivered in full at every
      DirectiveLevel) + models: scope of the validated profiles. *)
   body = "---\nname: " <> ruleName <>
@@ -2290,7 +2353,7 @@ ClaudeTurnWikiWireInjection[] := Module[{st, names, done = {}, skipped = {}},
   If[!iTWDirectivesReadyQ[],
     Return[<|"Status" -> "DirectivesNotLoaded"|>]];
   st = iTWLoadState[];
-  (* 直近採用分を優先して上限まで具現化 (肥大防止)。2026-09-08: every profile's
+  (* \:76f4\:8fd1\:63a1\:7528\:5206\:3092\:512a\:5148\:3057\:3066\:4e0a\:9650\:307e\:3067\:5177\:73fe\:5316 (\:80a5\:5927\:9632\:6b62)\:30022026-09-08: every profile's
      active skills (the models: frontmatter keeps them scoped). *)
   names = Take[Reverse[iTWAllActiveSkillNames[]],
     UpTo[$ClaudeTurnWikiMaxActiveSkills]];
@@ -2339,22 +2402,22 @@ End[];  (* `Private` *)
 
 EndPackage[];
 
-(* ロード時: 既採用スキルの注入を復元 (新規作成はしない。冪等)。 *)
+(* \:30ed\:30fc\:30c9\:6642: \:65e2\:63a1\:7528\:30b9\:30ad\:30eb\:306e\:6ce8\:5165\:3092\:5fa9\:5143 (\:65b0\:898f\:4f5c\:6210\:306f\:3057\:306a\:3044\:3002\:51aa\:7b49)\:3002 *)
 If[TrueQ[ClaudeOrchestrator`TurnWiki`$ClaudeTurnWikiAutoWire],
   Quiet @ Check[ClaudeOrchestrator`TurnWiki`ClaudeTurnWikiWireInjection[], Null]];
 (* 2026-09-08: adaptive DirectiveLevel resolver (reads directive-levels.json)
    for ClaudeDirectives when it is loaded; idempotent, no-op otherwise. *)
 Quiet @ Check[ClaudeOrchestrator`TurnWiki`Private`iTWInstallLevelResolver[], Null];
 
-Print[Style["ClaudeOrchestrator`TurnWiki` (WikiSkill turn-improvement loop) \:30ed\:30fc\:30c9\:5b8c\:4e86 v" <>
+(*Print[Style["ClaudeOrchestrator`TurnWiki` (WikiSkill turn-improvement loop) \:30ed\:30fc\:30c9\:5b8c\:4e86 v" <>
   ClaudeOrchestrator`TurnWiki`$TurnWikiVersion, Bold]];
 Print["
-  ClaudeTurnWikiRunIteration[]  \:2192 1\:53cd\:5fa9 (collect\:2192maintain\:2192propose\:2192gate)
-  ClaudeTurnWikiRun[k]          \:2192 k\:53cd\:5fa9 (RBest\:22651.0 \:3067\:65e9\:671f\:7d42\:4e86)
-  ClaudeTurnWikiStatus[]        \:2192 \:73fe\:5728\:306e wiki/skill/probe/\:6ce8\:5165\:72b6\:614b
-  ClaudeTurnWikiAddProbe[task, expected] \:2192 \:691c\:8a3c\:30d7\:30ed\:30fc\:30d6\:767b\:9332
-  ClaudeTurnWikiWireInjection[] / Unwire \:2192 \:624b\:9806\:66f8\:306e\:6ce8\:5165 (always-on rule)
-  ClaudeTurnWikiRollbackSkill[name]      \:2192 \:624b\:9806\:66f8\:306e\:307f\:30ed\:30fc\:30eb\:30d0\:30c3\:30af
-  ClaudeTurnWikiSetAutoMaintain[True|False] \:2192 \:5b9a\:671f\:7dad\:6301 tick (Collect+Maintain) \:306e ON/OFF (settings.json)
-  ClaudeTurnWikiMaintainTick[]           \:2192 \:7dad\:6301 tick \:3092 1 \:56de (service heartbeat \:304c\:547c\:3076)
-"];
+  ClaudeTurnWikiRunIteration[]  \[RightArrow] 1\:53cd\:5fa9 (collect\[RightArrow]maintain\[RightArrow]propose\[RightArrow]gate)
+  ClaudeTurnWikiRun[k]          \[RightArrow] k\:53cd\:5fa9 (RBest\[GreaterEqual]1.0 \:3067\:65e9\:671f\:7d42\:4e86)
+  ClaudeTurnWikiStatus[]        \[RightArrow] \:73fe\:5728\:306e wiki/skill/probe/\:6ce8\:5165\:72b6\:614b
+  ClaudeTurnWikiAddProbe[task, expected] \[RightArrow] \:691c\:8a3c\:30d7\:30ed\:30fc\:30d6\:767b\:9332
+  ClaudeTurnWikiWireInjection[] / Unwire \[RightArrow] \:624b\:9806\:66f8\:306e\:6ce8\:5165 (always-on rule)
+  ClaudeTurnWikiRollbackSkill[name]      \[RightArrow] \:624b\:9806\:66f8\:306e\:307f\:30ed\:30fc\:30eb\:30d0\:30c3\:30af
+  ClaudeTurnWikiSetAutoMaintain[True|False] \[RightArrow] \:5b9a\:671f\:7dad\:6301 tick (Collect+Maintain) \:306e ON/OFF (settings.json)
+  ClaudeTurnWikiMaintainTick[]           \[RightArrow] \:7dad\:6301 tick \:3092 1 \:56de (service heartbeat \:304c\:547c\:3076)
+"];*)
