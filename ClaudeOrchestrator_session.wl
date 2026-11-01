@@ -2388,7 +2388,8 @@ ClaudeCreateRuntimeSessionEpisodeNet[startSpec_Association,
     If[StringQ[isoReq],
       isoOK = If[Names["NBAccess`NBIsolationSatisfiedQ"] =!= {},
         TrueQ[Quiet @ Check[
-          Symbol["NBAccess`NBIsolationSatisfiedQ"][isoReq, isoActual],
+          (* Symbol[Identity[...]], not a literal Symbol["Ctx`name"]: a literal lookup that once came back unevaluated stays unevaluated on every later call (WL 15, 2026-10-30) *)
+          Symbol[Identity["NBAccess`NBIsolationSatisfiedQ"]][isoReq, isoActual],
           False]],
         isoReq === isoActual];
       If[!isoOK,
@@ -3074,7 +3075,7 @@ ClaudeRuntimeSessionEnablePolling[] :=
   If[Names["ClaudeCode`ClaudeRegisterPollingTick"] === {},
     <|"Status" -> "ClaudeCodeUnavailable"|>,
     Quiet @ Check[
-      (Symbol["ClaudeCode`ClaudeRegisterPollingTick"][
+      (Symbol[Identity["ClaudeCode`ClaudeRegisterPollingTick"]][
          "SessionEpisodeBridge", ClaudeRuntimeSessionPollTick];
        <|"Status" -> "Registered"|>),
       <|"Status" -> "RegistrationFailed"|>]];

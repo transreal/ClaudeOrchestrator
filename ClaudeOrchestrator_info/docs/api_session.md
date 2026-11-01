@@ -9,7 +9,7 @@
 現行スコープは Inc1 + Inc2 + Inc3 + Inc0 + Inc8 + IncC (conductor v0.2 の episode 層 primitive、§17 artifact validation/commit、§20/§21 TaskSpec 統合を含む)。
 
 - Inc1: schema validator (fail-closed)、canonical hash (§7.9)、ID generator、SyntheticControlEvent (§7.7/§11.2.1)、RuntimeSession backend registry (§8.1)、MockRuntimeSession backend
-- Inc2 (§9/§10): episode supervisor net builder、pairing Guard (§9.4)、StartEpisode executor、event bridge lite (`ClaudeRuntimeSessionPumpOnce`)、ActiveSessionEpisodes registry (§10.5)、watchdog 用 SyntheticControlEvent 注入 API
+- Inc2 (§9/§10): episode supervisor net builder、pairing Guard (§9.4)、StartEpisode executor (workflow engine の seam `ClaudeOrchestrator`Workflow`$ClaudeRuntimeSessionExecutor` へ注入)、event bridge lite (`ClaudeRuntimeSessionPumpOnce`)、ActiveSessionEpisodes registry (§10.5)、watchdog 用 SyntheticControlEvent 注入 API
 - Inc3 (§11): durable inbox/outbox spool、poll tick、outbox dispatch、recovery scan
 - Inc8 (§17): ArtifactCandidate 検証、single commit の CommitReceipt 取得
 - IncC (§20/§21): multi-agent TaskSpec role → conductor role 正規化、heterogeneous backend 選択、TaskNodeSpec → episode net compile、episode 終端まで駆動する driver、DAG plan runner、reuse-aware chain runner
@@ -17,16 +17,18 @@
 
 バージョン: v0.2 (Inc1+Inc2+Inc3+Inc0+Inc8+IncC, 2026-07-11)
 
+語彙 (enum, 内部定数): Event Source = Runtime|OrchestratorWatchdog|RecoveryScan|Bridge。Runtime event Type = ObservationRequired|ApprovalRequired|CheckpointCreated|BudgetInterrupt|ArtifactProposed|Completed|Failed|Cancelled|EnvironmentLost|CommandAccepted。synthetic terminal Type = Failed|EnvironmentLost|Cancelled。Command Type = ProvideObservation|GrantScopedApproval|GrantBudget|RequestCheckpoint|AcceptArtifact|RepairArtifact|Stop|Cancel|Ping。IsolationLevel = ExternalProcess|Container|WorkspaceOverlay|CooperativeKernel。ConfidentialHandling = EncryptedBundle|ReferenceOnly ("Redacted" は MVP 非対応)。CommitMode = ArtifactStore|Notebook|Files。ReusePolicy = Never|SameWorkflowSameTrust。CostSource = Provider|Estimated|Unknown。UnknownCostPolicy = Reject|RequireApproval|AllowUnmetered。
+
 ## canonical hash (§7.9)
 
 ### ClaudeSessionCanonicalize[expr] → Association|expr
-hash 用 canonical form を返す。全階層で Association を KeySort し、DateObject を epoch ms へ正規化する。List の順序は保存する (set semantics の field は schema 側で事前 Sort)。
+hash 用 canonical form を返す。全階層で Association を KeySort し、DateObject を epoch ms (`<|"__CanonicalDateMs"->..|>`) へ正規化する。List の順序は保存する (set semantics の field は schema 側で事前 Sort)。
 
 ### ClaudeSessionCanonicalHash[expr] → String (64桁hex)
-canonical form の WXF bytes に対する SHA256。key 順・timezone 表示に依存しない。
+canonical form の WXF bytes (Base64 化) に対する SHA256。key 順・timezone 表示に依存しない。
 
 ### ClaudeSessionObjectHash[obj, hashField] → String
-obj から hashField と transport 系 field を除いた canonical hash (§7.9 手順1)。
+obj から hashField と transport 系 field (Delivered/DeliveredAt/DeliveryStatus/FetchedAt/TransportMeta) を除いた canonical hash (§7.9 手順1)。
 
 ### ClaudeSessionEventHash[event] → String
 SessionControlEvent の EventHash を計算する。
@@ -67,17 +69,17 @@ PollEvents で得た Runtime event 列を cursor (`<|Attempt, EventSeq|>`) に�
 
 ## backend registry (§8.1)
 
-### ClaudeRegisterRuntimeSessionBackend[name, backend] → backend|Failure
-RuntimeSession backend (ProtocolVersion/Capabilities/StartEpisode/PollEvents/SendCommand/Inspect/Recover/Dispose) を検証して登録する。protocol 違反は Failure。
+### ClaudeRegisterRuntimeSessionBackend[name, backend] → Association|Failure
+RuntimeSession backend を検証して登録する。必須: ProtocolVersion==1、Capabilities (String のリスト)、callable な StartEpisode/PollEvents/SendCommand/Inspect/Recover/Dispose。任意: ReuseEpisode (ReuseChain 用)。protocol 違反は `Failure["InvalidBackend"]`。成功時 `<|Status->"Registered", Backend, Capabilities|>`。
 
-### ClaudeUnregisterRuntimeSessionBackend[name]
-登録済み backend を除去する。
+### ClaudeUnregisterRuntimeSessionBackend[name] → Association
+登録済み backend を除去する。`<|Status->"Unregistered"|"NotRegistered", Backend|>`。
 
 ### ClaudeRuntimeSessionBackends[] → {name...}
 登録済み backend 名の一覧。
 
-### ClaudeRuntimeSessionBackendInfo[name] → Association
-backend の Function 本体を含まない info (ProtocolVersion/Capabilities/ContractFns)。
+### ClaudeRuntimeSessionBackendInfo[name] → Association|Failure
+backend の Function 本体を含まない info (ProtocolVersion/Capabilities/ContractFns)。未登録は `Failure["NoSuchBackend"]`。
 
 ## MockRuntimeSession backend
 
@@ -96,8 +98,8 @@ Options: "WorkflowId"/"TaskId"/"SessionId"/"EpisodeId"/"StartCommandId" -> Autom
 
 ## episode supervisor net (Inc2, §9/§10)
 
-### ClaudeCreateRuntimeSessionEpisodeNet[startSpec, opts] → Association
-§9 の episode supervisor net (単一 EpisodeActive place + ControlState、event × ControlState 到達性行列) を生成し、slot/Task token を投入して `<|WorkflowId, EpisodeId, SessionId, Backend|>` を返す。startSpec は schema/hash 検証を fail-closed で通過する必要がある。
+### ClaudeCreateRuntimeSessionEpisodeNet[startSpec, opts] → Association|Failure
+§9 の episode supervisor net (単一 EpisodeActive place + ControlState、event × ControlState 到達性行列) を生成し、slot/Task token を投入して `<|WorkflowId, EpisodeId, SessionId, Backend|>` を返す。startSpec は schema/hash 検証を fail-closed で通過する必要がある。Failure: InvalidStartSpec|StartSpecHashMismatch|UnknownSessionBackend。さらに SessionProfile.IsolationRequired (または startSpec の RequiredIsolation) が Environment.IsolationLevel で満たされない場合も fail-closed で弾く (§20.3、`NBAccess`NBIsolationSatisfiedQ` があればそれで順序判定、無ければ等値比較)。SessionEvents 消費 transition の Guard 欠落は build 時 fail-closed (§9.4)。
 Options: "SessionSlots" -> 1, "EnvironmentSlots" -> 1, "Validate" -> True
 
 ### ClaudeStartRuntimeSessionEpisode[wid] → workflow state
@@ -106,17 +108,19 @@ enabled transition が尽きるまで step し (Allocate → StartEpisode)、epi
 ### ClaudeRuntimeSessionPumpOnce[wid, episodeId] → Association
 backend を poll し、未適用の control event を一個だけ SessionEvents place へ投入する (§11.2)。schema/hash 違反は quarantine。戻り Status: Deposited|Duplicate|NoNewEvents|NoActiveLease|Quarantined 等。適用は `ClaudeStepWorkflow` が行う。
 
-### ClaudeRuntimeSessionCancel[wid, episodeId, reason]
-Cancel command request を投入する。全 non-terminal ControlState から受理される (I13)。
+### ClaudeRuntimeSessionCancel[wid, episodeId, reason:"UserCancel"] → Association
+Cancel command request を投入する。全 non-terminal ControlState から受理される (I13)。→ `<|Status->"Requested", Type, TokenId|>`
 
-### ClaudeRuntimeSessionProvideObservation[wid, episodeId, observationRef]
-AwaitingObservation の episode へ ProvideObservation command request を投入する。
+### ClaudeRuntimeSessionProvideObservation[wid, episodeId, observationRef] → Association
+AwaitingObservation の episode へ ProvideObservation command request を投入する。戻りは Cancel と同形。
 
-### ClaudeRuntimeSessionInjectSyntheticTerminal[wid, episodeId, type, evidenceRef]
-watchdog/recovery 用の SyntheticControlEvent (Source=OrchestratorWatchdog、type は Failed|Cancelled|EnvironmentLost) を生成・検証して SessionEvents へ投入する (§11.2.1)。Runtime が沈黙・死亡した episode を terminal へ導く安全網。
+### ClaudeRuntimeSessionInjectSyntheticTerminal[wid, episodeId, type, evidenceRef, opts]
+watchdog/recovery 用の SyntheticControlEvent (type は Failed|Cancelled|EnvironmentLost) を生成・検証して SessionEvents へ投入する (§11.2.1)。Runtime が沈黙・死亡した episode を terminal へ導く安全網。合成前に genuine Runtime event の有無を再確認する (RecheckBackend)。
+→ Association|Failure (InvalidSyntheticType|EvidenceRefRequired (evidenceRef==None)|InvalidSyntheticSource|NoActiveLease)
+Options: "Source" -> "OrchestratorWatchdog" (または "RecoveryScan"), "RecheckBackend" -> True (注入前に backend を再 poll し genuine event があれば合成しない)
 
 ### ClaudeRuntimeSessionEpisodeInfo[wid, episodeId] → Association
-episode の現在 ControlState / LastAppliedEventSeq / PendingCommand / HandleRef 等。
+episode の現在状態。キー: EpisodeId, SourceToken (Lease|Outcome|NotFound), ControlState, LastAppliedEventSeq, PendingCommand, HandleRef, BackendInstanceId, StatusDetail, Registry, WorkflowStatus。lease token が無ければ Artifact/Failure/EpisodeClosed の outcome token から読む。
 
 ### ClaudeRuntimeSessionEpisodes[wid] → {episode...}
 workflow 上の episode 一覧。
@@ -129,26 +133,29 @@ schema/hash 違反等で隔離した event の記録一覧 (§11.4 の in-memory
 
 ## artifact validation / single commit (Inc8, §17)
 
-### ClaudeSessionValidateArtifactCandidate[candidate, contract, sessionLabel] → Association
-ArtifactCandidate を ArtifactContract に対して検証する (§17.1)。schema / type 一致 / staging root 包含 / byte 上限 / privacy 単調 / provenance / RequiredChecks / (Files の) base revision を検査し `<|"Valid", "Errors", "Repairable"|>` を返す。fail-closed。
+### ClaudeSessionValidateArtifactCandidate[candidate, contract, sessionLabel:0.0] → Association
+ArtifactCandidate を ArtifactContract に対して検証する (§17.1)。schema / type 一致 / staging root 包含 / byte 上限 / privacy 単調 (candidate は sessionLabel 以上 §16.4) / provenance / RequiredChecks / (Files の) base revision を検査し `<|"Valid", "Errors", "Repairable"|>` を返す。fail-closed。
 
 ### ClaudeRuntimeSessionArtifactReceipt[wid, episodeId] → Association|None
-commit 済み artifact の CommitReceipt (§17.3: CommitId/TargetRef/NewRevision/ContentHash 等)。未 commit なら None。
+commit 済み artifact の CommitReceipt (§17.3: CommitId/ArtifactId/TargetRef/PreviousRevision/NewRevision/CommittedAt/ContentHash)。未 commit なら None。CommitMode: ArtifactStore (`<target>/<ContentHash>.wxf`、冪等)、Files (BaseRevision CAS、不一致は Conflict で上書きしない)、Notebook。
 
 ## conductor task node integration (IncC, §20/§21)
 
-### ClaudeSessionMapRole[role] → "solve"|"plan"|"verify"|"synthesize"|"__SingleCommitter__"|Failure
-multi-agent TaskSpec role を conductor role へ正規化する (§20.2)。Explore/Draft->solve, Plan->plan, Verify->verify, Reduce->synthesize, Commit->"__SingleCommitter__" (session にしない)。既に conductor role ならそのまま。未知は Failure (silent 縮退しない)。
+### ClaudeSessionMapRole[role] → "solve"|"solve-hard"|"plan"|"verify"|"synthesize"|"__SingleCommitter__"|Failure
+multi-agent TaskSpec role を conductor role へ正規化する (§20.2)。Explore/Draft->solve, Plan->plan, Verify->verify, Reduce->synthesize, Commit->"__SingleCommitter__" (session にしない)。既に conductor role (solve|solve-hard|plan|verify|synthesize) ならそのまま。未知は `Failure["UnknownRole"]`、非 String は `Failure["InvalidRole"]` (silent 縮退しない)。
 
-### ClaudeSessionResolveBackend[requirement] → String|Failure
-登録済み backend から §20.3 の heterogeneous binding で 1 つ選ぶ。requirement: `<|"PreferredBackend"->_, "RequiredCapabilities"->{..}, "IsolationRequired"->_, "SeatProbe"->fn|>`。capability/isolation で filter し、seat 可用性で rank。無ければ Failure (§20.3 silent に起動しない)。
+### ClaudeSessionResolveBackend[requirement] → Association|Failure
+登録済み backend から §20.3 の heterogeneous binding で 1 つ選ぶ。成功時は `Backend` キーを持つ Association。requirement: `<|"PreferredBackend"->Automatic|name, "RequiredCapabilities"->{..}, "IsolationRequired"->_, "SeatProbe"->fn|>`。capability/isolation で filter し、seat 可用性で rank。無ければ Failure (§20.3 silent に起動しない)。
 
 ### ClaudeSessionCompileTaskNode[taskNodeSpec, opts] → Association|Failure
-WorkerKind="RuntimeSession" の TaskNodeSpec を episode supervisor net に compile する (§20.1)。role mapping・SessionProfile 正規化・SessionStartSpec 構築 (iCondBuildSessionStartSpec)・backend resolve を行い `ClaudeCreateRuntimeSessionEpisodeNet` を呼ぶ。WorkerKind="LLMCall" は本経路の対象外 (Failure["NotRuntimeSession"]、既存 atomic 経路が担当)。
+WorkerKind="RuntimeSession" の TaskNodeSpec を episode supervisor net に compile する (§20.1)。role mapping・SessionProfile 正規化・SessionStartSpec 構築 (iCondBuildSessionStartSpec)・backend resolve (binding の "Backend" 明示を優先) を行い `ClaudeCreateRuntimeSessionEpisodeNet` を呼ぶ。WorkerKind="LLMCall" は本経路の対象外 (Failure["NotRuntimeSession"]、既存 atomic 経路が担当)。Commit role は `Failure["CommitRoleNotEpisode"]` (single committer transition が担当 §20.2)。
 → `<|WorkflowId, EpisodeId, SessionId, Backend, Role, StartSpec|>`
+Options: `Options[ClaudeSessionBuildStartSpecFromTaskNode]` の全 option (WorkflowId/RunId/Attempt 等) に加え "Binding" -> <||> (Backend/RequiredCapabilities/SeatProbe 等), "SessionSlots" -> 1, "EnvironmentSlots" -> 1
+SessionProfile の正規化: Backend->Automatic, ReusePolicy->"Never", IsolationRequired->"CooperativeKernel", ToolPolicyRef (←ToolPolicy), BudgetGrantRef (←TurnBudget), EnvironmentSpecRef (←EnvironmentRef), CheckpointPolicyRef。canonical 名が legacy 名より優先。
 
-### ClaudeSessionBuildStartSpecFromTaskNode[taskNodeSpec, binding] → Association (SessionStartSpec)
+### ClaudeSessionBuildStartSpecFromTaskNode[taskNodeSpec, binding, opts] → Association (SessionStartSpec)
 TaskNodeSpec + binding から検証済み SessionStartSpec を構築する (§21.2 iCondBuildSessionStartSpec)。net を作らず spec だけ返す。
+Options: "WorkflowId", "RunId", "Attempt" (Compile から転送される)
 
 ### ClaudeSessionRunEpisodeToCompletion[wid, episodeId, opts] → Association
 compile + start 済みの episode net を、pump (§11.2 一個ずつ) + engine step で終端まで駆動する Conductor 向け driver。WorkflowStatus=="Done" もしくは進展が止まる (NoNewEvents/NoActiveLease 等) まで bounded に回す。搬送層しか触らない (model/tool/NotebookWrite なし、§11.5)。
@@ -161,9 +168,9 @@ RuntimeSession TaskNode を compile → start → 終端まで駆動する end-t
 opts は Compile と Run の option を受ける。
 
 ### ClaudeSessionConductPlan[taskNodes, opts] → Association
-複数の RuntimeSession TaskNode を DependsOn の DAG として実行する Conductor plan runner。topological order で逐次 `ClaudeSessionConductTaskNode` を回し、失敗ノードの依存先は "Skipped" にする (failure propagation)。依存ノードの commit receipt は依存先へ DepReceipts として渡す。循環依存は Failure。非 RuntimeSession (LLMCall 等) は skip 対象で status "NotRuntimeSession"。並列実行は本 MVP では非対応 (逐次 topo)。
+複数の RuntimeSession TaskNode を DependsOn の DAG として実行する Conductor plan runner。topological order で逐次 `ClaudeSessionConductTaskNode` を回し、失敗ノードの依存先は "Skipped" (`BlockedBy` 付き) にする (failure propagation)。依存ノードの commit receipt は依存先へ DepReceipts (`DepId->receipt|None`) として渡す。循環依存は Status "CyclicDependency" (Order->None)。非 RuntimeSession (LLMCall 等) は skip 対象で status "NotRuntimeSession"。並列実行は本 MVP では非対応 (逐次 topo)。
 → `<|Status, Order, Nodes(TaskId→result), Receipts|>`
-Options: "Parallel" -> False
+Options: `Options[ClaudeSessionConductTaskNode]` の全 option, "Parallel" -> False
 
 ### ClaudeSessionConductReuseChain[taskNodes, opts] → Association
 backend §8.1 契約の ReuseEpisode を使い、ReusePolicy=SameWorkflowSameTrust かつ同一 trust domain の連続 episode で物理 session を自動再利用する reuse-aware chain runner (Inc10 の Petri→reuse auto-firing 配線)。backend contract のみ経由し `ClaudeRuntime` に直接依存しない (§22)。trust-key=WorkflowId|AccessSpecHash|PolicySnapshotHash 単位の pool を持ち、eligible なら backend[ReuseEpisode]、不可なら fresh StartEpisode。各 episode は backend PollEvents で終端まで駆動。backend が ReuseEpisode 非対応なら常に fresh。
@@ -176,7 +183,7 @@ backend §8.1 契約の ReuseEpisode を使い、ReusePolicy=SameWorkflowSameTru
 episode spool の root directory。layout (§11.1): `<root>/<session-id>/<episode-id>/attempts/<attempt>/{inbox, outbox, delivery-index.wxf, command-index.wxf}` + episode-meta.json。
 
 ### ClaudeRuntimeSessionPollTick[] → Association
-全 active episode について outbox dispatch と event pump を一回行う (§11.5 契約: 搬送のみ。model/tool/NotebookWrite を行わない。soft 200ms 超過分は次 tick へ、再入は SkippedBusy)。Petri の発火は行わない (engine の step/async tick が担当)。
+全 active episode について outbox dispatch と event pump を一回行う (§11.5 契約: 搬送のみ。model/tool/NotebookWrite を行わない)。soft 200ms 超過分は次 tick へ繰り越し (開始位置を rotate して starvation を防ぐ)、再入は `<|Status->"SkippedBusy"|>`。正常時 `<|Status->"OK", Processed, Deferred, ElapsedSec|>`、例外時 Status "TickError"。Petri の発火は行わない (engine の step/async tick が担当)。
 
 ### ClaudeRuntimeSessionDispatchOutbox[wid, episodeId] → Association
 attempt-local outbox の未 ack command を backend へ送る (§11.3)。transport retry は同一 CommandId。Rejected は Bridge CommandRejected synthetic event に正規化して inbox へ置く (§11.2.1)。
@@ -184,8 +191,8 @@ attempt-local outbox の未 ack command を backend へ送る (§11.3)。transpo
 ### ClaudeRecoverRuntimeSessions[] → Association
 active episode を backend Recover で検査し、LostUnrecoverable は genuine event recheck の後に Source=RecoveryScan の synthetic terminal を注入して lease release へ導く (§15.2 / Inc3 受け入れ「silent/dead Runtime でも lease release」)。
 
-### ClaudeRuntimeSessionEnablePolling[] → Automatic|"ClaudeCodeUnavailable"
-`ClaudeCode`` の shared polling tick に `ClaudeRuntimeSessionPollTick` を登録する (§11.5)。ClaudeCode 未ロード環境では ClaudeCodeUnavailable を返し何もしない。
+### ClaudeRuntimeSessionEnablePolling[] → Association
+`ClaudeCode`` の shared polling tick ("SessionEpisodeBridge") に `ClaudeRuntimeSessionPollTick` を登録する (§11.5)。→ `<|Status->"Registered"|"RegistrationFailed"|"ClaudeCodeUnavailable"|>`。ClaudeCode 未ロード環境では ClaudeCodeUnavailable を返し何もしない。
 
 ### ClaudeSessionEpisodeSpoolInfo[sessionId, episodeId, attempt] → Association
 spool 上の delivery-index / command-index / inbox・outbox ファイル一覧 (検査用)。
@@ -193,16 +200,16 @@ spool 上の delivery-index / command-index / inbox・outbox ファイル一覧 
 ## conductor primitive (Inc0, §13.2/§16.4/§19.3/§25.3)
 
 ### ClaudeSessionResolveTrustDomain[modelEntry] → "Local"|"Cloud"|"Private"|Missing["Unknown"]
-model/backend entry から InferenceTrustDomain を解決する (conductor v0.2 §13.2)。優先順: InferenceTrustDomain (canonical) > TrustDomain (legacy) > Class 内の Local/Cloud > provider label 分類。**ExecutionLocation は見ない** (claudecode は Local プロセスでも推論は Cloud)。不明は `Missing["Unknown"]` (gate 側で fail-closed)。
+model/backend entry から InferenceTrustDomain を解決する (conductor v0.2 §13.2)。優先順: InferenceTrustDomain (canonical) > TrustDomain (legacy) > Class 内の Local/Cloud > provider label 分類。**ExecutionLocation は見ない** (claudecode は Local プロセスでも推論は Cloud)。不明・非 Association は `Missing["Unknown"]` (gate 側で fail-closed)。
 
 ### ClaudeSessionTrustGateQ[privacyLabel, domain] → True|False
-cloud 境界 (0.5) 以上の label で InferenceTrustDomain が Local|Private と確認できる場合のみ True。不明 domain・非数値 label は fail-closed で False (§16.4 / Inc0 受け入れ「private 由来 session が cloud trust gate を迂回しない」)。
+privacyLabel < 0.5 は True。cloud 境界 (0.5) 以上の label では domain が Local|Private と確認できる場合のみ True。不明 domain・Cloud・非数値 label は fail-closed で False (§16.4 / Inc0 受け入れ「private 由来 session が cloud trust gate を迂回しない」)。
 
-### ClaudeSessionMakeCallContext[fields] → Association (CallContext)
-provider call 発行時に固定する immutable な CallContext (§19.3) を返す。CallId は自動発行。Provider/Model は必須、RunId/WorkflowId/TaskId/SessionId/EpisodeId/Attempt/TurnIndex/ToolCallId/ReservationId は任意。mutable global に依存しない。
+### ClaudeSessionMakeCallContext[fields] → Association (CallContext)|Failure
+provider call 発行時に固定する immutable な CallContext (§19.3) を返す。CallId (`call-<uuid>`) と IssuedAt は自動発行。Provider/Model (String) は必須で欠落は `Failure["InvalidCallContext"]`、RunId/WorkflowId/TaskId/SessionId/EpisodeId/Attempt/TurnIndex/ToolCallId/ReservationId は任意 (未指定は None)。mutable global に依存しない。
 
 ### ClaudeSessionLedgerRecord[callContext, usage] → Association
-usage/cost を CallId で ledger に記録する。completion 順が逆転しても帰属は CallContext 固定なので壊れない (Inc0 受け入れ)。同一 CallId の再記録は上書き (Status->Updated)。usage: InTokens/OutTokens/CacheReadTokens/CostUSD/CostSource (Provider|Estimated|Unknown)。
+usage/cost を CallId で ledger に記録する。completion 順が逆転しても帰属は CallContext 固定なので壊れない (Inc0 受け入れ)。同一 CallId の再記録は上書き (Status->Updated、新規は Recorded)。CallId 欠落は `Failure["MissingCallId"]`。usage: InTokens/OutTokens/CacheReadTokens/CostUSD/CostSource (Provider|Estimated|Unknown)。
 
 ### ClaudeSessionCallLog[] → {record...}
 ledger 記録の一覧 (LoggedAt 順)。
@@ -210,9 +217,9 @@ ledger 記録の一覧 (LoggedAt 順)。
 ### ClaudeSessionCallAggregate[keyField, keyValue] → Association
 CallContext の keyField ("EpisodeId"/"RunId"/"WorkflowId" 等) が keyValue の call を集計する。CostUSD は数値のみ合算し、unknown cost は0扱いせず UnknownCostCalls として別掲する (§25.3)。
 
-### ClaudeSessionCallLogReset[]
-ledger をクリアする。テスト用。
+### ClaudeSessionCallLogReset[] → Association
+ledger をクリアする (`<|Status->"Reset"|>`)。テスト用。
 
 ## $ClaudeSessionModuleVersion
-型: String, 初期値: バージョン文字列
+型: String, 初期値: `"v0.2 (Inc1+Inc2, 2026-07-11)"`
 本モジュールのバージョン。

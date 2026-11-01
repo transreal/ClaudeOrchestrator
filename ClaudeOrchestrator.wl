@@ -39,8 +39,9 @@ Block[{$CharacterEncoding = "UTF-8",
        iOrchPkgDir = Which[
          StringQ[$InputFileName] && $InputFileName =!= "",
            DirectoryName[$InputFileName],
-         StringQ[Quiet @ Symbol["Global`$packageDirectory"]],
-           Symbol["Global`$packageDirectory"],
+         (* Symbol[Identity[...]], not a literal Symbol["Ctx`name"]: a literal lookup that once came back unevaluated stays unevaluated on every later call (WL 15, 2026-10-30) *)
+         StringQ[Quiet @ Symbol[Identity["Global`$packageDirectory"]]],
+           Symbol[Identity["Global`$packageDirectory"]],
          True, Directory[]]},
   Quiet @ Block[{$Path = Prepend[$Path, iOrchPkgDir]},
     Needs["NBAccess`", "NBAccess.wl"]]];

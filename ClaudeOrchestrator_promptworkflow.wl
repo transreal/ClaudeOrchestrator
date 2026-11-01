@@ -555,7 +555,8 @@ iCPWProposeOnce[proposalPrompt_String, provider_] :=
   If[provider === Automatic,
     If[Names["ClaudeCode`ClaudeQuery"] =!= {},
       Quiet @ Check[
-        Symbol["ClaudeCode`ClaudeQuery"][proposalPrompt],
+        (* Symbol[Identity[...]], not a literal Symbol["Ctx`name"]: a literal lookup that once came back unevaluated stays unevaluated on every later call (WL 15, 2026-10-30) *)
+        Symbol[Identity["ClaudeCode`ClaudeQuery"]][proposalPrompt],
         $Failed],
       $Failed],
     Quiet @ Check[provider[proposalPrompt], $Failed]
@@ -714,7 +715,7 @@ iCPWArtifactDir[] :=
   Module[{roots, pv},
     If[Names["SourceVault`$SourceVaultRoots"] === {},
       Return[$Failed]];
-    roots = Symbol["SourceVault`$SourceVaultRoots"];
+    roots = Symbol[Identity["SourceVault`$SourceVaultRoots"]];
     If[!AssociationQ[roots], Return[$Failed]];
     pv = Lookup[roots, "PrivateVault", $Failed];
     If[!StringQ[pv], Return[$Failed]];
@@ -1003,7 +1004,7 @@ iCPWExistingRouteMatch[prompt_String] :=
     If[Names["SourceVault`SourceVaultResolvePromptRoute"] === {},
       Return[<|"Status" -> "RouterUnavailable"|>]];
     decision = Quiet @ Check[
-      Symbol["SourceVault`SourceVaultResolvePromptRoute"][prompt],
+      Symbol[Identity["SourceVault`SourceVaultResolvePromptRoute"]][prompt],
       $Failed];
     If[!AssociationQ[decision],
       Return[<|"Status" -> "RouterUnavailable"|>]];

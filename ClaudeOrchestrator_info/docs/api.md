@@ -184,7 +184,7 @@ role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み
 True で ResolveQueryFnForRole 呼出のたびに診断出力。
 
 ## A4 hook (ClaudeOrchestrator` 名前空間)
-Directives/Routing が本格実装で再定義する低レベル hook。`$ClaudeOrchestratorEnableA4Stub` (既定 True) でロードを制御 (本格実装が無効化されている場合の passthrough stub)。
+Directives/Routing が本格実装で再定義する低レベル hook。`$ClaudeOrchestratorEnableA4Stub` (既定 True) でロードを制御 (本格実装が無効化されている場合の passthrough stub)。stub は既存 DownValues があれば上書きしない (再ロード安全)。
 
 ### ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role, model, goal] → String
 prompt に directive prefix を前置 (Directives 未ロード時 passthrough)。
@@ -224,7 +224,7 @@ CLI mode の実行ファイル名/フルパス。Automatic は OS 依存 ("claud
 
 ### $ClaudeEvalAutoSkipKeywords
 型: List (String)
-Auto モードで短い factual query を Single パスにフォールバックさせるためのテクニカルマーカーリスト (パッケージ名・関数名・拡張子等)。ユーザ拡張可。
+Auto モードで短い factual query を Single パスにフォールバックさせるためのテクニカルマーカーリスト (パッケージ名・関数名・拡張子等)。トークンを含み、かつタスクが 300 文字未満・複雑指標なしなら Orchestrator を通らず Single パスで処理。ユーザ拡張可。
 
 ### $ClaudeEvalAutoFactualEndings
 型: List (String)
@@ -239,6 +239,6 @@ Orchestrator 経路を通すべき複雑タスクを識別するマーカー (�
 
 ### 機能オン/オフフラグ (BeginPackage 前に設定で効果)
 型: True/False, 初期値: いずれも True
-`$ClaudeOrchestratorEnableDirectives`, `$ClaudeOrchestratorEnableRouting`, `$ClaudeOrchestratorEnableCommitSafety`, `$ClaudeOrchestratorEnableA4Stub` — 対応する統合サブモジュールの読込を制御。
+`$ClaudeOrchestratorEnableDirectives`, `$ClaudeOrchestratorEnableRouting`, `$ClaudeOrchestratorEnableCommitSafety`, `$ClaudeOrchestratorEnableA4Stub` — 対応する統合サブモジュールの読込を制御 (未定義なら True に初期化)。
 `Global`$ClaudeOrchestratorDisablePromptWorkflowAutoLoad = True` でロード前に設定すると promptworkflow 自動ロードを抑止。
 `Global`$ClaudeOrchestratorEnableStateGraphCompat = True` でロード前に設定すると deprecated な ClaudeOrchestrator_stategraph.wl (ClaudeStateGraph` 互換層) を自動ロードする (既定は不読込。実ロジックは ClaudeOrchestrator`Workflow` に吸収済みで、実利用箇所が無いことを確認した上で既定オフにされている)。
