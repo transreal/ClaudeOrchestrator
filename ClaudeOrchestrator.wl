@@ -6076,8 +6076,17 @@ Options[ClaudeRunOrchestration] = {
 iResolveQueryFnForModel[queryFn_, model_] :=
   If[queryFn === Automatic && model =!= Automatic,
     With[{m = model},
-      Function[prompt, ClaudeCode`ClaudeQuerySync[prompt, Model -> m]]],
+      Function[prompt, iLocalLLMGuarded[m, ClaudeCode`ClaudeQuerySync[prompt, Model -> m]]]],
     queryFn];
+
+(* rule 107 (2026-11-06): LAN 上のローカル LLM へ送るときは距離で決まる上限を確かめる。
+   ここを通る queryFn は PL を渡さないので 1.0 とみなす (クラウドや localhost は素通り)。
+   止めたときは ClaudeQueryBg の失敗と同じく "Error: ..." の文字列を返す。 *)
+SetAttributes[iLocalLLMGuarded, HoldRest];
+iLocalLLMGuarded[spec_, call_] :=
+  Module[{r = If[Length[DownValues[ClaudeCode`ClaudeLocalLLMAccessCheck]] > 0,
+      ClaudeCode`ClaudeLocalLLMAccessCheck[spec, 1.0], True]},
+    If[FailureQ[r], "Error: " <> r["Text"], call]];
 
 (* \:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500
    iResolveTargetNotebookAuto: "TargetNotebook" \:304c Automatic \:306e\:5834\:5408\:3001
@@ -8073,7 +8082,7 @@ ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
     If[queryFn === Automatic && model =!= Automatic,
       With[{m = model},
         wrappedQueryFn = Function[prompt,
-          ClaudeCode`ClaudeQuerySync[prompt, Model -> m]]];
+          iLocalLLMGuarded[m, ClaudeCode`ClaudeQuerySync[prompt, Model -> m]]]];
       optsList = Append[
         FilterRules[optsList, Except["QueryFunction"]],
         "QueryFunction" -> wrappedQueryFn];
@@ -9237,7 +9246,7 @@ iBuildAPIQueryFn[modelSpec_List] :=
     
     Function[prompt,
       Quiet @ Check[
-        ClaudeCode`Private`iQueryViaAPI[prov, mdl, prompt, url],
+        ClaudeOrchestrator`Private`iLocalLLMGuarded[{prov, mdl, url}, ClaudeCode`Private`iQueryViaAPI[prov, mdl, prompt, url]],
         ""]]];
 iBuildAPIQueryFn[_] := iBuildCLIQueryFn[];
 
