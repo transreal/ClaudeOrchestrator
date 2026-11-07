@@ -2315,11 +2315,34 @@ iTWMaterializeSkill[name_String, skillMD_String] := Module[{droot, ruleName, bod
     "\ndescription: TurnWiki evolved skill - " <> iTWSkillDescription[skillMD] <>
     "\ntier: evolved\n" <> iTWMaterializeModelsBlock[name] <>
     "---\n\n" <> skillMD <> "\n";
+  (* 2026-11-07 (directive privacy spec I5): the directive root is published to
+     GitHub and sent to cloud models, so it holds PL 0.0 only. Skills distilled
+     from turns may carry user paths, ids or names: lint first, write only when
+     clean. No lint available = do not write (fail-closed). *)
+  With[{hits = iTWPrivacyLintHits[body]},
+    If[hits =!= {},
+      Return[<|"Status" -> "PrivacyBlocked", "Rule" -> ruleName,
+        "Hits" -> Take[hits, UpTo[20]]|>]]];
   If[iTWWriteFile[iTWRulePath[droot, name], body] === $Failed,
     Return[<|"Status" -> "WriteFailed"|>]];
   iTWRegisterAlwaysOn[ruleName];
   Quiet @ Check[ToExpression["ClaudeDirectives`ClaudeInvalidateDirectiveCache"][], Null];
   <|"Status" -> "OK", "Rule" -> ruleName|>];
+
+(* lint hits of a text that would go to the public directive root ({} = clean).
+   Production writes need ClaudeDirectives anyway (iTWDirectivesReadyQ), so a
+   missing lint there means an old ClaudeDirectives is loaded: block. A test
+   override root (hermetic temp dir, never published) may run without it. *)
+iTWPrivacyLintHits[text_String] := Module[{r},
+  If[! iTWCallableQ["ClaudeDirectives`ClaudeDirectivesPrivacyLintText"],
+    Return[If[StringQ[$ClaudeTurnWikiDirectiveRootOverride], {},
+      {<|"Rule" -> "Lint", "Category" -> "lint-unavailable", "Level" -> 1.0,
+        "Match" -> "<ClaudeDirectivesPrivacyLintText not loaded>"|>}]]];
+  r = Quiet @ Check[
+    ToExpression["ClaudeDirectives`ClaudeDirectivesPrivacyLintText"][text], $Failed];
+  If[ListQ[r], r,
+    {<|"Rule" -> "Lint", "Category" -> "lint-failed", "Level" -> 1.0,
+      "Match" -> "<lint failed>"|>}]];
 
 iTWRegisterAlwaysOn[ruleName_String] :=
   Quiet @ Check[

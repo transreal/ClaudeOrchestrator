@@ -51,7 +51,8 @@ Options: CommitterAdapterBuilder -> Automatic, CommitMode -> "Direct" ("Transact
 ### ClaudeRunOrchestration[input, opts]
 Planning -> Spawn -> Reduce -> (optional) Commit の全フェーズを直列実行。
 → 4 フェーズの結果を束ねた Association
-Options: TargetNotebook -> (Commit するなら指定), Planner, WorkerAdapterBuilder, Reducer, CommitterAdapterBuilder, MaxTasks, MaxParallelism, Confirm -> False
+Options: TargetNotebook -> (Commit するなら指定), Planner, WorkerAdapterBuilder, Reducer, CommitterAdapterBuilder, MaxTasks, MaxParallelism, Confirm -> False, QueryFunction -> Automatic, Model -> Automatic (Planner/Worker/Reducer/Committer に伝播)
+Model を指定し QueryFunction が Automatic のとき、Planner/Worker/Reducer は claudecode の ClaudeQuerySync[prompt, Model -> m] を呼ぶ wrapper を使う。wrapper は送信前に claudecode の ClaudeLocalLLMAccessCheck (定義があるときのみ。PL は 1.0 とみなす) で LAN 上のローカル LLM へ送ってよいかを確かめ (クラウドと localhost は素通り)、止められたら LLM 応答の代わりに "Error: ..." 文字列を返す。
 例: `ClaudeRunOrchestration["スライド3枚生成", TargetNotebook -> nb, MaxTasks -> 5]`
 
 ### ClaudeContinueBatch[runtimeId, batchInstructions, opts]
@@ -63,6 +64,13 @@ Options: WaitBetween -> Quantity[1, "Seconds"]
 ### ClaudeRunOrchestrationAsync[input, opts]
 Plan->Spawn->Reduce->Commit を DAG コールバックチェーンで非同期実行し orchJobId を即座に返す (フロントエンドをブロックしない)。opts は ClaudeRunOrchestration と同じ。
 → orchJobId
+Plan / Worker / Reduce は DAG の sync ノードとして共有 tick の中で起動される。Planner / WorkerAdapterBuilder / Reducer が "LLM" (worker は JSONRetryMax -> 1 のときのみ) なら、LLM 呼び出しは起動だけして tick を戻す deferred 経路で行い、完了は後の tick でポーリングして回収する。2026-11-06 修正: それ以前は CLI プロセスが実際には起動されず毎回同期版に落ちていたため、claude CLI の呼び出しが tick の中で worker の数だけ順に走り、その間カーネルが FrontEnd に応答できず FE が固まることがあった。
+Commit は CommitterAdapterBuilder -> Automatic で committer のモデル (Model、Automatic なら $ClaudeModel) が claude CLI 用の指定なら、基底 adapter の QueryProviderAsync で問い合わせを非同期にし、完了を後の tick で回収する (基底が QueryProviderAsync を持たなければ同期)。LM Studio / API モデルの committer は従来どおり同期。
+Verbose -> True で Model を指定すると、deferred 経路と同期の QueryFunction wrapper のどちらを使うかを表示する。
+Plan / Worker / Reduce を deferred にするのは、同期版でも同じモデルに同じ送り方をしていた場合だけ:
+- claude CLI (StartProcess で起動): Model -> {"claudecode", m} のとき (QueryFunction の指定に関係なく。起動の間だけ $ClaudeModel を m に束縛し CLI の --model に反映)、または Model と QueryFunction がともに Automatic で $ClaudeModel が CLI 用の指定 (Automatic / 文字列 / {"claudecode", m}) のとき。
+- CLI 以外 (claudecode の runtime adapter の QueryProviderAsync で起動): ローカル LLM (lmstudio / llamacpp / freetoken)、zai、kimi、ツールループが有効な openai。Model (Automatic なら起動時の $ClaudeModel) がこれに当たり QueryFunction が Automatic のとき、ClaudeRunOrchestrationAsync を評価した時点 (前面評価) で同じモデル用の adapter を作っておき、tick からはそれで起動する。送る前の検査は同期版と同じで、課金 API なら評価したノートブックで課金 API が許可されていること、LAN 上のローカル LLM なら ClaudeLocalLLMAccessCheck (PL 1.0) を通ること。満たさなければ同期版。
+- それ以外は従来どおり同期版 (tick の中で完了まで待つ): anthropic、ツールループ無しの openai、文字列の Model、QueryFunction の明示、Model と QueryFunction が Automatic で A4ResolveQueryFnForRole の Path が "CLI" でない role の worker。adapter やプロンプトが組めない、プロセスが起動しないなど deferred の起動に失敗したときも同期版に落ちる。
 
 ### ClaudeOrchestrationStatus[orchJobId] → Association
 ジョブの現在状態。→ `<|"Status"->"Planning"|"Spawning"|"Reducing"|"Committing"|"Done"|"Failed", "Phase"->..., "ElapsedSecs"->..., "PlanJobId"->..., "SpawnJobId"->...|>`
@@ -165,7 +173,7 @@ repository 読込を再試行 (path 指定可)。auto-load フラグをリセッ
 True で directive prefix 構築のたびに診断出力。
 
 ## Routing 統合 (ClaudeOrchestrator` 名前空間)
-queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI (Model オプションは渡さず常に CLI 既定モデル)、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default ($ClaudeRoleDefaultModels、既定 "claude-opus-4.7")。明示的な queryFn (Symbol/Function) は常に passthrough。API/CLI いずれも使えない場合は空文字列を返す queryFn にフォールバック。`$ClaudeOrchestratorEnableRouting` (既定 True) で統合自体を無効化可能。
+queryFn 振り分け (= どの LLM が走るか) を扱う。CLI = ClaudeQueryBg / API = iQueryViaAPI。Model spec: String "claude-*" -> CLI (Model オプションは渡さず常に CLI 既定モデル)、ローカル名 "qwen.."/"llama.."/"mistral.."/"phi-.."/"deepseek.."/"gemma.." -> $ClaudePrivateModel に展開して API、List {prov,model,url} -> API、Automatic+role -> role 別 default ($ClaudeRoleDefaultModels、既定 "claude-opus-4.7")。明示的な queryFn (Symbol/Function) は常に passthrough。API/CLI いずれも使えない場合は空文字列を返す queryFn にフォールバック。API 経路の queryFn は送信前に claudecode の ClaudeLocalLLMAccessCheck (PL 1.0 とみなす) で LAN 上のローカル LLM へ送ってよいかを確かめ、止められたら "Error: ..." 文字列を返す。`$ClaudeOrchestratorEnableRouting` (既定 True) で統合自体を無効化可能。
 
 ### ClaudeOrchestrator`RoutingEnabledQ[] → True/False
 CLI または API の少なくとも一方が呼び出し可能なら True。
@@ -184,7 +192,7 @@ role-aware default lookup と qwen->$ClaudePrivateModel 展開後の解決済み
 True で ResolveQueryFnForRole 呼出のたびに診断出力。
 
 ## A4 hook (ClaudeOrchestrator` 名前空間)
-Directives/Routing が本格実装で再定義する低レベル hook。`$ClaudeOrchestratorEnableA4Stub` (既定 True) でロードを制御 (本格実装が無効化されている場合の passthrough stub)。stub は既存 DownValues があれば上書きしない (再ロード安全)。
+Directives/Routing が本格実装で再定義する低レベル hook。`$ClaudeOrchestratorEnableA4Stub` (既定 True) でロードを制御 (本格実装が無効化されている場合の passthrough stub)。stub は既存 DownValues があれば上書きしない (再ロード安全)。worker プロンプト組立て時の A4InjectDirectivePrefix / A5InjectSourceVaultContext と ParseProposal 後の A6PostProcessParseProposal は、そのシンボルに DownValues があるときだけ適用される (2026-11-06 修正: 判定が常に True になり、そのとき出るメッセージで非同期 worker が毎回同期版に落ちていた)。
 
 ### ClaudeOrchestrator`A4InjectDirectivePrefix[prompt, role, model, goal] → String
 prompt に directive prefix を前置 (Directives 未ロード時 passthrough)。

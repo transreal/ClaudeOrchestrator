@@ -2178,9 +2178,13 @@ $iWorkerSystemPromptJaTemplate =
    登録されていなければ適用しても未評価のシンボル式が残り、後段の
    StringJoin で例外になる (2026-06-01 発見の A5 半登録バグ対策)。
    SourceVault 側 Status 判定と同じ基準 (Names>0 && DownValues>0) に揃える。 *)
+(* 2026-11-06: 旧実装は DownValues[Symbol[fullName]]。DownValues は HoldAll なので Symbol[..] が
+   評価されず、毎回 DownValues::sym を出して未評価の式 (長さ 1) を返していた (= 常に True)。
+   呼び出し側の Quiet @ Check[..] がこのメッセージで失敗扱いになり、iLaunchSingleWorker は
+   毎回同期版に落ちていた。DownValues は記号の名前 (文字列) をそのまま受け付ける *)
 iHookCallableQ[fullName_String] :=
   Length[Names[fullName]] > 0 &&
-  Length[DownValues[Symbol[fullName]]] > 0;
+  Length[DownValues[fullName]] > 0;
 
 (* iEnsureString: 非文字列を確実に文字列へ落とす保険。フック未評価などで
    prompt が String でなくなった場合でも StringJoin を壊さない。 *)
@@ -2951,26 +2955,31 @@ iLaunchSingleWorker[task_Association, builder_, queryFn_,
     refText_:None] :=
   Module[{role, taskId, adapter, ctxPacket, input, prompt,
           inputGoal, workerPrompt, workDir, uniqueTag,
-          promptFile, outFile, batFile, proc},
+          promptFile, outFile, batFile, proc, target},
     role   = Lookup[task, "Role", "Explore"];
     taskId = Lookup[task, "TaskId", ""];
-    
+
     (* \:5bfe\:8c61\:5916: "LLM" builder + Automatic queryFn + jsonRetryMax=1 \:3053\:306e\:5834\:5408\:306e\:307f deferred \:5316 *)
-    If[builder =!= "LLM" || queryFn =!= Automatic || jsonRetryMax =!= 1,
+    (* 2026-11-06: 旧条件 queryFn =!= Automatic を iOrchDeferTarget に置き換え (同期版でも
+       同じモデルに同じ送り方をしていたときだけ deferred。Model 指定も含む) *)
+    target = iOrchDeferTarget[queryFn, role];
+    If[builder =!= "LLM" || jsonRetryMax =!= 1 || target === None,
       Return[iRunSingleWorkerSync[task, builder, queryFn,
         depArtifacts, jsonRetryMax, refText]]];
     
     (* adapter \:3092 builder \:3067\:69cb\:7bc9\:3057\:3001BuildContext \:3067\:30d7\:30ed\:30f3\:30d7\:30c8\:3092\:5fa9\:5143 *)
-    adapter = Quiet @ Check[
+    (* 2026-11-06: Check を外す (罠 #16 と同じ: 無害なメッセージ 1 つで $Failed / <||> に落ち、
+       adapter は毎回同期版へ、BuildContext は空の文脈で空のプロンプトを起動しかねない)。
+       戻り値の形だけで判定する *)
+    adapter = Quiet[
       iLLMWorkerAdapterBuilder[role, task, depArtifacts,
         "QueryFunction" -> queryFn,
         "JSONRetryMax"  -> jsonRetryMax,
-        "ReferenceText" -> refText],
-      $Failed];
+        "ReferenceText" -> refText]];
     If[!AssociationQ[adapter],
       Return[iRunSingleWorkerSync[task, builder, queryFn,
         depArtifacts, jsonRetryMax, refText]]];
-    
+
     input = <|
       "Goal"   -> Lookup[task, "Goal", ""],
       "Role"   -> role,
@@ -2978,9 +2987,11 @@ iLaunchSingleWorker[task_Association, builder_, queryFn_,
       "DependencyArtifacts" -> depArtifacts,
       "OutputSchema" -> Lookup[task, "OutputSchema", <||>]
     |>;
-    
-    ctxPacket = Quiet @ Check[adapter["BuildContext"][input, <||>], <||>];
-    If[!AssociationQ[ctxPacket],
+
+    ctxPacket = Quiet[adapter["BuildContext"][input, <||>]];
+    If[!AssociationQ[ctxPacket] ||
+       !StringQ[Lookup[ctxPacket, "WorkerPrompt", None]] ||
+       StringTrim[ctxPacket["WorkerPrompt"]] === "",
       Return[iRunSingleWorkerSync[task, builder, queryFn,
         depArtifacts, jsonRetryMax, refText]]];
     
@@ -2996,12 +3007,22 @@ iLaunchSingleWorker[task_Association, builder_, queryFn_,
     If[!StringQ[prompt] || StringLength[prompt] === 0,
       Return[iRunSingleWorkerSync[task, builder, queryFn,
         depArtifacts, jsonRetryMax, refText]]];
-    
+
+    (* 2026-11-06: CLI 以外 (LM Studio / llama.cpp / zai / kimi / openai ツールループ) は
+       前面で作った adapter の QueryProviderAsync で起動して戻る。起動できなければ同期版 *)
+    If[ListQ[target],
+      With[{rs = iOrchLaunchAsyncAPI[prompt], tsk = task, adp = adapter},
+        If[AssociationQ[rs],
+          Return[Append[rs, "parseFn" -> Function[{raw},
+            iParseWorkerResult[tsk, adp, raw]]]],
+          Return[iRunSingleWorkerSync[task, builder, queryFn,
+            depArtifacts, jsonRetryMax, refText]]]]];
+
     workDir = Quiet @ Check[
       ClaudeCode`$ClaudeWorkingDirectory, $TemporaryDirectory];
     If[!StringQ[workDir] || !DirectoryQ[workDir],
       workDir = $TemporaryDirectory];
-    
+
     uniqueTag = taskId <> "_" <> ToString[Floor[AbsoluteTime[]]] <>
       "_" <> ToString[RandomInteger[999999]];
     promptFile = FileNameJoin[{workDir,
@@ -3100,10 +3121,14 @@ iLaunchSingleWorker[task_Association, builder_, queryFn_,
           Return[iRunSingleWorkerSync[task, builder, queryFn,
             depArtifacts, jsonRetryMax, refText]]];
         
+        (* 2026-11-06: 旧実装は RunProcess[..., ProcessDirectory -> dir, "Process"] だった。
+           "Process" は RunProcess の性質名に無く、式は未評価のまま即座に返る (プロセスは
+           起動しない) ので、下の判定で毎回 iRunSingleWorkerSync に落ち、CLI 呼び出しが
+           DAG tick の中で同期実行されていた (deferred 経路は一度も働いていなかった)。
+           StartProcess は起動してすぐ ProcessObject を返す *)
         proc = Quiet @ Check[
-          RunProcess[{"cmd", "/c", batFile},
-            ProcessDirectory -> workDir,
-            "Process"],
+          StartProcess[{"cmd", "/c", batFile},
+            ProcessDirectory -> workDir],
           $Failed];
         If[proc === $Failed || !MatchQ[proc, _ProcessObject],
           Quiet @ DeleteFile[promptFile];
@@ -5812,18 +5837,27 @@ Options[iDefaultCommitterAdapterBuilder] = {
   "AccessLevel"      -> 0.3,
   "BaseAdapter"      -> Automatic,
   "MaxContinuations" -> 2,
-  "Model"            -> Automatic   (* v2026-04-20 T08: ClaudeBuildRuntimeAdapter \:306b\:4f1d\:64ad *)
+  "Model"            -> Automatic,  (* v2026-04-20 T08: ClaudeBuildRuntimeAdapter \:306b\:4f1d\:64ad *)
+  (* 2026-11-06: True なら claude CLI のモデルのとき問い合わせを非同期 (QueryProviderAsync =
+     StartProcess、完了は後の tick で回収) にする。iLaunchCommitPhase (非同期オーケストレーション)
+     だけが True を渡す。旧挙動 (既定 False) は基底 adapter の同期 QueryProvider が DAG tick の中で
+     CLI を数分走らせ、その間カーネルを塞いでいた (freeze log: commit の tick が 359.7s)。
+     LM Studio / API は従来どおり (距離検査などの経路を変えない) *)
+  "AsyncCLI"         -> False
 };
 
 iDefaultCommitterAdapterBuilder[targetNb_, reducedArtifact_Association,
     opts:OptionsPattern[]] :=
   Module[{baseAdapter, accessLevel, maxCont, buildCtx, validateFn,
-          executeFn, parseFn, baseParseFn, model},   (* T12 *)
+          executeFn, parseFn, baseParseFn, model, asyncCLI, out},   (* T12 *)
     accessLevel = OptionValue["AccessLevel"];
     maxCont     = OptionValue["MaxContinuations"];
     baseAdapter = OptionValue["BaseAdapter"];
     model       = OptionValue["Model"];   (* v2026-04-20 T08 *)
-    
+    (* 2026-11-06: 非同期にするのは claude CLI に送るときだけ (Options の "AsyncCLI" の注) *)
+    asyncCLI    = TrueQ[OptionValue["AsyncCLI"]] && baseAdapter === Automatic &&
+      iOrchCLIModelQ[If[model === Automatic, ClaudeCode`$ClaudeModel, model]];
+
     (* base adapter: Automatic \:306a\:3089 ClaudeCode`ClaudeBuildRuntimeAdapter \:547c\:51fa
        (\:30ce\:30fc\:30c8\:30d6\:30c3\:30af\:30bb\:30c3\:30b7\:30e7\:30f3\:3067\:3057\:304b\:9014\:5168\:3057\:306a\:3044 \[LongDash] \:30c6\:30b9\:30c8\:3067\:306f mock \:3092\:6e21\:3059)
        v2026-04-20 T08: Model \:6307\:5b9a\:304c\:3042\:308c\:3070 ClaudeBuildRuntimeAdapter \:306b\:6e21\:3057\:3066
@@ -5833,7 +5867,8 @@ iDefaultCommitterAdapterBuilder[targetNb_, reducedArtifact_Association,
         ClaudeCode`ClaudeBuildRuntimeAdapter[targetNb,
           "AccessLevel"      -> accessLevel,
           "MaxContinuations" -> maxCont,
-          "Model"            -> model],
+          "Model"            -> model,
+          "SyncProvider"     -> ! asyncCLI],   (* 2026-11-06: 既定 True と同じ (asyncCLI のときだけ False) *)
         $Failed]];
     
     If[!AssociationQ[baseAdapter],
@@ -6002,7 +6037,7 @@ iDefaultCommitterAdapterBuilder[targetNb_, reducedArtifact_Association,
     ];
     
     (* \:2500\:2500 \:4ed6\:30ad\:30fc\:306f base \:304b\:3089\:7d99\:627f (iValidateAdapter \:5fc5\:9808\:30ad\:30fc 7 \:3064) \:2500\:2500 *)
-    <|
+    out = <|
       "SyncProvider"     -> Lookup[baseAdapter, "SyncProvider", True],
       "BuildContext"     -> buildCtx,
       "QueryProvider"    -> Lookup[baseAdapter, "QueryProvider",
@@ -6023,7 +6058,20 @@ iDefaultCommitterAdapterBuilder[targetNb_, reducedArtifact_Association,
       "Role"             -> "Commit",
       "TargetNotebook"   -> targetNb,
       "ReducedArtifact"  -> reducedArtifact
-    |>
+    |>;
+    (* 2026-11-06: 非同期 (asyncCLI) なら基底の QueryProviderAsync を渡す。Model 指定 (claude CLI)
+       は起動の間だけ ClaudeCode`$ClaudeModel を束縛する (バッチの --model がそれを読む)。
+       基底が非同期の口を持たなければ同期のまま (旧挙動) *)
+    If[asyncCLI,
+      If[out["SyncProvider"] === False &&
+         MatchQ[Lookup[baseAdapter, "QueryProviderAsync", None], _Function],
+        With[{f = baseAdapter["QueryProviderAsync"], m = model},
+          out["QueryProviderAsync"] = Function[{ctx, cs},
+            If[iOrchDeferrableModelQ[m],
+              Block[{ClaudeCode`$ClaudeModel = m}, f[ctx, cs]],
+              f[ctx, cs]]]],
+        out["SyncProvider"] = True]];
+    out
   ];
 
 (* ════════════════════════════════════════════════════════
@@ -6087,6 +6135,139 @@ iLocalLLMGuarded[spec_, call_] :=
   Module[{r = If[Length[DownValues[ClaudeCode`ClaudeLocalLLMAccessCheck]] > 0,
       ClaudeCode`ClaudeLocalLLMAccessCheck[spec, 1.0], True]},
     If[FailureQ[r], "Error: " <> r["Text"], call]];
+
+(* 2026-11-06 (FE フリーズ修正): ClaudeRunOrchestrationAsync の Plan / Worker / Reduce は
+   DAG の sync ノードとして共有 tick (メインカーネルのプリエンプティブなタスク) の中で起動される。
+   launcher (iLaunchPlanPhase / iLaunchSingleWorker / iLaunchReducePhase) は CLI を起動して
+   すぐ戻る deferred 経路のはずだったが、2 つの理由で毎回同期版に落ちていた:
+   (1) 起動が RunProcess[..., "Process"] で、これは何も起動せず未評価で返る → 同期 fallback。
+   (2) ClaudeEval から Model -> {"claudecode", m} が渡ると QueryFunction が同期ラッパに
+       差し替わり、launcher は queryFn =!= Automatic を見て同期版に落ちる。
+   結果、claude CLI の呼び出し (RunProcess で 1 件数分) が tick の中で worker の数だけ続き、
+   その間カーネルは FE の要求に答えられず、プロセス一覧 (同期 Dynamic) を開いた FE が止まった
+   (freeze log: "tick-start | dag-..." の後 tick-end が来ないまま claude.exe が順に起動)。
+   直し方: 起動は StartProcess。deferred にするのは「同期版でも同じモデルに同じ送り方を
+   していた」ときだけ (iOrchDeferTarget):
+   - claude CLI: iMakeBat が ClaudeCode`$ClaudeModel から --model を組むので、Model 指定時は
+     launcher を評価する間だけ $ClaudeModel を束縛する (iOrchWithModel)。
+   - LM Studio / llama.cpp / freetoken / zai / kimi / ツールループの openai: claudecode の runtime
+     adapter の QueryProviderAsync (ClaudeEval の非同期経路と同じ起動) を "RawPrompt" で借りる。
+     送る前の関所は同期版と同じ: LAN のローカル LLM は距離の上限 (rule 107、PL 1.0)、課金 API は
+     起動時のノートブックの許可 (iQueryViaAPI と同じ判定を前面評価の間に 1 回)。
+   - それ以外 (anthropic、ツールループ無しの openai、A4 が role 別に別モデルへ振る worker) は
+     従来どおり同期版のまま (経路を黙って変えない)。 *)
+iOrchDeferrableModelQ[model_] :=
+  MatchQ[model, {p_String, m_String, ___} /;
+    ToLowerCase[p] === "claudecode" && StringTrim[m] =!= ""];
+
+(* iMakeBat がそのまま claude CLI に渡せるモデル指定か (Automatic = CLI 既定) *)
+iOrchCLIModelQ[m_] :=
+  m === Automatic || (StringQ[m] && StringTrim[m] =!= "") || iOrchDeferrableModelQ[m];
+
+(* CLI 以外で、claudecode の非同期の口 (runtime adapter の QueryProviderAsync) が同期版
+   (ClaudeQuerySync / ClaudeQueryBg → iQueryViaAPI 等) と同じ送り先・同じ送り方をするモデル指定か:
+   LAN / 自機のローカル LLM (lmstudio / freetoken / llamacpp) と、課金クラウドの zai / kimi、
+   ツールループが有効な openai。anthropic とツールループ無しの openai は非同期の口が
+   Claude CLI に落ちて送り先が変わるので対象外 (同期のまま) *)
+iOrchAsyncAPIModelQ[m_] :=
+  MatchQ[m, {_String, mm_String, ___} /; StringTrim[mm] =!= ""] &&
+  With[{p = ToLowerCase[First[m]]},
+    (* iLocalOAIProviderQ は ClaudeCode` 側の記号 (Private` と書くと空の別記号を作ってしまう) *)
+    TrueQ[Quiet @ ClaudeCode`iLocalOAIProviderQ[p]] ||
+    MemberQ[{"zai", "kimi"}, p] ||
+    (p === "openai" && TrueQ[Quiet @ ClaudeCode`Private`iCloudToolLoopEnabledQ[p]])];
+
+(* 非同期起動の文脈。ClaudeRunOrchestrationAsync が前面評価の間に作って state "AsyncCtx" に置き、
+   launcher を評価する間 iOrchWithModel が $iOrchAsyncCtx に束縛する。
+     "Model"   : Model オプション (指定なしは None)
+     "Spec"    : 非同期で送る CLI 以外のモデル (Model か、Automatic なら起動時の $ClaudeModel)
+     "Adapter" : Spec 用に前面で作った runtime adapter (QueryProviderAsync を借りる)
+     "PaidOK"  : Spec が課金 API なら、起動時のノートブックの課金 API 許可 (同期版と同じ判定) *)
+If[! ValueQ[$iOrchAsyncCtx], $iOrchAsyncCtx = None];
+
+iOrchCtxModel[ctx_] := If[AssociationQ[ctx], Lookup[ctx, "Model", None], None];
+
+SetAttributes[iOrchWithModel, HoldRest];
+iOrchWithModel[ctx_, expr_] :=
+  With[{m = iOrchCtxModel[ctx]},
+    If[iOrchDeferrableModelQ[m],
+      Block[{ClaudeCode`$ClaudeModel = m, $iOrchAsyncCtx = ctx}, expr],
+      Block[{$iOrchAsyncCtx = ctx}, expr]]];
+
+(* worker の role が A4 で「既定モデル (ClaudeQueryBg = $ClaudeModel)」に送られるか *)
+iOrchRoleUsesDefaultQ[role_] :=
+  role === None ||
+  TrueQ[Quiet @ Check[
+    Lookup[ClaudeOrchestrator`A4ResolveQueryFnForRole[Automatic, Automatic, role],
+      "Path", "CLI"] === "CLI",
+    False]];
+
+(* CLI 以外のモデルへ今ここから非同期で送ってよいか: 前面で作った adapter が同じモデル用で、
+   課金 API なら起動時のノートブックが許可しており、LAN のローカル LLM なら距離の上限
+   (rule 107、同期ラッパ iLocalLLMGuarded と同じ PL 1.0) を満たすこと *)
+iOrchAsyncAPIReadyQ[ctx_, spec_] :=
+  AssociationQ[ctx] && Lookup[ctx, "Spec", None] === spec &&
+  MatchQ[Lookup[Lookup[ctx, "Adapter", <||>], "QueryProviderAsync", None], _Function] &&
+  (! TrueQ[Quiet @ ClaudeCode`Private`iClaudePaidModelQ[spec[[1]], spec[[2]]]] ||
+     TrueQ[Lookup[ctx, "PaidOK", False]]) &&
+  ! FailureQ[If[Length[DownValues[ClaudeCode`ClaudeLocalLLMAccessCheck]] > 0,
+      Quiet @ ClaudeCode`ClaudeLocalLLMAccessCheck[spec, 1.0], True]];
+
+(* どこへ deferred で送るか: "CLI" (claude CLI を StartProcess) / {"API", spec} (QueryProviderAsync) /
+   None (同期版のまま)。role は worker の Role、Plan / Reduce は None (同期版は ClaudeQueryBg =
+   $ClaudeModel 既定に送るので role を見ない)。
+   - Model 指定 (claude CLI): 同期ラッパも全 role をそのモデルの CLI に送っていた → "CLI"
+   - Model 指定 (iOrchAsyncAPIModelQ): 同期ラッパも全 role をそのモデルに送っていた → 関所を通れば API
+   - それ以外で queryFn 明示 (ラッパ、呼び出し側の関数): 同期版のまま
+   - queryFn Automatic: worker は A4 の経路が既定モデルのときだけ、$ClaudeModel が CLI なら "CLI"、
+     非同期の口があるモデルなら関所を通れば API *)
+iOrchDeferTarget[queryFn_, role_] :=
+  Module[{ctx = $iOrchAsyncCtx, m, g = ClaudeCode`$ClaudeModel},
+    m = iOrchCtxModel[ctx];
+    Which[
+      iOrchDeferrableModelQ[m], "CLI",
+      iOrchAsyncAPIModelQ[m], If[iOrchAsyncAPIReadyQ[ctx, m], {"API", m}, None],
+      queryFn =!= Automatic, None,
+      ! iOrchRoleUsesDefaultQ[role], None,
+      iOrchCLIModelQ[g], "CLI",
+      iOrchAsyncAPIModelQ[g], If[iOrchAsyncAPIReadyQ[ctx, g], {"API", g}, None],
+      True, None]];
+
+(* 組み立て済みのプロンプトを、前面で作った adapter の QueryProviderAsync で起動する
+   (claudecode の iAdapterBuildPrompt が "RawPrompt" をそのまま使う)。
+   戻り値: DAG tick がポーリングする runState (proc か toolLoopId を持つ) | $Failed *)
+iOrchLaunchAsyncAPI[prompt_String] :=
+  Module[{ad = Lookup[If[AssociationQ[$iOrchAsyncCtx], $iOrchAsyncCtx, <||>], "Adapter", None],
+          rs},
+    If[! AssociationQ[ad] || ! MatchQ[Lookup[ad, "QueryProviderAsync", None], _Function],
+      Return[$Failed]];
+    rs = Quiet[ad["QueryProviderAsync"][<|"RawPrompt" -> prompt|>, <||>]];
+    If[AssociationQ[rs] && KeyExistsQ[rs, "proc"] &&
+       (MatchQ[rs["proc"], _ProcessObject] || StringQ[Lookup[rs, "toolLoopId", None]]),
+      rs, $Failed]];
+
+(* 前面評価の間に非同期起動の文脈を作る (ClaudeRunOrchestrationAsync から)。
+   queryFn は呼び出し側が渡した QueryFunction (ラッパに差し替える前) *)
+iOrchMakeAsyncCtx[model_, queryFn_] :=
+  Module[{eff, spec = None, adapter = None, paidOK = True, nb},
+    eff = If[model === Automatic, ClaudeCode`$ClaudeModel, model];
+    If[queryFn === Automatic && iOrchAsyncAPIModelQ[eff],
+      spec = eff;
+      nb = Quiet[EvaluationNotebook[]];
+      If[Head[nb] =!= NotebookObject, nb = None];
+      adapter = Quiet @ ClaudeCode`ClaudeBuildRuntimeAdapter[nb,
+        "Model" -> spec, "SyncProvider" -> False];
+      If[! AssociationQ[adapter], adapter = None];
+      If[TrueQ[Quiet @ ClaudeCode`Private`iClaudePaidModelQ[spec[[1]], spec[[2]]]],
+        paidOK = TrueQ[Quiet @ ClaudeCode`Private`iClaudePaidAPIAllowedHereQ[]]]];
+    <|"Model"   -> If[model === Automatic, None, model],
+      "Spec"    -> spec,
+      "Adapter" -> adapter,
+      "PaidOK"  -> paidOK|>];
+
+iOrchDeferredModel[orchId_String] :=
+  With[{s = iOrchGet[orchId]},
+    If[AssociationQ[s], Lookup[s, "AsyncCtx", None], None]];
 
 (* \:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500\:2500
    iResolveTargetNotebookAuto: "TargetNotebook" \:304c Automatic \:306e\:5834\:5408\:3001
@@ -6751,7 +6932,7 @@ iRunPlanPhaseSync[orchId_String] :=
 iLaunchPlanPhase[orchId_String] :=
   Module[{state, input, optsList, planner, maxTasks, queryFn,
           prompt, plannerOpts, promptFile, outFile, batFile, proc,
-          workDir, uniqueTag, modelSpec, useLMStudio, nb},
+          workDir, uniqueTag, modelSpec, useLMStudio, nb, target},
     state    = iOrchGet[orchId];
     If[!AssociationQ[state], Return[iRunPlanPhaseSync[orchId]]];
     input    = Lookup[state, "Input", ""];
@@ -6759,18 +6940,28 @@ iLaunchPlanPhase[orchId_String] :=
     planner  = OptionValue[ClaudeRunOrchestration, optsList, "Planner"];
     maxTasks = OptionValue[ClaudeRunOrchestration, optsList, "MaxTasks"];
     queryFn  = OptionValue[ClaudeRunOrchestration, optsList, "QueryFunction"];
-    
+
     (* LLM planner \:304b\:3064 queryFn=Automatic \:4ee5\:5916\:306f\:5f93\:6765\:540c\:671f\:3067\:5373\:8fd4\:5374 *)
-    If[planner =!= "LLM" || queryFn =!= Automatic,
+    (* 2026-11-06: queryFn =!= Automatic を iOrchDeferTarget に置き換え (iOrchDeferTarget の注) *)
+    target = iOrchDeferTarget[queryFn, None];
+    If[planner =!= "LLM" || target === None,
       Return[iRunPlanPhaseSync[orchId]]];
-    
+
     (* LLM planner \:306e\:975e\:540c\:671f\:8d77\:52d5 *)
     plannerOpts = <|"MaxTasks" -> maxTasks, "QueryFunction" -> queryFn|>;
-    prompt = Quiet @ Check[
-      iPlannerBuildPrompt[input, plannerOpts], $Failed];
+    (* 2026-11-06: Check を外す (無害なメッセージで同期版に落ちないよう、戻り値の形で判定) *)
+    prompt = Quiet[iPlannerBuildPrompt[input, plannerOpts]];
     If[!StringQ[prompt],
       Return[iRunPlanPhaseSync[orchId]]];
-    
+
+    (* 2026-11-06: CLI 以外は前面で作った adapter の QueryProviderAsync で起動して戻る *)
+    If[ListQ[target],
+      With[{rs = iOrchLaunchAsyncAPI[prompt], oid = orchId, mxt = maxTasks},
+        If[AssociationQ[rs],
+          Return[Append[rs, "parseFn" -> Function[{raw},
+            iParsePlanResult[oid, raw, mxt]]]],
+          Return[iRunPlanPhaseSync[orchId]]]]];
+
     workDir = Quiet @ Check[
       ClaudeCode`$ClaudeWorkingDirectory, $TemporaryDirectory];
     If[!StringQ[workDir] || !DirectoryQ[workDir],
@@ -6871,10 +7062,11 @@ iLaunchPlanPhase[orchId_String] :=
         Quiet @ DeleteFile[promptFile];
         Return[iRunPlanPhaseSync[orchId]]];
       
+      (* 2026-11-06: RunProcess[..., "Process"] は起動せず未評価で返っていた
+         (iLaunchSingleWorker の同じ箇所の注)。StartProcess で起動する *)
       proc = Quiet @ Check[
-        RunProcess[{"cmd", "/c", batFile},
-          ProcessDirectory -> workDir,
-          "Process"],
+        StartProcess[{"cmd", "/c", batFile},
+          ProcessDirectory -> workDir],
         $Failed];
       If[proc === $Failed || !MatchQ[proc, _ProcessObject],
         Quiet @ DeleteFile[promptFile];
@@ -6998,15 +7190,17 @@ iRunReducePhaseSync[orchId_String] :=
 iLaunchReducePhase[orchId_String] :=
   Module[{state, optsList, reducer, queryFn, spawnResult, artifacts,
           artifactSummary, prompt, promptFile, outFile, batFile, proc,
-          workDir, uniqueTag},
+          workDir, uniqueTag, target},
     state    = iOrchGet[orchId];
     If[!AssociationQ[state], Return[iRunReducePhaseSync[orchId]]];
     optsList = Lookup[state, "OptionsList", {}];
     reducer  = OptionValue[ClaudeRunOrchestration, optsList, "Reducer"];
     queryFn  = OptionValue[ClaudeRunOrchestration, optsList, "QueryFunction"];
-    
+
     (* LLM reducer \:304b\:3064 queryFn = Automatic \:4ee5\:5916\:306f\:540c\:671f fallback *)
-    If[reducer =!= "LLM" || queryFn =!= Automatic,
+    (* 2026-11-06: queryFn =!= Automatic を iOrchDeferTarget に置き換え (iOrchDeferTarget の注) *)
+    target = iOrchDeferTarget[queryFn, None];
+    If[reducer =!= "LLM" || target === None,
       Return[iRunReducePhaseSync[orchId]]];
     
     spawnResult = Lookup[state, "SpawnResult", <||>];
@@ -7034,7 +7228,15 @@ iLaunchReducePhase[orchId_String] :=
         If[isJaR,
           "\n\:4e0a\:8a18 artifact \:7fa4\:3092 1 \:3064\:306e JSON \:30aa\:30d6\:30b8\:30a7\:30af\:30c8\:306b\:30de\:30fc\:30b8\:3057\:3066\:304f\:3060\:3055\:3044\:3002",
           "\nMerge these artifacts into a single JSON object."]];
-    
+
+    (* 2026-11-06: CLI 以外は前面で作った adapter の QueryProviderAsync で起動して戻る *)
+    If[ListQ[target],
+      With[{rs = iOrchLaunchAsyncAPI[prompt], oid = orchId, arts = artifacts},
+        If[AssociationQ[rs],
+          Return[Append[rs, "parseFn" -> Function[{raw},
+            iParseReduceResult[oid, raw, arts]]]],
+          Return[iRunReducePhaseSync[orchId]]]]];
+
     workDir = Quiet @ Check[
       ClaudeCode`$ClaudeWorkingDirectory, $TemporaryDirectory];
     If[!StringQ[workDir] || !DirectoryQ[workDir],
@@ -7059,10 +7261,11 @@ iLaunchReducePhase[orchId_String] :=
       Quiet @ DeleteFile[promptFile];
       Return[iRunReducePhaseSync[orchId]]];
     
+    (* 2026-11-06: RunProcess[..., "Process"] は起動せず未評価で返っていた
+       (iLaunchSingleWorker の同じ箇所の注)。StartProcess で起動する *)
     proc = Quiet @ Check[
-      RunProcess[{"cmd", "/c", batFile},
-        ProcessDirectory -> workDir,
-        "Process"],
+      StartProcess[{"cmd", "/c", batFile},
+        ProcessDirectory -> workDir],
       $Failed];
     If[proc === $Failed || !MatchQ[proc, _ProcessObject],
       Quiet @ DeleteFile[promptFile];
@@ -7202,7 +7405,8 @@ iLaunchCommitPhase[orchId_String] :=
       builder === Automatic,
         Quiet @ Check[
           iDefaultCommitterAdapterBuilder[targetNb, reducedArtifact,
-            "Model" -> model],
+            "Model" -> model,
+            "AsyncCLI" -> True],   (* 2026-11-06: claude CLI なら問い合わせを tick の外で *)
           $Failed],
       True,
         Quiet @ Check[
@@ -7601,13 +7805,15 @@ iSpawnWorkersDAGAsync[sortedTasks_List, builder_, queryFn_,
             tbuilder = builder, tqueryFn = queryFn,
             tjsonRetry = jsonRetryMax,
             tprevArtifacts = prevArtifacts,
-            trefText = refText},
+            trefText = refText,
+            tmodel = Lookup[cfg, "AsyncCtx", None]},  (* 2026-11-06: iOrchDeferTarget の注 *)
         nodes[ttid] = ClaudeCode`iLLMGraphNode[
           ttid, "sync", "worker", tdeps,
           Function[{job},
-            iLaunchSingleWorker[ttask, tbuilder, tqueryFn,
-              iCollectDepArtifactsFromJob[job, tdeps, tprevArtifacts],
-              tjsonRetry, trefText]]]],
+            iOrchWithModel[tmodel,
+              iLaunchSingleWorker[ttask, tbuilder, tqueryFn,
+                iCollectDepArtifactsFromJob[job, tdeps, tprevArtifacts],
+                tjsonRetry, trefText]]]]],
       {t, sortedTasks}];
     
     If[verbose,
@@ -7720,7 +7926,8 @@ iOnPlanComplete[orchId_String, planJob_Association] :=
       "JSONRetryMax"   -> OptionValue[ClaudeRunOrchestration, optsList, "JSONRetryMax"],
       "Verbose"        -> verbose,
       "ReferenceText"  -> OptionValue[ClaudeRunOrchestration, optsList, "ReferenceText"],
-      "SessionTag"     -> "orch-" <> orchId
+      "SessionTag"     -> "orch-" <> orchId,
+      "AsyncCtx"       -> Lookup[state, "AsyncCtx", None]
     |>;
     
     iOrchSet[orchId, <|"Status" -> "Spawning", "Phase" -> "Spawn"|>];
@@ -7758,7 +7965,8 @@ iOnSpawnComplete[orchId_String, spawnResult_Association] :=
           "nodes" -> <|
             "reduce" -> ClaudeCode`iLLMGraphNode[
               "reduce", "sync", "orch-reduce", {},
-              Function[{job}, iLaunchReducePhase[oid]]]
+              Function[{job},
+                iOrchWithModel[iOrchDeferredModel[oid], iLaunchReducePhase[oid]]]]
           |>,
           "taskDescriptor" -> <|"name" -> "Orchestration Reduce",
             "categoryMap" -> <|"orch-reduce" -> "sync"|>|>,
@@ -8067,10 +8275,11 @@ ClaudeOrchestrationShowFinalActions[___] := (
 Options[ClaudeRunOrchestrationAsync] = Options[ClaudeRunOrchestration];
 
 ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
-  Module[{orchId, planJobId, optsList, verbose, model, queryFn, wrappedQueryFn},
+  Module[{orchId, planJobId, optsList, verbose, model, queryFn, wrappedQueryFn,
+          asyncCtx},
     optsList = {opts};
     verbose  = TrueQ[OptionValue["Verbose"]];
-    
+
     (* v2026-04-20 T08: Model \:30aa\:30d7\:30b7\:30e7\:30f3\:306e\:4f1d\:64ad\:2014
        optsList \:5185\:306e QueryFunction \:3092 wrapper \:3067\:7f6e\:304d\:63db\:3048\:3001\:5404 launcher \:306f
        \:5f93\:6765\:901a\:308a OptionValue[..., optsList, "QueryFunction"] \:3067\:53d6\:5f97\:3059\:308b\:3002
@@ -8079,6 +8288,9 @@ ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
        \:81ea\:52d5\:7684\:306b\:540c\:671f sync \:7248\:3067\:5b9f\:884c\:3055\:308c\:308b\:3002 *)
     model   = OptionValue["Model"];
     queryFn = OptionValue["QueryFunction"];
+    (* 2026-11-06: 非同期起動の文脈 (iOrchMakeAsyncCtx の注)。課金 API の許可と adapter は
+       FE に触れるので、tick ではなくここ (前面評価) で決める *)
+    asyncCtx = iOrchMakeAsyncCtx[model, queryFn];
     If[queryFn === Automatic && model =!= Automatic,
       With[{m = model},
         wrappedQueryFn = Function[prompt,
@@ -8086,11 +8298,17 @@ ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
       optsList = Append[
         FilterRules[optsList, Except["QueryFunction"]],
         "QueryFunction" -> wrappedQueryFn];
+      (* 2026-11-06: claude CLI と非同期の口があるモデルなら launcher は wrapper を使わず
+         deferred 経路 (起動して戻る) で同じモデルを使う (iOrchDeferTarget の注)。
+         wrapper は deferred にできなかったときの同期 fallback 用に残す *)
       If[verbose,
         Print[Style["[orchestration:async] Model -> " <>
-          ToString[Short[model, 2]] <> " \:3067 QueryFunction wrapper \:3092\:9069\:7528\:3002",
+          ToString[Short[model, 2]] <>
+          If[iOrchDeferrableModelQ[model] || iOrchAsyncAPIModelQ[model],
+            " \:3092 deferred (\:975e\:540c\:671f) \:7d4c\:8def\:3067\:4f7f\:3046\:3002",
+            " \:3067 QueryFunction wrapper \:3092\:9069\:7528\:3002"],
           Italic, GrayLevel[0.4]]]]];
-    
+
     orchId   = "orch-" <> ToString[Floor[AbsoluteTime[]]] <>
       "-" <> ToString[RandomInteger[999999]];
     
@@ -8100,6 +8318,7 @@ ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
       "Phase"       -> "Plan",
       "Input"       -> input,
       "OptionsList" -> optsList,
+      "AsyncCtx"    -> asyncCtx,
       "StartTime"   -> AbsoluteTime[],
       "PlanResult"  -> None,
       "SpawnResult" -> None,
@@ -8117,7 +8336,8 @@ ClaudeRunOrchestrationAsync[input_, opts:OptionsPattern[]] :=
           "nodes" -> <|
             "plan" -> ClaudeCode`iLLMGraphNode[
               "plan", "sync", "orch-plan", {},
-              Function[{job}, iLaunchPlanPhase[oid]]]
+              Function[{job},
+                iOrchWithModel[iOrchDeferredModel[oid], iLaunchPlanPhase[oid]]]]
           |>,
           "taskDescriptor" -> <|"name" -> "Orchestration Plan",
             "categoryMap" -> <|"orch-plan" -> "sync"|>|>,

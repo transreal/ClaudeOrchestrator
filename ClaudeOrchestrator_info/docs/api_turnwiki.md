@@ -127,6 +127,11 @@ active スキルを `Claude Directives/rules/evolved-turn-<name>.md` として�
 `$ClaudeTurnWikiMaxActiveSkills` (既定 3) まで。ロード時に既採用分を自動復元
 (`$ClaudeTurnWikiAutoWire`)。具現化されるのは SKILL.md 本文のみ —
 PURPOSE.md/パターン/台帳は決して注入されない。Unwire は全 evolved-turn-* ルールと登録を除去しキャッシュ無効化。
+Claude Directives は公開リポジトリと cloud モデルへ PrivacyLevel 0.0 として出るため、具現化する本文は書き込み前に
+`ClaudeDirectives`ClaudeDirectivesPrivacyLintText` を通す (2026-11-07)。違反 (実ユーザー名入りパス・マシン名・
+SourceVault の実 ID・メールアドレス・秘密の値など) があれば書かずに `<|"Status" -> "PrivacyBlocked", "Rule", "Hits"|>`
+を返し、その skill は具現化されない。正準ルートへ書くときに lint 関数が無ければ同じく書かない (fail-closed)。
+テスト用の `$ClaudeTurnWikiDirectiveRootOverride` 指定時だけは lint 不在でも書く。
 Summary 投影は先頭 400 字に切り詰めるため、Proposer は必須事項を冒頭に凝縮する
 規約 (プロンプトで強制)。
 
