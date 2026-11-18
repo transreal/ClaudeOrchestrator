@@ -83,7 +83,10 @@ $ClaudeTurnWikiAutoWire::usage =
   "$ClaudeTurnWikiAutoWire (default True) re-registers already-accepted evolved skills into the directive layer at package load.";
 
 $ClaudeTurnWikiInjectionEnabled::usage =
-  "$ClaudeTurnWikiInjectionEnabled (default True) gates whether Promote/Wire materialize evolved skills into the Claude Directives store.";
+  "$ClaudeTurnWikiInjectionEnabled (default False since 2026-11-09; risk assessment 02 v1.2 A-6 / P0-16) gates whether Promote/Wire materialize evolved skills into the Claude Directives store. Off until promotion is an owner operation end to end; set True explicitly to inject.";
+
+$ClaudeTurnWikiAutoPromote::usage =
+  "$ClaudeTurnWikiAutoPromote (default False; 02 v1.2 A-6 / P0-16, 2026-11-09) decides what an Accepted gate decision does. False: the candidate is parked in PendingOwnerReview (pending-review.json) and the owner promotes it with ClaudeTurnWikiApprovePending or drops it with ClaudeTurnWikiRejectPending. True: the old behaviour, ClaudeTurnWikiPromote runs at once (tests, or an owner who accepts automatic promotion).";
 
 $ClaudeTurnWikiMaxFailStreak::usage =
   "$ClaudeTurnWikiMaxFailStreak (default 3): when the maintain tick fails this many consecutive times on the same set of traces, those traces are marked consumed (Status \"GaveUp\") so a poison trace cannot stall the loop forever.";
@@ -154,6 +157,15 @@ ClaudeTurnWikiPromote::usage =
 ClaudeTurnWikiReject::usage =
   "ClaudeTurnWikiReject[name] discards the staged candidate for name. The wiki is untouched.";
 
+ClaudeTurnWikiPendingReviews::usage =
+  "ClaudeTurnWikiPendingReviews[] lists the Accepted candidates waiting for the owner (Status PendingOwnerReview): Name, Profile, Score, RBest, Iteration, StagedAt, Action, Rationale, SkillMD, PurposeMD. Nothing is promoted until the owner calls ClaudeTurnWikiApprovePending.";
+
+ClaudeTurnWikiApprovePending::usage =
+  "ClaudeTurnWikiApprovePending[name] is the OWNER operation that promotes a pending candidate (ClaudeTurnWikiPromote with the stored SKILL.md, score and profile), removes it from the pending list and records Outcome Promoted / Action owner-approve in the skill-impact ledger. Registered as an NBAccess approval head.";
+
+ClaudeTurnWikiRejectPending::usage =
+  "ClaudeTurnWikiRejectPending[name] drops a pending candidate (staging cleared, ledger Outcome Rejected / Action owner-reject). The wiki is untouched.";
+
 ClaudeTurnWikiRollbackSkill::usage =
   "ClaudeTurnWikiRollbackSkill[name] restores the previous archived version of an accepted skill (or deactivates it when no archive exists). The wiki is never rolled back. RBest is reset to Missing so the next iteration re-baselines.";
 
@@ -213,7 +225,7 @@ ClaudeTurnWikiProfilesView::usage =
   "ClaudeTurnWikiProfilesView[] renders ClaudeTurnWikiProfiles[] as a Dataset (rows capped by $ClaudeTurnWikiViewMaxRows).";
 
 ClaudeTurnWikiLedger::usage =
-  "ClaudeTurnWikiLedger[opts] (core) reads the skill-impact ledger (wiki/skill-impact.jsonl) as a list of Associations, newest first: At, Iteration, Profile, Outcome, Action, Name, Score, RBest, Rationale, Content, Edits. Options: \"Profile\" -> All | key, \"Outcome\" -> All | \"Accepted\" | \"Rejected\" | \"NoAction\" | \"RolledBack\" | \"LevelChanged\", \"Limit\" -> All | n.";
+  "ClaudeTurnWikiLedger[opts] (core) reads the skill-impact ledger (wiki/skill-impact.jsonl) as a list of Associations, newest first: At, Iteration, Profile, Outcome, Action, Name, Score, RBest, Rationale, Promotion (Accepted entries since 2026-11-09: Promoted | PendingOwnerReview), Content, Edits. Options: \"Profile\" -> All | key, \"Outcome\" -> All | \"Accepted\" | \"Rejected\" | \"NoAction\" | \"RolledBack\" | \"LevelChanged\" | \"Promoted\", \"Limit\" -> All | n.";
 ClaudeTurnWikiLedgerView::usage =
   "ClaudeTurnWikiLedgerView[opts] is the Dataset view of ClaudeTurnWikiLedger (same options; rows capped by $ClaudeTurnWikiViewMaxRows). Each row with a skill has an open button for skills/<name>/SKILL.md.";
 
@@ -265,7 +277,10 @@ If[!ValueQ[$ClaudeTurnWikiLLMFn], $ClaudeTurnWikiLLMFn = Automatic];
 If[!ValueQ[$ClaudeTurnWikiLLMTimeout], $ClaudeTurnWikiLLMTimeout = 480];
 If[!ValueQ[$ClaudeTurnWikiMaxActiveSkills], $ClaudeTurnWikiMaxActiveSkills = 3];
 If[!ValueQ[$ClaudeTurnWikiAutoWire], $ClaudeTurnWikiAutoWire = True];
-If[!ValueQ[$ClaudeTurnWikiInjectionEnabled], $ClaudeTurnWikiInjectionEnabled = True];
+(* A-6 (02 v1.2 / P0-16, 2026-11-09): 既定で注入しない・自動昇格しない。Accepted は PendingOwnerReview に
+   留まり、所有者が ClaudeTurnWikiApprovePending で昇格する。旧挙動は両方を True に。 *)
+If[!ValueQ[$ClaudeTurnWikiInjectionEnabled], $ClaudeTurnWikiInjectionEnabled = False];
+If[!ValueQ[$ClaudeTurnWikiAutoPromote], $ClaudeTurnWikiAutoPromote = False];
 If[!ValueQ[$ClaudeTurnWikiDirectiveRootOverride], $ClaudeTurnWikiDirectiveRootOverride = Automatic];
 If[!IntegerQ[$ClaudeTurnWikiMaxFailStreak], $ClaudeTurnWikiMaxFailStreak = 3];
 (* \:81ea\:52d5\:539f\:8cc7 (runtime/llmlog) \:306e\:30c8\:30ec\:30fc\:30b9\:6700\:5c0f\:6587\:5b57\:6570\:3002\:3053\:308c\:672a\:6e80\:306f\:6750\:6599\:306b\:306a\:3089\:306a\:3044 (\:5b9f\:6e2c:
@@ -794,6 +809,10 @@ iTWLLMLogModel[turns_, d_] := Module[{ms},
   ms = Select[Flatten[{Lookup[If[AssociationQ[d], d, <||>], "Models", {}]}], StringQ];
   If[ms =!= {}, Last[ms], Missing["NotReported"]]];
 
+(* V9: does the trace contain an answer marked as unverified ("[SourceVault] " followed by U+26A0)? *)
+iTWUngroundedTraceQ[t_Association] := StringContainsQ[ToString[Lookup[t, "Text", ""]], "[SourceVault] \:26a0"];
+iTWUngroundedTraceQ[_] := False;
+
 Options[ClaudeTurnWikiCollectTraces] = {
   "TracesFn" -> Automatic, "MaxFail" -> 5, "MaxPass" -> 3,
   "MaxChars" -> 15000, "Persist" -> True, "LLMLogScanLimit" -> 30,
@@ -814,6 +833,12 @@ ClaudeTurnWikiCollectTraces[opts : OptionsPattern[]] := Module[
       iTWCollectLLMLogTraces[maxChars, OptionValue["LLMLogScanLimit"],
         OptionValue["LLMLogTranscriptLimit"]]]];
   all = iTWEnsureTraceProfile /@ Select[all, AssociationQ];
+  (* 2026-11-13 (LLM defense document 12, V9, section 4.6): an answer that carries the mark "[SourceVault] (warning sign)" was returned
+     without anything checked on the web. A trace that contains such an answer is not taken as a good example (Kind "pass"):
+     nothing is learned from an unverified answer. As a failure example it may still be used. Automatically collected traces only;
+     traces injected with "TracesFn" are not filtered (same rule as $ClaudeTurnWikiMinTraceChars). *)
+  If[tracesFn === Automatic,
+    all = Select[all, ! (Lookup[#, "Kind", ""] === "pass" && iTWUngroundedTraceQ[#]) &]];
   If[profile =!= $iTWDefaultProfile,
     all = Select[all, Lookup[#, "Profile", "unknown"] === profile &]];
   (* \:5b9a\:671f tick \:306e watermark: \:6d88\:8cbb\:6e08\:307f TraceId \:306f\:518d\:30b5\:30f3\:30d7\:30eb\:3057\:306a\:3044\:3002 *)
@@ -991,9 +1016,24 @@ ClaudeTurnWikiMaintain[traces_List, opts : OptionsPattern[]] := Module[
   parsed = iTWParseJSONLenient[resp];
   If[!AssociationQ[parsed],
     Return[<|"Status" -> "ParseFailed", "RawResponse" -> iTWTruncate[resp, 2000]|>]];
-  Append[
-    ClaudeTurnWikiApplyMaintainerOutput[parsed, "Iteration" -> OptionValue["Iteration"]],
-    "RawKeys" -> Keys[parsed]]];
+  With[{applied = ClaudeTurnWikiApplyMaintainerOutput[parsed, "Iteration" -> OptionValue["Iteration"]]},
+    (* Inc2 (03 v0.4 §6.2 TurnWiki Maintain、2026-11-10): 記録点 1 行。wiki パターンの Evidence に元トレースの EntityId (T-H4) *)
+    Join[applied, <|"RawKeys" -> Keys[parsed], "Provenance" -> iTWProvRecordMaintain[traces, applied, OptionValue["Iteration"]]|>]]];
+
+(* 来歴の記録点 (弱結合: SourceVault_integrity.wl の SourceVaultProvRecordTurnWikiMaintain が無ければ何もしない)。
+   作成・更新したパターンの隣に <name>.evidence.json (元トレースの EntityId・ActivityId・パターンの EntityId) を置く *)
+iTWProvRecordMaintain[traces_List, applied_Association, iter_] := Quiet @ Check[
+  If[Length[DownValues[SourceVault`SourceVaultProvRecordTurnWikiMaintain]] > 0,
+    Module[{names, files, r},
+      names = DeleteDuplicates @ Select[Join[Lookup[applied, "Created", {}], Lookup[applied, "Updated", {}]], StringQ];
+      files = Select[iTWPath["wiki", "patterns", #] & /@ names, FileExistsQ];
+      r = SourceVault`SourceVaultProvRecordTurnWikiMaintain[traces, files, "Iteration" -> iter];
+      If[AssociationQ[r] && Lookup[r, "Status", ""] === "Spooled",
+        Scan[Function[f, iTWWriteFile[StringReplace[f, ".md" ~~ EndOfString -> ""] <> ".evidence.json",
+            ByteArrayToString[ExportByteArray[<|"ActivityId" -> Lookup[r, "ActivityId", Null], "PatternEntityId" -> Lookup[Lookup[r, "PatternEntities", <||>], f, Null],
+              "Evidence" -> Lookup[r, "Evidence", {}], "RecordedAtUTC" -> iTWNowISO[]|>, "RawJSON", "Compact" -> True], "UTF-8"]]], files]];
+      If[AssociationQ[r], KeyTake[r, {"Status", "ActivityId", "Evidence", "PatternEntities"}], <|"Status" -> "Failed"|>]],
+    <|"Status" -> "ProvenanceAbsent", "Evidence" -> {}|>], <|"Status" -> "Failed", "Evidence" -> {}|>];
 
 
 
@@ -1102,6 +1142,55 @@ ClaudeTurnWikiPromote[name_String, skillMD_String, purposeMD_String, score_, met
 ClaudeTurnWikiReject[name_String] := (
   iTWClearStaging[name];
   <|"Status" -> "Rejected", "Name" -> name|>);
+
+(* ---- A-6: owner review of Accepted candidates (02 v1.2 / P0-16, 2026-11-09) ----
+   pending-review.json (root 直下、state.json の隣。wiki/ は append-only なので入れない) に
+   name -> record を持つ。record は SKILL.md 本文ごと保存するので staging が消えても昇格できる。 *)
+iTWPendingPath[] := iTWPath["pending-review.json"];
+iTWPendingLoad[] := Module[{s = iTWReadFile[iTWPendingPath[]], a},
+  If[!StringQ[s], Return[<||>]];
+  a = iTWFromJSON[s];
+  If[AssociationQ[a], Select[a, AssociationQ], <||>]];
+iTWPendingSave[a_Association] := iTWWriteFile[iTWPendingPath[], iTWToJSON[a]];
+
+iTWStagePendingReview[name_String, skillMD_String, purposeMD_String, score_, rBest_,
+    profile_String, iter_, proposal_Association] := Module[{p = iTWPendingLoad[]},
+  p[name] = <|"Name" -> name, "Status" -> "PendingOwnerReview",
+    "SkillMD" -> skillMD, "PurposeMD" -> purposeMD,
+    "Score" -> score, "RBest" -> rBest, "Profile" -> profile, "Iteration" -> iter,
+    "Action" -> Lookup[proposal, "Action", ""], "Rationale" -> Lookup[proposal, "Rationale", ""],
+    "StagedAt" -> iTWNowISO[]|>;
+  iTWPendingSave[p];
+  <|"Status" -> "PendingOwnerReview", "Name" -> name|>];
+
+ClaudeTurnWikiPendingReviews[] := Values[iTWPendingLoad[]];
+
+ClaudeTurnWikiApprovePending[name_String] := Module[{p = iTWPendingLoad[], rec, res, profile},
+  rec = Lookup[p, name, Missing[]];
+  If[!AssociationQ[rec], Return[<|"Status" -> "NotPending", "Name" -> name|>]];
+  profile = iTWNormProfile[Lookup[rec, "Profile", Automatic]];
+  res = ClaudeTurnWikiPromote[name, ToString[Lookup[rec, "SkillMD", ""]],
+    ToString[Lookup[rec, "PurposeMD", ""]], Lookup[rec, "Score", Null], <|"Profile" -> profile|>];
+  KeyDropFrom[p, name]; iTWPendingSave[p];
+  ClaudeTurnWikiAppendSkillImpact[<|
+    "Outcome" -> "Promoted", "Action" -> "owner-approve", "Name" -> name, "Profile" -> profile,
+    "Score" -> Lookup[rec, "Score", Missing[]], "RBest" -> Lookup[rec, "RBest", Missing[]],
+    "Rationale" -> "Owner approved the candidate staged at " <> ToString[Lookup[rec, "StagedAt", "?"]] <> ".",
+    "Iteration" -> Lookup[rec, "Iteration", Lookup[iTWLoadState[], "Iteration", 0]]|>];
+  Append[res, "OwnerApproved" -> True]];
+
+ClaudeTurnWikiRejectPending[name_String] := Module[{p = iTWPendingLoad[], rec},
+  rec = Lookup[p, name, Missing[]];
+  If[!AssociationQ[rec], Return[<|"Status" -> "NotPending", "Name" -> name|>]];
+  ClaudeTurnWikiReject[name];
+  KeyDropFrom[p, name]; iTWPendingSave[p];
+  ClaudeTurnWikiAppendSkillImpact[<|
+    "Outcome" -> "Rejected", "Action" -> "owner-reject", "Name" -> name,
+    "Profile" -> iTWNormProfile[Lookup[rec, "Profile", Automatic]],
+    "Score" -> Lookup[rec, "Score", Missing[]], "RBest" -> Lookup[rec, "RBest", Missing[]],
+    "Rationale" -> "Owner rejected the pending candidate.",
+    "Iteration" -> Lookup[rec, "Iteration", Lookup[iTWLoadState[], "Iteration", 0]]|>];
+  <|"Status" -> "Rejected", "Name" -> name, "OwnerRejected" -> True|>];
 
 (* profile: which profile's activation / RBest is rolled back (default =
    global). A skill still active in another profile keeps its file and its
@@ -1448,7 +1537,7 @@ iTWStepEnsureBaseline[llmFn_, evalFn_, profileIn_ : Automatic] := Module[
     Missing["NoBaseline"]]];
 
 iTWStepGate[proposal_Association, llmFn_, evalFn_, profileIn_ : Automatic] := Module[
-  {name, applied, validation, score, rBest, decision, entry, iterNow,
+  {name, applied, validation, score, rBest, decision, entry, iterNow, promotion,
    profile = iTWNormProfile[profileIn]},
   iterNow = Lookup[iTWLoadState[], "Iteration", 0];
   name = Lookup[proposal, "Name", Missing[]];
@@ -1476,14 +1565,29 @@ iTWStepGate[proposal_Association, llmFn_, evalFn_, profileIn_ : Automatic] := Mo
     entry["Content"] = Lookup[proposal, "SkillMD", ""]];
   If[Lookup[proposal, "Action", ""] === "patch",
     entry["Edits"] = Lookup[proposal, "Edits", {}]];
+  (* A-6 (02 v1.2 / P0-16, 2026-11-09): Accepted は自動で Promote しない。候補 (SKILL.md 本文・
+     スコア・profile) を pending-review.json に留め、所有者が ClaudeTurnWikiApprovePending で
+     昇格する。$ClaudeTurnWikiAutoPromote -> True (試験・旧挙動) のときだけ即 Promote。
+     RBest が動くのも実際に Promote したときだけ。 *)
+  promotion = Which[
+    decision =!= "Accepted", None,
+    TrueQ[$ClaudeTurnWikiAutoPromote], "Promoted",
+    True, "PendingOwnerReview"];
+  If[promotion =!= None, entry["Promotion"] = promotion];
   ClaudeTurnWikiAppendSkillImpact[entry];
-  If[decision === "Accepted",
-    ClaudeTurnWikiPromote[name,
-      Lookup[applied["CandidateSkills"], name, ""],
-      Lookup[proposal, "PurposeMD", ""], score, <|"Profile" -> profile|>],
-    ClaudeTurnWikiReject[name]];
+  Switch[promotion,
+    "Promoted",
+      ClaudeTurnWikiPromote[name,
+        Lookup[applied["CandidateSkills"], name, ""],
+        Lookup[proposal, "PurposeMD", ""], score, <|"Profile" -> profile|>],
+    "PendingOwnerReview",
+      iTWStagePendingReview[name, ToString[Lookup[applied["CandidateSkills"], name, ""]],
+        ToString[Lookup[proposal, "PurposeMD", ""]], score, rBest, profile, iterNow, proposal],
+    _,
+      ClaudeTurnWikiReject[name]];
   <|"Decision" -> decision, "Validation" -> validation, "Profile" -> profile,
-    "RBest" -> If[decision === "Accepted", score, rBest]|>];
+    "Promotion" -> promotion,
+    "RBest" -> If[promotion === "Promoted", score, rBest]|>];
 
 iTWBumpIteration[] := Module[{st = iTWLoadState[]},
   st["Iteration"] = Lookup[st, "Iteration", 0] + 1;
@@ -1561,6 +1665,7 @@ iTWRunIterationDirect[opts : OptionsPattern[ClaudeTurnWikiRunIteration]] := Modu
     "Traces" -> Length[traces], "Maintain" -> KeyDrop[maintain, {"RawResponse"}],
     "Proposal" -> KeyTake[proposal, {"Action", "Name", "Status", "TurnsUsed"}],
     "Decision" -> gate["Decision"], "Validation" -> Lookup[gate, "Validation", Missing[]],
+    "Promotion" -> Lookup[gate, "Promotion", None],
     "RBest" -> iTWProfileRBest[profile]|>];
 
 (* Orchestrator \:7d4c\:8def: \:5206\:5c90\:306f Guard \:7d14\:95a2\:6570\:3001LLM \:306f transition handler \:306e\:307f
@@ -1633,7 +1738,8 @@ iTWRunIterationViaOrchestrator[opts : OptionsPattern[ClaudeTurnWikiRunIteration]
               WTok["Kind" -> "Control", "Payload" -> Append[p, <|"Decision" -> "NoAction"|>]],
               g = iTWStepGate[prop, valFn, evalFn, profile];
               WTok["Kind" -> "Control", "Payload" ->
-                Append[p, <|"Decision" -> g["Decision"], "Validation" -> Lookup[g, "Validation", Missing[]]|>]]]]]|>],
+                Append[p, <|"Decision" -> g["Decision"], "Validation" -> Lookup[g, "Validation", Missing[]],
+                  "Promotion" -> Lookup[g, "Promotion", None]|>]]]]]|>],
       "FinishAccepted" -> WT["FinishAccepted", "Executor" -> "PureFunction",
         "InputArcs" -> {<|"Place" -> "Decided"|>}, "OutputArcs" -> {<|"Place" -> "DoneAccepted"|>},
         "Guard" -> Function[b, Lookup[iTWPay[b], "Decision", ""] === "Accepted"],
@@ -1671,6 +1777,7 @@ iTWRunIterationViaOrchestrator[opts : OptionsPattern[ClaudeTurnWikiRunIteration]
     "Proposal" -> KeyTake[Lookup[payload, "Proposal", <||>], {"Action", "Name", "Status", "TurnsUsed"}],
     "Decision" -> Lookup[payload, "Decision", Missing[]],
     "Validation" -> Lookup[payload, "Validation", Missing[]],
+    "Promotion" -> Lookup[payload, "Promotion", None],
     "RBest" -> iTWProfileRBest[profile]|>];
 
 Options[ClaudeTurnWikiRun] = Options[ClaudeTurnWikiRunIteration];
@@ -2076,6 +2183,8 @@ iTWNormLedgerEntry[e_Association] := <|
   "Score" -> With[{s = Lookup[e, "Score", Null]}, If[NumberQ[s], s, Missing[]]],
   "RBest" -> With[{s = Lookup[e, "RBest", Null]}, If[NumberQ[s], s, Missing[]]],
   "Rationale" -> ToString[Lookup[e, "Rationale", ""]],
+  (* A-6 (2026-11-09): Accepted entries say what happened next (Promoted | PendingOwnerReview) *)
+  "Promotion" -> With[{p = Lookup[e, "Promotion", Null]}, If[StringQ[p] && p =!= "", p, Missing[]]],
   "Content" -> Lookup[e, "Content", Missing[]],
   "Edits" -> Lookup[e, "Edits", Missing[]]|>;
 
@@ -2301,10 +2410,25 @@ iTWMaterializeModelsBlock[name_String] := Module[{profs = iTWSkillProfiles[name]
   If[MemberQ[iTWSkillProfiles[name], $iTWDefaultProfile] || profs === {}, "",
     "models:\n" <> StringRiffle[("  - " <> # &) /@ profs, "\n"] <> "\n"]];
 
-iTWMaterializeSkill[name_String, skillMD_String] := Module[{droot, ruleName, body, iso},
+iTWMaterializeSkill[name_String, skillMD_String] := Module[{droot, ruleName, body, iso, lv},
   If[!iTWDirectivesReadyQ[], Return[<|"Status" -> "DirectivesNotLoaded"|>]];
   iso = ClaudeTurnWikiCheckIsolation[];
   If[!TrueQ[iso["OK"]], Return[<|"Status" -> "IsolationViolation", "Detail" -> iso["Detail"]|>]];
+  (* Inc2 (03 v0.4 §7.1 LoadVerify、2026-11-10): skill はモデルが書き得る群。配布 (Directives への具現化) の直前に基準ハッシュと照合し、
+     不一致・認可 (基準の受入) なしは配布しない。SourceVault_integrity.wl 未ロードなら照合しない *)
+  (* 2026-11-11 (review 20261111 F05): an exception or a Failure of the check stops the delivery while LoadVerify enforcement is on
+     (it was Allow); without SourceVault_integrity.wl, or without the SKILL.md file, only the strict setting (enforcement on and
+     $SourceVaultIntegrityBaselineAsAuthorization False) stops it. The result shape decides, not Check (stray messages). *)
+  lv = Which[
+    Length[DownValues[SourceVault`SourceVaultIntegrityLoadVerify]] > 0 && FileExistsQ[iTWPath["skills", name, "SKILL.md"]],
+      With[{r = Quiet @ Catch[SourceVault`SourceVaultIntegrityLoadVerify[iTWPath["skills", name, "SKILL.md"], "TurnWikiRule"]]},
+        If[AssociationQ[r] && StringQ[Lookup[r, "Decision", None]], r,
+          <|"Decision" -> If[TrueQ[SourceVault`$SourceVaultIntegrityLoadVerifyEnforce], "Deny", "Warn"], "Reason" -> "VerifyError"|>]],
+    TrueQ[SourceVault`$SourceVaultIntegrityLoadVerifyEnforce] && SourceVault`$SourceVaultIntegrityBaselineAsAuthorization === False,
+      <|"Decision" -> "Deny", "Reason" -> If[Length[DownValues[SourceVault`SourceVaultIntegrityLoadVerify]] > 0, "SkillFileMissing", "IntegrityAbsent"]|>,
+    True, <|"Decision" -> "Allow"|>];
+  If[AssociationQ[lv] && Lookup[lv, "Decision", "Deny"] === "Deny",
+    Return[<|"Status" -> "LoadVerifyDenied", "Reason" -> Lookup[lv, "Reason", "?"], "Name" -> name|>]];
   droot = iTWDirectiveRoot[];
   If[MissingQ[droot], Return[<|"Status" -> "NoDirectiveRoot"|>]];
   ruleName = $iTWRulePrefix <> name;

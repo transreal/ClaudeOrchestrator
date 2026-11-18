@@ -14,12 +14,18 @@ WikiSkill 型 (arXiv:2608.27454) の LLM turn 自己改善ループ。
 probe 0 件では昇格しない(fail-closed) **I4** 実行役(推論 turn)には手順書だけ注入
 (wiki は directive root の外。起動時検査)。
 
+オーナー承認 (A-6, 02 v1.2 / P0-16, 2026-11-09): 既定では Accepted でも自動昇格せず
+`PendingOwnerReview` (`pending-review.json`) に留める。オーナーが
+`ClaudeTurnWikiApprovePending` で昇格、`ClaudeTurnWikiRejectPending` で破棄する。
+directive への注入も既定 OFF (`$ClaudeTurnWikiInjectionEnabled`)。旧挙動は
+`$ClaudeTurnWikiAutoPromote = True` と `$ClaudeTurnWikiInjectionEnabled = True` の両方。
+
 ## ループ
 
 ### ClaudeTurnWikiRunIteration[opts]
 1 反復 = collect(層化サンプル) → maintain(Wiki Maintainer, LLM 1 呼) →
 propose(Skill Proposer, ReAct) → stage → validate(probe 採点) →
-gate(Accepted は Promote+注入具現化 / Rejected は staging 破棄) → 台帳追記。
+gate(Accepted は `$ClaudeTurnWikiAutoPromote` が True なら Promote+注入具現化、False なら PendingOwnerReview に保留 / Rejected は staging 破棄) → 台帳追記。
 `"UseOrchestrator"->Automatic` で ClaudeOrchestrator`Workflow` 可用時は Petri net
 実行(分岐は Guard 純関数、LLM は handler のみ)、不可なら直接ループ(同じ step 関数)。
 隔離検査 (I4) 違反時は `Status->"IsolationViolation"` で停止。
@@ -60,9 +66,10 @@ EventTrace を LLM 向けコンパクトテキストへ。→ String
 
 ### ClaudeTurnWikiMaintain[traces, opts]
 Wiki Maintainer。LLM 1 呼び出しで JSON (create_patterns/update_patterns(patch ops)/
-update_index/append_log) を得て純関数適用。
+update_index/append_log) を得て純関数適用。作成/更新したパターンの隣に
+`<name>.evidence.json` (元トレースの EntityId 等の来歴。`SourceVaultProvRecordTurnWikiMaintain` があるときのみ、弱結合) を置く。
 Options: `"LLMFn"`->Automatic, `"Iteration"`->Automatic
-→ `<|"Status"("LLMUnavailable"|"NoTraces"|"LLMFailed"|"ParseFailed"|..),"Created","Updated",...,"RawKeys"|>`
+→ `<|"Status"("LLMUnavailable"|"NoTraces"|"LLMFailed"|"ParseFailed"|..),"Created","Updated",...,"RawKeys","Provenance"|>`
 
 ### ClaudeTurnWikiApplyMaintainerOutput[out, opts] / ClaudeTurnWikiApplyPatchOps[content, edits]
 Maintainer 出力の機械適用 (Option `"Iteration"`->Automatic) / patch ops (append|replace|insert_after, target は
@@ -83,8 +90,8 @@ wiki/traces/skills 限定サンドボックス + finish)。skill-impact を先�
 Options: `"LLMFn"`->Automatic, `"MaxTurns"`->12, `"MaxFileChars"`->16000, `"TaskSummary"`->Automatic, `"ModelProfile"`->Automatic
 → `<|"Action"->"create"|"patch"|"no_action", "Name", "SkillMD", "Edits", "Rationale", "Status", "TurnsUsed"|>`
 
-### ClaudeTurnWikiApplyProposal[proposal]
-staging/ へ候補適用 (本番 skills/ 不干渉)。→ `<|"Status","Name","CandidateSkills"|>`
+### ClaudeTurnWikiApplyProposal[proposal, profile:Automatic]
+staging/ へ候補適用 (本番 skills/ 不干渉)。→ `<|"Status"("Staged"|..),"Name","CandidateSkills"|>`
 
 ### ClaudeTurnWikiValidate[opts]
 probe 群で skill set を採点。probe 0 件 → `Status->"NoProbes"`, `Score->Missing["NoProbes"]` (昇格不可)。
@@ -97,10 +104,14 @@ Options: `"Skills"`->Automatic(=active of profile), `"Probes"`->Automatic, `"Eva
 数値同士の厳密な `>` のみ "Accepted"。それ以外は "Rejected" (fail-closed)。
 
 ### ClaudeTurnWikiPromote[name, skillMD, purposeMD, score, meta]
-前版を archive → skills/ へ設置 → state (ActiveSkills/RBest) 更新 → 注入具現化。meta に `<|"Profile"->key|>` で名前付きプロファイル昇格。
+前版を archive → skills/ へ設置 → state (ActiveSkills/RBest) 更新 → 注入具現化 (`$ClaudeTurnWikiInjectionEnabled` が True のときのみ)。meta に `<|"Profile"->key|>` で名前付きプロファイル昇格。
+→ `<|"Status"->"Promoted","Name","Profile","ArchivedPrevious","RBest"|>`
 
-### ClaudeTurnWikiReject[name] / ClaudeTurnWikiRollbackSkill[name, profile:Automatic]
-候補破棄 / 手順書のみロールバック (archive 前版復元、無ければ非活性化。
+### ClaudeTurnWikiReject[name]
+候補 (staging) 破棄。wiki は不変。→ `<|"Status"->"Rejected","Name"|>`
+
+### ClaudeTurnWikiRollbackSkill[name, profile:Automatic]
+手順書のみロールバック (archive 前版復元、無ければ非活性化。
 RBest は Missing に戻し次反復で再ベースライン。wiki は不変 = I3)。
 名前付きプロファイル指定時は非活性化のみ (ファイルは共有のため内容復元は default の操作)。他プロファイルで活性なら具現化の models を絞り直す。
 → `<|"Status"("Deactivated"|..),"Name","Profile"|>`
@@ -109,24 +120,40 @@ RBest は Missing に戻し次反復で再ベースライン。wiki は不変 = 
 → `<|name -> SKILL.md content, ..|>`
 
 ### ClaudeTurnWikiTransferSkill[name, toProfile, opts]
-既存スキルを別プロファイルで検証し、そこの RBest を上回るときだけ昇格 (cross-model transfer。台帳 Action "transfer")。
-Options: `"LLMFn"`, `"EvalFn"`
+既存スキルを別プロファイルで検証し、そこの RBest を上回るときだけ昇格 (cross-model transfer。台帳 Action "transfer")。Accepted 時の扱いは通常ゲートと同じ (AutoPromote False なら保留)。
+→ `<|"Status"("OK"|"NoSuchSkill"|"AlreadyActive"),"Name","Profile","From","Baseline","Decision","Validation","RBest"|>`
+Options: `"LLMFn"`->Automatic, `"EvalFn"`->Automatic
+
+## オーナー承認 (A-6, 2026-11-09)
+
+`$ClaudeTurnWikiAutoPromote` が False (既定) のとき、ゲート Accepted の候補は `pending-review.json` (root 直下) に SKILL.md 本文・スコア・profile ごと保存され、台帳には Outcome "Accepted" / `Promotion->"PendingOwnerReview"` で記録される。staging が消えても昇格できる。
+
+### ClaudeTurnWikiPendingReviews[] → {Association..}
+保留中候補 (Status PendingOwnerReview) の一覧。`Name, Profile, Score, RBest, Iteration, StagedAt, Action, Rationale, SkillMD, PurposeMD`。
+
+### ClaudeTurnWikiApprovePending[name]
+オーナー操作。保存済み SKILL.md/スコア/profile で `ClaudeTurnWikiPromote` を実行し、保留から除去、台帳に Outcome "Promoted" / Action "owner-approve" を追記。NBAccess の承認ヘッドとして登録される。
+
+### ClaudeTurnWikiRejectPending[name]
+保留候補を破棄 (staging 消去、台帳 Outcome "Rejected" / Action "owner-reject")。wiki は不変。
 
 ## Probes (validation split 相当)
 
 ### ClaudeTurnWikiAddProbe[probe] / [task, expected] / ClaudeTurnWikiProbes[] / ClaudeTurnWikiProbeFromTrace[trace]
 probe = `<|"ProbeId","Task","Expected","Kind"|>` を probes/ に保存 / 一覧 /
 失敗トレースから雛形生成 (純関数、Expected は Missing でユーザーが確定)。
+`[task, expected]` は Kind "contains"。Expected 無し probe は pass 扱い。
 
 ## 注入 (I4)
 
 ### ClaudeTurnWikiWireInjection[] / ClaudeTurnWikiUnwireInjection[] / ClaudeTurnWikiInjectionStatus[]
 active スキルを `Claude Directives/rules/evolved-turn-<name>.md` として具現化し
 `ClaudeDirectives`$ClaudeAlwaysOnRules` へ登録 (single 経路は always-on ルール
-しか届かないため。106 ルール前例)。冪等・defensive。同時具現化は
+しか届かないため。106 ルール前例)。冪等・defensive。`$ClaudeTurnWikiInjectionEnabled` が False (既定) なら Wire は `<|"Status"->"Disabled"|>` を返し何もしない。同時具現化は
 `$ClaudeTurnWikiMaxActiveSkills` (既定 3) まで。ロード時に既採用分を自動復元
 (`$ClaudeTurnWikiAutoWire`)。具現化されるのは SKILL.md 本文のみ —
 PURPOSE.md/パターン/台帳は決して注入されない。Unwire は全 evolved-turn-* ルールと登録を除去しキャッシュ無効化。
+具現化の前に I4 隔離検査を行い、違反なら `<|"Status"->"IsolationViolation"|>`。さらに SourceVault_integrity.wl があれば LoadVerify (基準ハッシュ照合) を通し、不一致・未認可なら配布しない (検査の例外/Failure も、LoadVerify 強制中は配布停止)。
 Claude Directives は公開リポジトリと cloud モデルへ PrivacyLevel 0.0 として出るため、具現化する本文は書き込み前に
 `ClaudeDirectives`ClaudeDirectivesPrivacyLintText` を通す (2026-11-07)。違反 (実ユーザー名入りパス・マシン名・
 SourceVault の実 ID・メールアドレス・秘密の値など) があれば書かずに `<|"Status" -> "PrivacyBlocked", "Rule", "Hits"|>`
@@ -140,7 +167,7 @@ Summary 投影は先頭 400 字に切り詰めるため、Proposer は必須事�
 ### ClaudeTurnWikiMaintainTick[opts]
 service heartbeat から呼ばれる定期ステップ = **Collect (watermark で未消費トレースのみ) +
 Maintain** だけ。提案・ゲート・手順書変更は行わず Iteration も進めない (パターン集だけが
-育つ)。ガード: 永続 AutoMaintain フラグ (`"Force"`->True で無視) → 最小間隔
+育つ)。ガード: 永続 AutoMaintain フラグ (`"Force"->True` で無視) → 最小間隔
 (`MaintainIntervalSeconds`, 既定 6h) → 排他ロック `locks/maintain-tick.lock`
 (対話/service カーネルの同時実行防止。`"LockStaleSeconds"` 1800 で stale は奪う) →
 LLM 可用性 (`"AvailabilityFn"`; Automatic = LLMFn 明示なら常に可、
@@ -219,7 +246,7 @@ Options: `"DryRun"` -> False
 
 core = List[Association] (連鎖可能・上限なし)、View = `Pane[Dataset]` (`$ClaudeTurnWikiViewMaxRows` 既定 25、超過分は「... N more」表示)。
 
-- `ClaudeTurnWikiLedger[opts]` / `ClaudeTurnWikiLedgerView[opts]` — skill-impact 台帳 (jsonl、新しい順: At, Iteration, Profile, Outcome, Action, Name, Score, RBest, Rationale, Content, Edits)。Options: `"Profile"`->All|key, `"Outcome"`->All|Accepted/Rejected/NoAction/RolledBack/LevelChanged, `"Limit"`->All|n。View 各行に SKILL.md を開くボタン。
+- `ClaudeTurnWikiLedger[opts]` / `ClaudeTurnWikiLedgerView[opts]` — skill-impact 台帳 (jsonl、新しい順: At, Iteration, Profile, Outcome, Action, Name, Score, RBest, Rationale, Promotion, Content, Edits)。Promotion は 2026-11-09 以降の Accepted 行のみ: `"Promoted"` | `"PendingOwnerReview"`。Options: `"Profile"`->All|key, `"Outcome"`->All|Accepted/Rejected/NoAction/RolledBack/LevelChanged/Promoted, `"Limit"`->All|n。View 各行に SKILL.md を開くボタン。
 - `ClaudeTurnWikiLog[opts]` / `ClaudeTurnWikiLogView[opts]` — Wiki Maintainer の進化ログ (logs.md) を `## <iso> iteration k` 単位に構造化 `{<|At, Iteration, Text|>..}` 新しい順。Option `"Limit"`。
 - `ClaudeTurnWikiTraces[opts]` / `ClaudeTurnWikiTracesView[opts]` — raw トレースのメタ (本文なし: TraceId, Iteration, Kind, Provider, Model, Profile, Source, Task(冒頭 120 字), Chars, File)。Options: `"Iteration"`->All|k, `"Profile"`->All|key, `"Kind"`->All|"pass"|"fail"。SourceVault があれば PL 0.75 の private view で包む。
 - `ClaudeTurnWikiProfiles[]` / `ClaudeTurnWikiProfilesView[]` — プロファイル別 Profile, Provider, Model, RBest, ActiveSkills, Traces, Fails, FailRatio, DirectiveLevel, LevelSource, LastLedgerAt, LedgerEntries, Iteration。
@@ -272,8 +299,12 @@ llmlog 分類正規表現。
 ロード時に採用済みスキルを再登録。
 
 ### $ClaudeTurnWikiInjectionEnabled
-型: Boolean, 初期値: True
-Promote/Wire による directive 具現化のゲート。
+型: Boolean, 初期値: False (2026-11-09 以降。02 v1.2 A-6 / P0-16)
+Promote/Wire による directive 具現化のゲート。昇格がオーナー操作として完結するまで OFF。注入するには明示的に True。
+
+### $ClaudeTurnWikiAutoPromote
+型: Boolean, 初期値: False (2026-11-09)
+ゲート Accepted の扱い。False: PendingOwnerReview に保留し `ClaudeTurnWikiApprovePending` / `RejectPending` で処理。True: 旧挙動 (即 `ClaudeTurnWikiPromote`。テストや自動昇格を許容するオーナー向け)。
 
 ### $ClaudeTurnWikiMaxFailStreak
 型: Integer, 初期値: 3
